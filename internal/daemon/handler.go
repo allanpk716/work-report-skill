@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"wr/internal/llm"
 	"wr/internal/models"
+	"wr/internal/pushover"
 	"wr/internal/report"
 	"wr/internal/storage"
 )
@@ -501,4 +503,81 @@ func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
 	jsonlResponse(w, "success", rpt, "")
+}
+
+func (s *Server) handleReportPushToday(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_push_today error: err=%v", err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate report: %v", err))
+		return
+	}
+
+	s.sendReportPush(w, rpt)
+}
+
+func (s *Server) handleReportPushDate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	date := strings.TrimPrefix(r.URL.Path, "/api/report/push/date/")
+	if date == "" {
+		errorResponse(w, "invalid_body", "missing date in path")
+		return
+	}
+
+	rpt, err := report.Generate(s.storage, date, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_push_date error: date=%s err=%v", date, err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate report: %v", err))
+		return
+	}
+
+	s.sendReportPush(w, rpt)
+}
+
+// sendReportPush generates a Pushover notification from the daily report.
+// Returns pushover_not_configured error code if Pushover credentials are empty.
+func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) {
+	// Check Pushover configuration
+	if s.config == nil || s.config.Pushover.APIToken == "" || s.config.Pushover.UserKey == "" {
+		log.Printf("[daemon] report_push: pushover_not_configured date=%s", rpt.Date)
+		errorResponse(w, "pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)")
+		return
+	}
+
+	cfg := pushover.Config{
+		APIToken: s.config.Pushover.APIToken,
+		UserKey:  s.config.Pushover.UserKey,
+	}
+
+	title := fmt.Sprintf("工作日报 %s", rpt.Date)
+	if err := pushover.Send(context.Background(), cfg, rpt.Markdown, title, 0); err != nil {
+		log.Printf("[daemon] report_push: send failed date=%s err=%v", rpt.Date, err)
+		errorResponse(w, "push_error", fmt.Sprintf("Pushover send failed: %v", err))
+		return
+	}
+
+	log.Printf("[daemon] report_push: sent date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+		rpt.Date, rpt.Summary.Meetings, rpt.Summary.Tasks,
+		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+
+	jsonlResponse(w, "success", map[string]interface{}{
+		"date":    rpt.Date,
+		"total":   rpt.Summary.Total,
+		"pushed":  true,
+		"summary": rpt.Summary,
+	}, "")
 }

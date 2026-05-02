@@ -125,4 +125,6 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/cancel/", s.handleCancel)
 	s.router.HandleFunc("/api/report", s.handleReport)
 	s.router.HandleFunc("/api/report/today", s.handleReportToday)
+	s.router.HandleFunc("/api/report/push/today", s.handleReportPushToday)
+	s.router.HandleFunc("/api/report/push/date/", s.handleReportPushDate)
 }

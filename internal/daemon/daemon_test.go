@@ -17,6 +17,7 @@ import (
 
 	"wr/internal/config"
 	"wr/internal/llm"
+	"wr/internal/pushover"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
 )
@@ -1510,4 +1511,197 @@ func TestDaemon_Complete_NilScheduler_NoPanic(t *testing.T) {
 	srv.router.ServeHTTP(w, req)
 
 	assertJSONLStatus(t, w.Body.Bytes(), "success")
+}
+
+// ── Report push tests ──
+
+func TestReportPushToday_Success(t *testing.T) {
+	// Create a mock Pushover server
+	var gotTitle, gotMessage string
+	mockPush := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		gotTitle = r.FormValue("title")
+		gotMessage = r.FormValue("message")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockPush.Close()
+
+	// Override pushover URL
+	origURL := pushover.PushoverURL()
+	pushover.SetPushoverURL(mockPush.URL)
+	defer pushover.SetPushoverURL(origURL)
+
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "test-token",
+			UserKey:  "test-user",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	// Add a record for today
+	body := strings.NewReader(`{"type":"task","title":"push test task","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Push today's report
+	req = httptest.NewRequest(http.MethodPost, "/api/report/push/today", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	if data["pushed"] != true {
+		t.Errorf("expected pushed=true, got %v", data["pushed"])
+	}
+
+	if gotTitle == "" {
+		t.Error("expected Pushover title to be set")
+	}
+	if gotMessage == "" {
+		t.Error("expected Pushover message to be set")
+	}
+	if !strings.Contains(gotMessage, "push test task") {
+		t.Errorf("expected message to contain task title, got %q", gotMessage)
+	}
+}
+
+func TestReportPushToday_NotConfigured(t *testing.T) {
+	// Config with empty Pushover credentials
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "",
+			UserKey:  "",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/report/push/today", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "pushover_not_configured")
+}
+
+func TestReportPushToday_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/report/push/today", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+}
+
+func TestReportPushDate_Success(t *testing.T) {
+	var gotTitle string
+	mockPush := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		gotTitle = r.FormValue("title")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockPush.Close()
+
+	origURL := pushover.PushoverURL()
+	pushover.SetPushoverURL(mockPush.URL)
+	defer pushover.SetPushoverURL(origURL)
+
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "test-token",
+			UserKey:  "test-user",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	// Add a record
+	body := strings.NewReader(`{"type":"meeting","title":"date push meeting","date":"2026-05-03"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Push report for the specific date
+	req = httptest.NewRequest(http.MethodPost, "/api/report/push/date/2026-05-03", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	if data["pushed"] != true {
+		t.Errorf("expected pushed=true, got %v", data["pushed"])
+	}
+	if data["date"] != "2026-05-03" {
+		t.Errorf("expected date=2026-05-03, got %v", data["date"])
+	}
+	if !strings.Contains(gotTitle, "2026-05-03") {
+		t.Errorf("expected title to contain date, got %q", gotTitle)
+	}
+}
+
+func TestReportPushDate_NotConfigured(t *testing.T) {
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "",
+			UserKey:  "",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/report/push/date/2026-05-03", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "pushover_not_configured")
+}
+
+func TestReportPushDate_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/report/push/date/2026-05-03", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+}
+
+func TestReportPush_PushoverSendFail(t *testing.T) {
+	// Server that returns 500 — simulates Pushover API failure
+	mockPush := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer mockPush.Close()
+
+	origURL := pushover.PushoverURL()
+	pushover.SetPushoverURL(mockPush.URL)
+	defer pushover.SetPushoverURL(origURL)
+
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "test-token",
+			UserKey:  "test-user",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/report/push/today", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "push_error")
 }

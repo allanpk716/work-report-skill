@@ -36,6 +36,12 @@ const (
 // to allow override in tests.
 var pushoverURL = "https://api.pushover.net/1/messages.json"
 
+// PushoverURL returns the current Pushover API endpoint (for testing).
+func PushoverURL() string { return pushoverURL }
+
+// SetPushoverURL overrides the Pushover API endpoint (for testing).
+func SetPushoverURL(u string) { pushoverURL = u }
+
 // Send posts a notification to Pushover with the given message, title and priority.
 // It retries up to 3 times with increasing delays (5s, 15s, 30s) on failure.
 // Returns ErrNotConfigured if the config has empty APIToken or UserKey.
