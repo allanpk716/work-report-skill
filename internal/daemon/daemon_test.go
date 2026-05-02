@@ -475,9 +475,26 @@ func TestReportEndpoint(t *testing.T) {
 	var record map[string]interface{}
 	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
 	data := record["data"].(map[string]interface{})
-	count, _ := data["count"].(float64)
-	if count != 2 {
-		t.Errorf("expected 2 records in report, got %v", count)
+
+	// Verify grouped structure
+	summary, _ := data["summary"].(map[string]interface{})
+	total, _ := summary["total"].(float64)
+	if total != 2 {
+		t.Errorf("expected 2 records in report, got %v", total)
+	}
+	meetings, _ := summary["meetings"].(float64)
+	if meetings != 1 {
+		t.Errorf("expected 1 meeting, got %v", meetings)
+	}
+	tasks, _ := summary["tasks"].(float64)
+	if tasks != 1 {
+		t.Errorf("expected 1 task, got %v", tasks)
+	}
+
+	// Verify markdown field present
+	md, _ := data["markdown"].(string)
+	if md == "" {
+		t.Error("expected markdown field in report")
 	}
 }
 

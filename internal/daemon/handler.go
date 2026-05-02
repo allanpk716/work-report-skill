@@ -10,6 +10,7 @@ import (
 
 	"wr/internal/llm"
 	"wr/internal/models"
+	"wr/internal/report"
 	"wr/internal/storage"
 )
 
@@ -456,40 +457,25 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	date := query.Get("date")
 	if date == "" {
-		date = time.Now().Format("2006-01-02")
+		loc := time.UTC
+		if s.config != nil {
+			loc = s.config.Location()
+		}
+		date = time.Now().In(loc).Format("2006-01-02")
 	}
 
-	// List all types for the given date
-	var allEntries []map[string]interface{}
-	for _, rt := range models.ValidRecordTypes() {
-		opts := storage.ListOptions{
-			RecordType:       models.RecordType(rt),
-			Date:             date,
-			IncludeCompleted: true,
-		}
-		records, err := s.storage.ListRecords(opts)
-		if err != nil {
-			log.Printf("[daemon] report error: type=%s err=%v", rt, err)
-			continue
-		}
-		for _, lr := range records {
-			allEntries = append(allEntries, map[string]interface{}{
-				"short_id": lr.ShortID,
-				"type":     lr.Type,
-				"title":    lr.Title,
-				"date":     lr.Date,
-				"time":     lr.Time,
-				"status":   lr.Status,
-			})
-		}
+	rpt, err := report.Generate(s.storage, date, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report error: date=%s err=%v", date, err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate report: %v", err))
+		return
 	}
 
-	jsonlResponse(w, "success", map[string]interface{}{
-		"action":  "report",
-		"date":    date,
-		"count":   len(allEntries),
-		"entries": allEntries,
-	}, "")
+	log.Printf("[daemon] report: date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+		date, rpt.Summary.Meetings, rpt.Summary.Tasks,
+		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+
+	jsonlResponse(w, "success", rpt, "")
 }
 
 func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
@@ -498,36 +484,21 @@ func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delegate to report with today's date
-	today := time.Now().Format("2006-01-02")
-	var allEntries []map[string]interface{}
-	for _, rt := range models.ValidRecordTypes() {
-		opts := storage.ListOptions{
-			RecordType:       models.RecordType(rt),
-			Date:             today,
-			IncludeCompleted: true,
-		}
-		records, err := s.storage.ListRecords(opts)
-		if err != nil {
-			log.Printf("[daemon] report_today error: type=%s err=%v", rt, err)
-			continue
-		}
-		for _, lr := range records {
-			allEntries = append(allEntries, map[string]interface{}{
-				"short_id": lr.ShortID,
-				"type":     lr.Type,
-				"title":    lr.Title,
-				"date":     lr.Date,
-				"time":     lr.Time,
-				"status":   lr.Status,
-			})
-		}
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
 	}
 
-	jsonlResponse(w, "success", map[string]interface{}{
-		"action":  "report_today",
-		"date":    today,
-		"count":   len(allEntries),
-		"entries": allEntries,
-	}, "")
+	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_today error: err=%v", err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate today report: %v", err))
+		return
+	}
+
+	log.Printf("[daemon] report_today: date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+		rpt.Date, rpt.Summary.Meetings, rpt.Summary.Tasks,
+		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+
+	jsonlResponse(w, "success", rpt, "")
 }

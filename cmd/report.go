@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"wr/internal/client"
@@ -21,7 +22,19 @@ var reportTodayCmd = &cobra.Command{
 	},
 }
 
+var reportDateCmd = &cobra.Command{
+	Use:   "date <YYYY-MM-DD>",
+	Short: "Generate report for a specific date",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		date := args[0]
+		path := fmt.Sprintf("/api/report?date=%s", date)
+		return client.CallDaemonGet(os.Stdout, path)
+	},
+}
+
 func init() {
 	reportCmd.AddCommand(reportTodayCmd)
+	reportCmd.AddCommand(reportDateCmd)
 	rootCmd.AddCommand(reportCmd)
 }
