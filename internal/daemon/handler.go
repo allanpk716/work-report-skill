@@ -73,6 +73,7 @@ type addRequest struct {
 	RemindBefore  string   `json:"remind_before,omitempty"`
 	Recurring     string   `json:"recurring,omitempty"`
 	Text          string   `json:"text,omitempty"`
+	Image         string   `json:"image,omitempty"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -87,9 +88,57 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If text is provided and type is not specified, use LLM classification
+	// If image is provided and type is not specified, use vision LLM classification
 	usedLLM := false
-	if req.Text != "" && req.Type == "" {
+	if req.Image != "" && req.Type == "" {
+		result, err := s.classifyImage(w, req.Image, req.Text)
+		if err != nil {
+			return // error already written by classifyImage
+		}
+
+		// cancel_or_update is informational — don't create a record
+		if result.Type == "cancel_or_update" {
+			jsonlResponse(w, "info", map[string]interface{}{
+				"action":        "cancel_or_update",
+				"classification": result,
+			}, "")
+			return
+		}
+
+		// Populate request fields from classification result
+		req.Type = result.Type
+		if req.Title == "" {
+			req.Title = result.Title
+		}
+		if req.Date == "" {
+			req.Date = result.Date
+		}
+		if req.Time == "" {
+			req.Time = result.Time
+		}
+		if req.Description == "" {
+			req.Description = result.Description
+		}
+		if req.Location == "" {
+			req.Location = result.Location
+		}
+		if req.RelatedPerson == "" {
+			req.RelatedPerson = result.RelatedPerson
+		}
+		if req.Priority == "" {
+			req.Priority = result.Priority
+		}
+		if req.RemindBefore == "" {
+			req.RemindBefore = result.RemindBefore
+		}
+		if req.Recurring == "" {
+			req.Recurring = result.Recurring
+		}
+
+		log.Printf("[daemon] add: source=llm type=%s title=%q image=%s", req.Type, req.Title, req.Image)
+		usedLLM = true
+	} else if req.Text != "" && req.Type == "" {
+		// Text classification (existing flow)
 		result, err := s.classifyText(w, req.Text)
 		if err != nil {
 			return // error already written by classifyText
@@ -197,6 +246,34 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 		errorResponse(w, "llm_error", fmt.Sprintf("LLM classification failed: %v", err))
 		return nil, err
 	}
+
+	return result, nil
+}
+
+// classifyImage performs vision LLM classification on the given image.
+// textContext is optional supplementary text from the user.
+// It writes an error response and returns a nil result on failure.
+func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textContext string) (*llm.ClassifyResult, error) {
+	cfg := s.config
+	if cfg == nil || cfg.LLM.Vision.APIKey == "" {
+		errorResponse(w, "llm_not_configured", "LLM vision classification is not configured (missing api_key in llm.vision)")
+		return nil, fmt.Errorf("llm vision not configured")
+	}
+
+	loc := cfg.Location()
+	today := time.Now().In(loc)
+
+	client := llm.NewClient(cfg.LLM.Vision.APIBase, cfg.LLM.Vision.APIKey, cfg.LLM.Vision.Model)
+	result, err := llm.ClassifyImage(client, imagePath, textContext, today, loc)
+	if err != nil {
+		log.Printf("[daemon] classify_image error: api_base=%s model=%s error=%v image=%s",
+			cfg.LLM.Vision.APIBase, cfg.LLM.Vision.Model, err, imagePath)
+		errorResponse(w, "llm_error", fmt.Sprintf("LLM vision classification failed: %v", err))
+		return nil, err
+	}
+
+	log.Printf("[daemon] classify_image ok: type=%s model=%s image=%s",
+		result.Type, cfg.LLM.Vision.Model, imagePath)
 
 	return result, nil
 }

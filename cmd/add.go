@@ -101,7 +101,7 @@ func init() {
 	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD)")
 	addCmd.Flags().StringVar(&addTime, "time", "", "Time (HH:MM)")
 	addCmd.Flags().StringVar(&addText, "text", "", "Natural language text for LLM classification (type/title/date become optional)")
-	addCmd.Flags().StringVar(&addImage, "image", "", "Image path")
+	addCmd.Flags().StringVar(&addImage, "image", "", "Image path for LLM vision classification (type/title/date become optional)")
 	addCmd.Flags().StringVar(&addDescription, "description", "", "Description")
 	addCmd.Flags().StringVar(&addTags, "tags", "", "Comma-separated tags")
 	addCmd.Flags().StringVar(&addLocation, "location", "", "Location")

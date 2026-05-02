@@ -866,3 +866,418 @@ func TestAddEndpoint_NormalAddStillWorks(t *testing.T) {
 		t.Errorf("expected type meeting, got %v", data["type"])
 	}
 }
+
+// ── LLM image (vision) classification tests ──
+
+// minimalPNG is a valid 1x1 transparent PNG (67 bytes).
+var minimalPNG = []byte{
+	0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+	0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+	0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, // IDAT chunk
+	0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+	0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, // IEND chunk
+	0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+	0x42, 0x60, 0x82,
+}
+
+// createTestImage writes a minimal PNG to a temp file and returns its path.
+func createTestImage(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := dir + "/test.png"
+	if err := os.WriteFile(path, minimalPNG, 0644); err != nil {
+		t.Fatalf("create test image: %v", err)
+	}
+	return path
+}
+
+// imageAddPayload builds a JSON add-request body with the given image path
+// and optional extra fields. Uses json.Marshal to handle path escaping correctly.
+func imageAddPayload(t *testing.T, imagePath string, extra map[string]interface{}) string {
+	t.Helper()
+	payload := map[string]interface{}{
+		"image": imagePath,
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal image payload: %v", err)
+	}
+	return string(b)
+}
+
+// mockVisionLLMServer creates a mock server that captures the request body
+// and returns the given classification result.
+func mockVisionLLMServer(t *testing.T, classifyResult llm.ClassifyResult) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		b, _ := json.Marshal(classifyResult)
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"content": string(b),
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+// visionConfig creates a config with vision LLM pointing at the given URL.
+func visionConfig(mockURL string) *config.Config {
+	return &config.Config{
+		LLM: config.LLMConfig{
+			Vision: config.LLMProviderConfig{
+				APIBase: mockURL,
+				APIKey:  "test-vision-key",
+				Model:   "test-vision-model",
+			},
+		},
+	}
+}
+
+func TestAddEndpoint_ImageClassification(t *testing.T) {
+	imgPath := createTestImage(t)
+
+	mockServer := mockVisionLLMServer(t, llm.ClassifyResult{
+		Type:  "meeting",
+		Title: "项目周会",
+		Date:  "2026-05-05",
+		Time:  "14:00",
+	})
+	defer mockServer.Close()
+
+	srv, _ := newTestServer(t, visionConfig(mockServer.URL))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, nil)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	assertJSONLStatus(t, respBody, "success")
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", respBody)
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["type"] != "meeting" {
+		t.Errorf("expected type meeting, got %v", data["type"])
+	}
+	if data["title"] != "项目周会" {
+		t.Errorf("expected title 项目周会, got %v", data["title"])
+	}
+	if data["date"] != "2026-05-05" {
+		t.Errorf("expected date 2026-05-05, got %v", data["date"])
+	}
+	if data["time"] != "14:00" {
+		t.Errorf("expected time 14:00, got %v", data["time"])
+	}
+}
+
+func TestAddEndpoint_ImageWithTextContext(t *testing.T) {
+	imgPath := createTestImage(t)
+
+	// Server that captures the request body to verify textContext is passed
+	var capturedBody map[string]interface{}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		json.Unmarshal(bodyBytes, &capturedBody)
+
+		result := llm.ClassifyResult{
+			Type:        "meeting",
+			Title:       "设计评审会",
+			Date:        "2026-05-06",
+			Description: "来自图片的会议截图，补充信息: 这是会议截图",
+		}
+		b, _ := json.Marshal(result)
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"content": string(b)}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	srv, _ := newTestServer(t, visionConfig(mockServer.URL))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, map[string]interface{}{"text": "这是会议截图"})))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify the LLM request included supplementary text context
+	if capturedBody == nil {
+		t.Fatal("no request body captured from LLM call")
+	}
+	messages, _ := capturedBody["messages"].([]interface{})
+	if len(messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(messages))
+	}
+	userMsg, _ := messages[1].(map[string]interface{})
+	// Content should be an array (multimodal) containing the supplementary info
+	contentArr, ok := userMsg["content"].([]interface{})
+	if !ok {
+		t.Fatal("user message content should be an array for multimodal")
+	}
+	// Find the text part and check it includes supplementary info
+	foundSupplementary := false
+	for _, part := range contentArr {
+		partMap, _ := part.(map[string]interface{})
+		if partMap["type"] == "text" {
+			text, _ := partMap["text"].(string)
+			if strings.Contains(text, "补充信息: 这是会议截图") {
+				foundSupplementary = true
+			}
+		}
+	}
+	if !foundSupplementary {
+		t.Error("expected user message to contain supplementary text context")
+	}
+}
+
+func TestAddEndpoint_ImageCancelOrUpdate(t *testing.T) {
+	imgPath := createTestImage(t)
+
+	mockServer := mockVisionLLMServer(t, llm.ClassifyResult{
+		Type:     "cancel_or_update",
+		Title:    "取消周五会议",
+		TargetID: "xyz12345",
+	})
+	defer mockServer.Close()
+
+	srv, _ := newTestServer(t, visionConfig(mockServer.URL))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, nil)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "info")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	action, _ := data["action"].(string)
+	if action != "cancel_or_update" {
+		t.Errorf("expected action cancel_or_update, got %q", action)
+	}
+}
+
+func TestAddEndpoint_ImageVisionNotConfigured(t *testing.T) {
+	imgPath := createTestImage(t)
+
+	// Config with no vision api_key
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Vision: config.LLMProviderConfig{
+				APIBase: "",
+				APIKey:  "",
+				Model:   "",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, nil)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "llm_not_configured")
+}
+
+func TestAddEndpoint_ImageLLMError(t *testing.T) {
+	imgPath := createTestImage(t)
+
+	mockServer := mockLLMErrorServer(t, http.StatusInternalServerError)
+	defer mockServer.Close()
+
+	srv, _ := newTestServer(t, visionConfig(mockServer.URL))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, nil)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "llm_error")
+}
+
+func TestAddEndpoint_ImageWithExplicitType_NoLLMCall(t *testing.T) {
+	imgPath := createTestImage(t)
+
+	// When both image and type are provided, explicit type wins (no LLM call)
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Vision: config.LLMProviderConfig{
+				APIBase: "http://127.0.0.1:0", // unreachable
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, map[string]interface{}{
+		"type":  "task",
+		"title": "manual image task",
+		"date":  "2026-05-03",
+	})))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["type"] != "task" {
+		t.Errorf("expected type task, got %v", data["type"])
+	}
+	if data["title"] != "manual image task" {
+		t.Errorf("expected title 'manual image task', got %v", data["title"])
+	}
+}
+
+func TestAddEndpoint_ImageFileNotFound(t *testing.T) {
+	// Non-existent image path — file validation happens before API call
+	mockServer := mockVisionLLMServer(t, llm.ClassifyResult{
+		Type:  "meeting",
+		Title: "should not reach",
+	})
+	defer mockServer.Close()
+
+	srv, _ := newTestServer(t, visionConfig(mockServer.URL))
+	body := `{"image":"/nonexistent/path/to/image.png"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "llm_error")
+
+	// Verify error message mentions file issue
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "vision classification failed") {
+		t.Errorf("expected vision classification failure message, got %q", msg)
+	}
+}
+
+func TestAddEndpoint_ImageUnsupportedFormat(t *testing.T) {
+	// Create a temp file with .txt extension (unsupported)
+	dir := t.TempDir()
+	path := dir + "/test.txt"
+	os.WriteFile(path, []byte("not an image"), 0644)
+
+	mockServer := mockVisionLLMServer(t, llm.ClassifyResult{
+		Type:  "meeting",
+		Title: "should not reach",
+	})
+	defer mockServer.Close()
+
+	srv, _ := newTestServer(t, visionConfig(mockServer.URL))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, path, nil)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "llm_error")
+}
+
+func TestAddEndpoint_ImageWinsOverText(t *testing.T) {
+	// When both image and text are provided (no type), image classification takes priority
+	imgPath := createTestImage(t)
+
+	var requestReceived bool
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestReceived = true
+
+		// Verify request body has multimodal content (image path, not just text)
+		bodyBytes, _ := io.ReadAll(r.Body)
+		var reqBody map[string]interface{}
+		json.Unmarshal(bodyBytes, &reqBody)
+		messages, _ := reqBody["messages"].([]interface{})
+		userMsg, _ := messages[1].(map[string]interface{})
+		content, _ := userMsg["content"].([]interface{})
+		// Should have both text and image_url parts
+		if len(content) != 2 {
+			t.Errorf("expected 2 content parts (text + image), got %d", len(content))
+		}
+
+		result := llm.ClassifyResult{
+			Type:  "task",
+			Title: "从图片识别的任务",
+			Date:  "2026-05-07",
+		}
+		b, _ := json.Marshal(result)
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"content": string(b)}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Vision: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-vision-key",
+				Model:   "test-vision-model",
+			},
+			// Text LLM also configured but should NOT be called
+			Text: config.LLMProviderConfig{
+				APIBase: "http://127.0.0.1:0", // unreachable
+				APIKey:  "test-text-key",
+				Model:   "test-text-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(imageAddPayload(t, imgPath, map[string]interface{}{"text": "这是文字描述"})))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	if !requestReceived {
+		t.Error("expected vision LLM to be called")
+	}
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["type"] != "task" {
+		t.Errorf("expected type task, got %v", data["type"])
+	}
+}
