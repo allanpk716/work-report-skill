@@ -59,15 +59,16 @@ type CommonFields struct {
 	Type          RecordType `json:"type"`
 	Title         string     `json:"title"`
 	Description   string     `json:"description,omitempty"`
-	Date          string     `json:"date"`          // YYYY-MM-DD
-	Time          string     `json:"time,omitempty"` // HH:MM
+	Date          string     `json:"date"`              // YYYY-MM-DD
+	Time          string     `json:"time,omitempty"`    // HH:MM
 	EndTime       string     `json:"end_time,omitempty"`
 	Location      string     `json:"location,omitempty"`
 	RelatedPerson string     `json:"related_person,omitempty"`
-	Priority      string     `json:"priority,omitempty"` // normal, high, medium, 低, 高
+	RemindBefore  string     `json:"remind_before,omitempty"` // e.g. "15m", "30m"
+	Priority      string     `json:"priority,omitempty"`      // normal, high, medium, 低, 高
 	Status        string     `json:"status,omitempty"`
 	Tags          []string   `json:"tags,omitempty"`
-	SavedAt       string     `json:"saved_at"` // ISO-8601 timestamp
+	SavedAt       string     `json:"saved_at"`          // ISO-8601 timestamp
 	UpdatedAt     string     `json:"updated_at,omitempty"`
 	ShortID       string     `json:"short_id,omitempty"`
 }
@@ -76,13 +77,8 @@ type CommonFields struct {
 // work-records/meetings/YYYY/MM/DD/<timestamp>.json.
 type MeetingRecord struct {
 	CommonFields
-	EndTime       string   `json:"end_time,omitempty"`
-	Location      string   `json:"location,omitempty"`
-	RelatedPerson string   `json:"related_person,omitempty"`
-	RemindBefore  string   `json:"remind_before,omitempty"` // e.g. "15m"
-	Priority      string   `json:"priority,omitempty"`
-	Participants  []string `json:"participants,omitempty"`
-	Agenda        string   `json:"agenda,omitempty"`
+	Participants []string `json:"participants,omitempty"`
+	Agenda       string   `json:"agenda,omitempty"`
 }
 
 // TaskRecord maps to the task JSON format stored in
@@ -90,16 +86,11 @@ type MeetingRecord struct {
 // work-records/tasks/completed/YYYY/MM/DD/<timestamp>.json.
 type TaskRecord struct {
 	CommonFields
-	EndTime       string   `json:"end_time,omitempty"`
-	Location      string   `json:"location,omitempty"`
-	RelatedPerson string   `json:"related_person,omitempty"`
-	RemindBefore  string   `json:"remind_before,omitempty"`
-	Priority      string   `json:"priority,omitempty"`
-	CompletedAt   string   `json:"completed_at,omitempty"`
-	RawInput      string   `json:"raw_input,omitempty"`
-	ProcessedAt   string   `json:"processed_at,omitempty"`
+	CompletedAt    string   `json:"completed_at,omitempty"`
+	RawInput       string   `json:"raw_input,omitempty"`
+	ProcessedAt    string   `json:"processed_at,omitempty"`
 	RelatedPersons []string `json:"related_persons,omitempty"`
-	Reminder      string   `json:"reminder,omitempty"` // e.g. "30m"
+	Reminder       string   `json:"reminder,omitempty"` // e.g. "30m"
 }
 
 // ReminderRecord maps to the reminder JSON format stored in
@@ -107,20 +98,14 @@ type TaskRecord struct {
 // work-records/reminders/YYYY/MM/DD/<timestamp>.json.
 type ReminderRecord struct {
 	CommonFields
-	Notes         string `json:"notes,omitempty"`
-	Recurring     string `json:"recurring,omitempty"`
-	EndTime       string `json:"end_time,omitempty"`
-	Location      string `json:"location,omitempty"`
-	RelatedPerson string `json:"related_person,omitempty"`
-	RemindBefore  string `json:"remind_before,omitempty"`
-	Priority      string `json:"priority,omitempty"`
+	Notes     string `json:"notes,omitempty"`
+	Recurring string `json:"recurring,omitempty"`
 }
 
 // LogRecord maps to the log JSON format stored in
 // work-records/logs/YYYY/MM/DD/<timestamp>.json.
 type LogRecord struct {
 	CommonFields
-	Time     string `json:"time,omitempty"`
 	Priority string `json:"priority,omitempty"`
 	Progress string `json:"progress,omitempty"`
 }

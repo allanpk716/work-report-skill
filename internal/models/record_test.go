@@ -224,14 +224,14 @@ func TestParseReminderWithRemindBefore(t *testing.T) {
 		t.Fatalf("expected *ReminderRecord, got %T", parsed)
 	}
 
-	if reminder.RelatedPerson != "王总" {
-		t.Errorf("RelatedPerson = %q, want %q", reminder.RelatedPerson, "王总")
+	if reminder.CommonFields.RelatedPerson != "王总" {
+		t.Errorf("RelatedPerson = %q, want %q", reminder.CommonFields.RelatedPerson, "王总")
 	}
-	if reminder.RemindBefore != "15m" {
-		t.Errorf("RemindBefore = %q, want %q", reminder.RemindBefore, "15m")
+	if reminder.CommonFields.RemindBefore != "15m" {
+		t.Errorf("RemindBefore = %q, want %q", reminder.CommonFields.RemindBefore, "15m")
 	}
-	if reminder.Priority != "medium" {
-		t.Errorf("Priority = %q, want %q", reminder.Priority, "medium")
+	if reminder.CommonFields.Priority != "medium" {
+		t.Errorf("Priority = %q, want %q", reminder.CommonFields.Priority, "medium")
 	}
 }
 
@@ -433,11 +433,11 @@ func TestMeetingWithRemindBefore(t *testing.T) {
 		t.Fatalf("expected *MeetingRecord, got %T", parsed)
 	}
 
-	if meeting.RemindBefore != "15m" {
-		t.Errorf("RemindBefore = %q, want %q", meeting.RemindBefore, "15m")
+	if meeting.CommonFields.RemindBefore != "15m" {
+		t.Errorf("RemindBefore = %q, want %q", meeting.CommonFields.RemindBefore, "15m")
 	}
-	if meeting.Priority != "high" {
-		t.Errorf("Priority = %q, want %q", meeting.Priority, "high")
+	if meeting.CommonFields.Priority != "high" {
+		t.Errorf("Priority = %q, want %q", meeting.CommonFields.Priority, "high")
 	}
 }
 
