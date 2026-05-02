@@ -119,6 +119,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/health", s.handleHealth)
+	s.router.HandleFunc("/api/status", s.handleStatus)
 	s.router.HandleFunc("/api/add", s.handleAdd)
 	s.router.HandleFunc("/api/list", s.handleList)
 	s.router.HandleFunc("/api/complete/", s.handleComplete)

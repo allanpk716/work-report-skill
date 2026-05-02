@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"wr/internal/config"
 	"wr/internal/llm"
 	"wr/internal/models"
 	"wr/internal/pushover"
@@ -60,6 +62,98 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	jsonlResponse(w, "ok", map[string]interface{}{
 		"version": Version,
 	}, "")
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	// Daemon info
+	daemonInfo := map[string]interface{}{
+		"version": Version,
+		"status":  "running",
+		"pid":     0,
+		"port":    s.port,
+	}
+
+	// Read PID and compute uptime from state file
+	dir, err := DefaultStateDir()
+	if err == nil {
+		state, err := ReadState(dir)
+		if err == nil {
+			daemonInfo["pid"] = state.PID
+		}
+	}
+
+	// Config completeness
+	configInfo := s.buildConfigDiagnostics()
+
+	// Scheduler info
+	response := map[string]interface{}{
+		"daemon": daemonInfo,
+		"config": configInfo,
+	}
+
+	if s.scheduler != nil {
+		state := s.scheduler.State()
+		response["scheduler"] = map[string]interface{}{
+			"running":       true,
+			"entries_count": len(state.Entries),
+		}
+	}
+
+	jsonlResponse(w, "success", response, "")
+}
+
+// buildConfigDiagnostics returns a map describing config completeness with secrets redacted.
+func (s *Server) buildConfigDiagnostics() map[string]interface{} {
+	cfg := s.config
+	if cfg == nil {
+		return map[string]interface{}{
+			"exists": false,
+		}
+	}
+
+	// Check config file existence
+	configPath, _ := config.DefaultConfigPath()
+	configExists := false
+	if configPath != "" {
+		if _, err := os.Stat(configPath); err == nil {
+			configExists = true
+		}
+	}
+
+	// Check data dir accessibility
+	dataDirAccessible := false
+	if cfg.DataDir != "" {
+		if fi, err := os.Stat(cfg.DataDir); err == nil && fi.IsDir() {
+			dataDirAccessible = true
+		}
+	}
+
+	result := map[string]interface{}{
+		"exists": configExists,
+		"pushover": map[string]interface{}{
+			"configured": cfg.Pushover.APIToken != "" && cfg.Pushover.UserKey != "",
+		},
+		"llm": map[string]interface{}{
+			"text": map[string]interface{}{
+				"configured": cfg.LLM.Text.APIKey != "",
+			},
+			"vision": map[string]interface{}{
+				"configured": cfg.LLM.Vision.APIKey != "",
+			},
+		},
+		"data_dir": map[string]interface{}{
+			"path":       cfg.DataDir,
+			"accessible": dataDirAccessible,
+		},
+		"redacted": cfg.Redacted(),
+	}
+
+	return result
 }
 
 // addRequest is the JSON body expected by the add endpoint.

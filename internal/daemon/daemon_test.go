@@ -1705,3 +1705,194 @@ func TestReportPush_PushoverSendFail(t *testing.T) {
 	assertJSONLStatus(t, w.Body.Bytes(), "error")
 	assertJSONLCode(t, w.Body.Bytes(), "push_error")
 }
+
+// ── Status endpoint tests ──
+
+func TestHandleStatus(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(body), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", body)
+	}
+	if record["status"] != "success" {
+		t.Errorf("status field = %v, want success", record["status"])
+	}
+
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing or wrong type")
+	}
+
+	// Check daemon section
+	daemon, ok := data["daemon"].(map[string]interface{})
+	if !ok {
+		t.Fatal("daemon field missing")
+	}
+	if daemon["status"] != "running" {
+		t.Errorf("daemon.status = %v, want running", daemon["status"])
+	}
+	if daemon["version"] != Version {
+		t.Errorf("daemon.version = %v, want %s", daemon["version"], Version)
+	}
+
+	// Check config section
+	configSection, ok := data["config"].(map[string]interface{})
+	if !ok {
+		t.Fatal("config field missing")
+	}
+	configExists, _ := configSection["exists"].(bool)
+	// Config may or may not exist depending on test environment, but field must be present
+	_ = configExists
+}
+
+func TestHandleStatusWithConfig(t *testing.T) {
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "test-api-token-12345",
+			UserKey:  "test-user-key-67890",
+		},
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIKey: "test-text-key",
+				Model:  "test-model",
+			},
+			Vision: config.LLMProviderConfig{
+				APIKey: "test-vision-key",
+				Model:  "test-vision-model",
+			},
+		},
+		DataDir: os.TempDir(),
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", w.Body.Bytes())
+	}
+	data := record["data"].(map[string]interface{})
+	configSection := data["config"].(map[string]interface{})
+
+	// Pushover should be configured
+	pushoverInfo := configSection["pushover"].(map[string]interface{})
+	if pushoverInfo["configured"] != true {
+		t.Error("expected pushover configured=true")
+	}
+
+	// LLM text should be configured
+	llmInfo := configSection["llm"].(map[string]interface{})
+	textInfo := llmInfo["text"].(map[string]interface{})
+	if textInfo["configured"] != true {
+		t.Error("expected llm.text configured=true")
+	}
+
+	// LLM vision should be configured
+	visionInfo := llmInfo["vision"].(map[string]interface{})
+	if visionInfo["configured"] != true {
+		t.Error("expected llm.vision configured=true")
+	}
+
+	// Data dir should be accessible
+	dataDirInfo := configSection["data_dir"].(map[string]interface{})
+	if dataDirInfo["accessible"] != true {
+		t.Errorf("expected data_dir accessible=true, got %v", dataDirInfo["accessible"])
+	}
+
+	// Redacted config should be present
+	redacted, ok := configSection["redacted"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected redacted config field")
+	}
+	// Verify secrets are redacted — should not contain raw API keys
+	redactedJSON, _ := json.Marshal(redacted)
+	redactedStr := string(redactedJSON)
+	if strings.Contains(redactedStr, "test-api-token-12345") {
+		t.Error("pushover api_token should be redacted")
+	}
+	if strings.Contains(redactedStr, "test-user-key-67890") {
+		t.Error("pushover user_key should be redacted")
+	}
+	if strings.Contains(redactedStr, "test-text-key") {
+		t.Error("llm.text api_key should be redacted")
+	}
+	if strings.Contains(redactedStr, "test-vision-key") {
+		t.Error("llm.vision api_key should be redacted")
+	}
+}
+
+func TestHandleStatusWithScheduler(t *testing.T) {
+	srv, _, _ := newTestServerWithScheduler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	schedInfo, ok := data["scheduler"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected scheduler field in status response")
+	}
+	if schedInfo["running"] != true {
+		t.Error("expected scheduler running=true")
+	}
+	entriesCount, _ := schedInfo["entries_count"].(float64)
+	if entriesCount != 0 {
+		t.Errorf("expected 0 scheduler entries, got %v", entriesCount)
+	}
+}
+
+func TestHandleStatusWrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+}
+
+func TestHandleStatusEmptyConfig(t *testing.T) {
+	// newTestServer creates a zero Config when none provided — not nil.
+	// Verify status still returns valid output with nothing configured.
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	configSection := data["config"].(map[string]interface{})
+
+	// Empty config — pushover/LLM should not be configured
+	pushoverInfo := configSection["pushover"].(map[string]interface{})
+	if pushoverInfo["configured"] != false {
+		t.Errorf("expected pushover configured=false for empty config")
+	}
+	llmInfo := configSection["llm"].(map[string]interface{})
+	textInfo := llmInfo["text"].(map[string]interface{})
+	if textInfo["configured"] != false {
+		t.Errorf("expected llm.text configured=false for empty config")
+	}
+}
