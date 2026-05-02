@@ -223,6 +223,13 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[daemon] add: short_id=%s type=%s title=%q source=%s", cf.ShortID, cf.Type, cf.Title, source)
 
+	// Register with scheduler if present
+	if s.scheduler != nil {
+		if err := s.scheduler.Register(result); err != nil {
+			log.Printf("[daemon] scheduler register warning: short_id=%s err=%v", cf.ShortID, err)
+		}
+	}
+
 	jsonlResponse(w, "success", result, "")
 }
 
@@ -376,6 +383,13 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Unregister from scheduler if present
+	if s.scheduler != nil {
+		if err := s.scheduler.Unregister(id); err != nil {
+			log.Printf("[daemon] scheduler unregister warning: short_id=%s err=%v", id, err)
+		}
+	}
+
 	// Read back the completed record for response
 	rec, _, err := s.storage.GetByID(id)
 	if err != nil {
@@ -410,6 +424,13 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, "storage_error", err.Error())
 		}
 		return
+	}
+
+	// Unregister from scheduler if present
+	if s.scheduler != nil {
+		if err := s.scheduler.Unregister(id); err != nil {
+			log.Printf("[daemon] scheduler unregister warning: short_id=%s err=%v", id, err)
+		}
 	}
 
 	// Read back the cancelled record for response

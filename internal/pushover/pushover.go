@@ -94,6 +94,18 @@ func doSend(ctx context.Context, cfg Config, message, title string, priority int
 	return nil
 }
 
+// Client is a thin wrapper around the package-level Send function.
+// It satisfies the scheduler.PushoverSender interface via its Send method.
+type Client struct{}
+
+// NewClient returns a new Pushover client.
+func NewClient() *Client { return &Client{} }
+
+// Send delegates to the package-level Send function.
+func (c *Client) Send(ctx context.Context, cfg Config, message, title string, priority int) error {
+	return Send(ctx, cfg, message, title, priority)
+}
+
 // NoopLogger returns a logger that discards all output, useful in tests.
 func NoopLogger() *log.Logger {
 	return log.New(io.Discard, "", 0)

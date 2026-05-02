@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wr/internal/config"
+	"wr/internal/scheduler"
 	"wr/internal/storage"
 )
 
@@ -18,11 +19,12 @@ const DefaultPort = 17530
 
 // Server is the HTTP daemon server.
 type Server struct {
-	port    int
-	router  *http.ServeMux
-	http    *http.Server
-	storage *storage.Storage
-	config  *config.Config
+	port      int
+	router    *http.ServeMux
+	http      *http.Server
+	storage   *storage.Storage
+	config    *config.Config
+	scheduler *scheduler.Scheduler
 }
 
 // NewServer creates a new daemon server bound to the given port with storage.
@@ -40,6 +42,16 @@ func NewServer(port int, store *storage.Storage, cfg *config.Config) *Server {
 // Storage returns the server's storage instance.
 func (s *Server) Storage() *storage.Storage {
 	return s.storage
+}
+
+// SetScheduler sets the scheduler instance for the server. Nil-safe.
+func (s *Server) SetScheduler(sched *scheduler.Scheduler) {
+	s.scheduler = sched
+}
+
+// Scheduler returns the server's scheduler instance (may be nil).
+func (s *Server) Scheduler() *scheduler.Scheduler {
+	return s.scheduler
 }
 
 // Port returns the port the server is configured to listen on.

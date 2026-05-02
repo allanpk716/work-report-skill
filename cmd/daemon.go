@@ -11,6 +11,8 @@ import (
 	"wr/internal/config"
 	"wr/internal/daemon"
 	"wr/internal/jsonl"
+	"wr/internal/pushover"
+	"wr/internal/scheduler"
 	"wr/internal/storage"
 
 	"github.com/spf13/cobra"
@@ -44,6 +46,15 @@ var daemonStartCmd = &cobra.Command{
 
 		srv := daemon.NewServer(port, store, cfg)
 
+		// Create and configure scheduler for pushover notifications
+		pushoverClient := pushover.NewClient()
+		statePath, err := scheduler.DefaultStatePath()
+		if err != nil {
+			return jsonl.Error(fmt.Sprintf("cannot determine scheduler state path: %v", err))
+		}
+		sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, log.New(os.Stderr, "[scheduler] ", log.LstdFlags))
+		srv.SetScheduler(sched)
+
 		dir, err := daemon.DefaultStateDir()
 		if err != nil {
 			return jsonl.Error(fmt.Sprintf("cannot create state dir: %v", err))
@@ -65,12 +76,19 @@ var daemonStartCmd = &cobra.Command{
 			_ = daemon.RemoveState(dir)
 		}()
 
+		// Start scheduler
+		if err := sched.Start(); err != nil {
+			log.Printf("[daemon] scheduler start warning: %v", err)
+		}
+		defer sched.Stop()
+
 		// Handle signals
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		go func() {
 			<-sigCh
 			fmt.Fprintf(os.Stderr, "[daemon] shutting down...\n")
+			sched.Stop()
 			cancel()
 		}()
 
@@ -82,4 +100,14 @@ var daemonStartCmd = &cobra.Command{
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
 	rootCmd.AddCommand(daemonCmd)
+}
+
+// pushoverBridge adapts a *pushover.Client to the scheduler.PushoverSender
+// interface by converting scheduler.PushoverConfig to pushover.Config.
+type pushoverBridge struct {
+	client *pushover.Client
+}
+
+func (b *pushoverBridge) Send(ctx context.Context, cfg scheduler.PushoverConfig, message, title string, priority int) error {
+	return b.client.Send(ctx, pushover.Config{APIToken: cfg.APIToken, UserKey: cfg.UserKey}, message, title, priority)
 }

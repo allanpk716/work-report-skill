@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,9 +13,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"wr/internal/config"
 	"wr/internal/llm"
+	"wr/internal/scheduler"
 	"wr/internal/storage"
 )
 
@@ -1280,4 +1283,214 @@ func TestAddEndpoint_ImageWinsOverText(t *testing.T) {
 	if data["type"] != "task" {
 		t.Errorf("expected type task, got %v", data["type"])
 	}
+}
+
+// ── Scheduler integration tests ──
+
+// mockPushSender is a test double for scheduler.PushoverSender.
+type mockPushSender struct {
+	calls []string
+}
+
+func (m *mockPushSender) Send(_ context.Context, _ scheduler.PushoverConfig, message, title string, priority int) error {
+	m.calls = append(m.calls, message)
+	return nil
+}
+
+// newTestServerWithScheduler creates a Server with a real scheduler backed by
+// a mock pushover sender. The scheduler state is stored in a temp directory.
+func newTestServerWithScheduler(t *testing.T) (*Server, *mockPushSender, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	// Use a far-future timezone so entries don't trigger during the test
+	cfg := &config.Config{
+		Timezone: "UTC",
+	}
+
+	mockPush := &mockPushSender{}
+	statePath := filepath.Join(dir, "scheduler-state.json")
+	sched := scheduler.NewScheduler(cfg, mockPush, statePath, log.New(io.Discard, "", 0))
+	if err := sched.Start(); err != nil {
+		t.Fatalf("scheduler start: %v", err)
+	}
+	t.Cleanup(func() { sched.Stop() })
+
+	srv := NewServer(0, store, cfg)
+	srv.SetScheduler(sched)
+	return srv, mockPush, dir
+}
+
+func TestDaemon_Add_TriggersScheduler(t *testing.T) {
+	srv, _, _ := newTestServerWithScheduler(t)
+
+	// Add a reminder with date/time far in the future
+	futureDate := time.Now().Add(24 * time.Hour).Format("2006-01-02")
+	body := strings.NewReader(fmt.Sprintf(
+		`{"type":"reminder","title":"test reminder","date":"%s","time":"23:59","remind_before":"15m","recurring":""}`,
+		futureDate,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify the scheduler has a registered entry
+	state := srv.scheduler.State()
+	if len(state.Entries) != 1 {
+		t.Fatalf("expected 1 scheduler entry, got %d", len(state.Entries))
+	}
+
+	// Verify the entry details
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	data := addResp["data"].(map[string]interface{})
+	shortID := data["short_id"].(string)
+
+	entry := state.GetEntry(shortID)
+	if entry == nil {
+		t.Fatal("scheduler entry not found for short_id")
+	}
+	if entry.RecordType != "reminder" {
+		t.Errorf("expected record_type=reminder, got %s", entry.RecordType)
+	}
+	if entry.Title != "test reminder" {
+		t.Errorf("expected title='test reminder', got %s", entry.Title)
+	}
+}
+
+func TestDaemon_Complete_UnregistersScheduler(t *testing.T) {
+	srv, _, _ := newTestServerWithScheduler(t)
+
+	// Add a reminder
+	futureDate := time.Now().Add(24 * time.Hour).Format("2006-01-02")
+	body := strings.NewReader(fmt.Sprintf(
+		`{"type":"reminder","title":"complete test","date":"%s","time":"23:59","remind_before":"15m"}`,
+		futureDate,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Verify it was registered
+	state := srv.scheduler.State()
+	if len(state.Entries) != 1 {
+		t.Fatalf("expected 1 entry after add, got %d", len(state.Entries))
+	}
+
+	// Complete the record
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify the entry was unregistered
+	state = srv.scheduler.State()
+	if len(state.Entries) != 0 {
+		t.Errorf("expected 0 entries after complete, got %d", len(state.Entries))
+	}
+}
+
+func TestDaemon_Cancel_UnregistersScheduler(t *testing.T) {
+	srv, _, _ := newTestServerWithScheduler(t)
+
+	// Add a reminder
+	futureDate := time.Now().Add(24 * time.Hour).Format("2006-01-02")
+	body := strings.NewReader(fmt.Sprintf(
+		`{"type":"reminder","title":"cancel test","date":"%s","time":"23:59","remind_before":"15m"}`,
+		futureDate,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Verify it was registered
+	state := srv.scheduler.State()
+	if len(state.Entries) != 1 {
+		t.Fatalf("expected 1 entry after add, got %d", len(state.Entries))
+	}
+
+	// Cancel the record
+	req = httptest.NewRequest(http.MethodPost, "/api/cancel/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify the entry was unregistered
+	state = srv.scheduler.State()
+	if len(state.Entries) != 0 {
+		t.Errorf("expected 0 entries after cancel, got %d", len(state.Entries))
+	}
+}
+
+func TestDaemon_Add_NonReminder_NoSchedulerEntry(t *testing.T) {
+	srv, _, _ := newTestServerWithScheduler(t)
+
+	// Add a log record (no remind_before, not reminder type)
+	body := strings.NewReader(`{"type":"log","title":"just a log","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify no scheduler entry was created (log without remind_before is skipped)
+	state := srv.scheduler.State()
+	if len(state.Entries) != 0 {
+		t.Errorf("expected 0 scheduler entries for log type, got %d", len(state.Entries))
+	}
+}
+
+func TestDaemon_Add_NilScheduler_NoPanic(t *testing.T) {
+	// Server with nil scheduler — should not panic
+	srv, _ := newTestServer(t)
+
+	body := strings.NewReader(`{"type":"reminder","title":"no scheduler","date":"2026-05-02","time":"15:00","remind_before":"15m"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+}
+
+func TestDaemon_Complete_NilScheduler_NoPanic(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a record first
+	addBody := strings.NewReader(`{"type":"task","title":"test","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Complete with nil scheduler — should not panic
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
 }
