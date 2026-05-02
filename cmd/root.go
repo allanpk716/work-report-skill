@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -22,9 +21,10 @@ func init() {
 }
 
 // Execute runs the root command.
+// Errors are written as JSONL to stdout by the command handlers.
+// No stderr output — the JSONL-only contract forbids it.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

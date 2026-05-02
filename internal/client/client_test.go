@@ -154,7 +154,7 @@ func callDaemonWithDir(w io.Writer, dir, method, path string, body io.Reader) er
 		req, err = http.NewRequest(method, url, nil)
 	}
 	if err != nil {
-		return writeDaemonError(w, "create request failed: %v", err)
+		return writeDaemonError(w, "daemon not running: %v", err)
 	}
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
@@ -162,7 +162,7 @@ func callDaemonWithDir(w io.Writer, dir, method, path string, body io.Reader) er
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return writeDaemonError(w, "daemon request failed: %v", err)
+		return writeDaemonError(w, "daemon not running: daemon unreachable at port %d", state.Port)
 	}
 	defer resp.Body.Close()
 
