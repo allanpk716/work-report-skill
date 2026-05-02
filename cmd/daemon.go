@@ -11,6 +11,7 @@ import (
 	"wr/internal/config"
 	"wr/internal/daemon"
 	"wr/internal/jsonl"
+	"wr/internal/models"
 	"wr/internal/pushover"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
@@ -81,6 +82,40 @@ var daemonStartCmd = &cobra.Command{
 			log.Printf("[daemon] scheduler start warning: %v", err)
 		}
 		defer sched.Stop()
+
+		// Catch up missed reminders after restart
+		catchUpRecords, err := store.ListFullRecords(storage.ListOptions{
+			RecordType: models.TypeReminder,
+		})
+		if err != nil {
+			log.Printf("[daemon] catchup: failed to list reminders: %v", err)
+		} else {
+			// Also include tasks/meetings with remind_before
+			remindable, err := store.ListFullRecords(storage.ListOptions{})
+			if err != nil {
+				log.Printf("[daemon] catchup: failed to list all records: %v", err)
+			} else {
+				// Filter to only those with remind_before or type=reminder
+				var filtered []interface{}
+				for _, rec := range remindable {
+					cf := models.GetCommonFields(rec)
+					if cf != nil && (cf.Type == models.TypeReminder || cf.RemindBefore != "") {
+						if cf.Status != models.StatusCompleted && cf.Status != models.StatusCancelled {
+							filtered = append(filtered, rec)
+						}
+					}
+				}
+				catchUpRecords = filtered
+			}
+
+			result, err := sched.CatchUp(catchUpRecords)
+			if err != nil {
+				log.Printf("[daemon] catchup error: %v", err)
+			} else {
+				log.Printf("[daemon] catchup: scanned=%d fired=%d errors=%d",
+					result.Scanned, result.Fired, result.Errors)
+			}
+		}
 
 		// Handle signals
 		sigCh := make(chan os.Signal, 1)

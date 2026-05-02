@@ -85,9 +85,10 @@ func CallDaemonPost(w io.Writer, path string, payload interface{}) error {
 func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
 	record := map[string]interface{}{
-		"status":  "error",
-		"code":    "daemon_not_running",
-		"message": msg,
+		"status":     "error",
+		"code":       "daemon_not_running",
+		"message":    msg,
+		"suggestion": "Run 'wr daemon start' to start the daemon, then retry your command.",
 	}
 	b, _ := json.Marshal(record)
 	fmt.Fprintf(w, "%s\n", b)

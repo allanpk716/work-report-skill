@@ -99,6 +99,9 @@ func TestDaemonNotRunningError(t *testing.T) {
 	if record["code"] != "daemon_not_running" {
 		t.Errorf("code = %v, want daemon_not_running", record["code"])
 	}
+	if suggestion, ok := record["suggestion"].(string); !ok || suggestion == "" {
+		t.Error("suggestion field is missing or empty, want non-empty actionable guidance")
+	}
 }
 
 func TestDaemonUnreachableError(t *testing.T) {
@@ -122,6 +125,9 @@ func TestDaemonUnreachableError(t *testing.T) {
 	if record["code"] != "daemon_not_running" {
 		t.Errorf("code = %v, want daemon_not_running", record["code"])
 	}
+	if suggestion, ok := record["suggestion"].(string); !ok || suggestion == "" {
+		t.Error("suggestion field is missing or empty, want non-empty actionable guidance")
+	}
 }
 
 func TestDaemonCorruptStateNotRunning(t *testing.T) {
@@ -140,6 +146,9 @@ func TestDaemonCorruptStateNotRunning(t *testing.T) {
 	}
 	if record["code"] != "daemon_not_running" {
 		t.Errorf("code = %v, want daemon_not_running", record["code"])
+	}
+	if suggestion, ok := record["suggestion"].(string); !ok || suggestion == "" {
+		t.Error("suggestion field is missing or empty, want non-empty actionable guidance")
 	}
 }
 

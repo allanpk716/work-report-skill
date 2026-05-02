@@ -602,6 +602,28 @@ func ReadRecordFile(path string) (interface{}, error) {
 	return rec, nil
 }
 
+// ListFullRecords returns full parsed records (not just ListedRecord summaries)
+// matching the given options. Useful when callers need type-specific fields
+// (e.g., remind_before, recurring) that ListedRecord doesn't carry.
+func (s *Storage) ListFullRecords(opts ListOptions) ([]interface{}, error) {
+	// Use ListRecords to find matching files, then read full records
+	listed, err := s.ListRecords(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []interface{}
+	for _, lr := range listed {
+		rec, err := s.readFile(lr.FilePath)
+		if err != nil {
+			s.logger.Printf("warning: ListFullRecords skip %s: %v", lr.FilePath, err)
+			continue
+		}
+		results = append(results, rec)
+	}
+	return results, nil
+}
+
 // MarshalToJSON is a convenience function that marshals a record to indented
 // JSON without exposing internal models package details.
 func MarshalToJSON(rec interface{}) ([]byte, error) {
