@@ -24,9 +24,11 @@ type chatRequest struct {
 }
 
 // chatMessage is a single message in the chat completions request.
+// Content may be a plain string (text-only) or an array of content parts
+// (multimodal: text + image_url).
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"`
 }
 
 // chatResponse is the response body from the OpenAI chat completions endpoint.
