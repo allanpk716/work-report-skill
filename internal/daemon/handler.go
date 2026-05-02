@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"wr/internal/llm"
 	"wr/internal/models"
 	"wr/internal/storage"
 )
@@ -71,6 +72,7 @@ type addRequest struct {
 	Priority      string   `json:"priority,omitempty"`
 	RemindBefore  string   `json:"remind_before,omitempty"`
 	Recurring     string   `json:"recurring,omitempty"`
+	Text          string   `json:"text,omitempty"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +85,57 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, "invalid_body", "invalid request body")
 		return
+	}
+
+	// If text is provided and type is not specified, use LLM classification
+	usedLLM := false
+	if req.Text != "" && req.Type == "" {
+		result, err := s.classifyText(w, req.Text)
+		if err != nil {
+			return // error already written by classifyText
+		}
+
+		// cancel_or_update is informational — don't create a record
+		if result.Type == "cancel_or_update" {
+			jsonlResponse(w, "info", map[string]interface{}{
+				"action":     "cancel_or_update",
+				"classification": result,
+			}, "")
+			return
+		}
+
+		// Populate request fields from classification result
+		req.Type = result.Type
+		if req.Title == "" {
+			req.Title = result.Title
+		}
+		if req.Date == "" {
+			req.Date = result.Date
+		}
+		if req.Time == "" {
+			req.Time = result.Time
+		}
+		if req.Description == "" {
+			req.Description = result.Description
+		}
+		if req.Location == "" {
+			req.Location = result.Location
+		}
+		if req.RelatedPerson == "" {
+			req.RelatedPerson = result.RelatedPerson
+		}
+		if req.Priority == "" {
+			req.Priority = result.Priority
+		}
+		if req.RemindBefore == "" {
+			req.RemindBefore = result.RemindBefore
+		}
+		if req.Recurring == "" {
+			req.Recurring = result.Recurring
+		}
+
+		log.Printf("[daemon] add: source=llm type=%s title=%q", req.Type, req.Title)
+		usedLLM = true
 	}
 
 	// Validate required fields
@@ -115,9 +168,37 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cf := models.GetCommonFields(result)
-	log.Printf("[daemon] add: short_id=%s type=%s title=%q", cf.ShortID, cf.Type, cf.Title)
+	source := "manual"
+	if usedLLM {
+		source = "llm"
+	}
+	log.Printf("[daemon] add: short_id=%s type=%s title=%q source=%s", cf.ShortID, cf.Type, cf.Title, source)
 
 	jsonlResponse(w, "success", result, "")
+}
+
+// classifyText performs LLM classification on the given text.
+// It writes an error response and returns a nil result on failure.
+func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.ClassifyResult, error) {
+	cfg := s.config
+	if cfg == nil || cfg.LLM.Text.APIKey == "" {
+		errorResponse(w, "llm_not_configured", "LLM text classification is not configured (missing api_key in llm.text)")
+		return nil, fmt.Errorf("llm not configured")
+	}
+
+	loc := cfg.Location()
+	today := time.Now().In(loc)
+
+	client := llm.NewClient(cfg.LLM.Text.APIBase, cfg.LLM.Text.APIKey, cfg.LLM.Text.Model)
+	result, err := llm.Classify(client, text, today, loc)
+	if err != nil {
+		log.Printf("[daemon] classify error: api_base=%s model=%s error=%v",
+			cfg.LLM.Text.APIBase, cfg.LLM.Text.Model, err)
+		errorResponse(w, "llm_error", fmt.Sprintf("LLM classification failed: %v", err))
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // buildRecord creates the correct typed record struct from an addRequest.

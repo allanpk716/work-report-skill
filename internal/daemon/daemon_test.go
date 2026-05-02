@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,15 +13,24 @@ import (
 	"strings"
 	"testing"
 
+	"wr/internal/config"
+	"wr/internal/llm"
 	"wr/internal/storage"
 )
 
 // newTestServer creates a Server backed by a temp directory for storage.
-func newTestServer(t *testing.T) (*Server, string) {
+// If cfg is nil, a minimal config is created.
+func newTestServer(t *testing.T, cfg ...*config.Config) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	store := storage.New(dir, log.New(io.Discard, "", 0))
-	srv := NewServer(0, store)
+	var c *config.Config
+	if len(cfg) > 0 && cfg[0] != nil {
+		c = cfg[0]
+	} else {
+		c = &config.Config{}
+	}
+	srv := NewServer(0, store, c)
 	return srv, dir
 }
 
@@ -615,5 +625,244 @@ func assertJSONLCode(t *testing.T, body []byte, wantCode string) {
 	}
 	if record["code"] != wantCode {
 		t.Errorf("code = %v, want %s; body=%s", record["code"], wantCode, body)
+	}
+}
+
+// ── LLM text classification tests ──
+
+// mockLLMServer creates an httptest.Server that simulates the OpenAI chat completions API.
+// The handler receives the classification result to return as JSON.
+func mockLLMServer(t *testing.T, classifyResult llm.ClassifyResult) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify it's a chat completions request
+		if r.URL.Path != "/chat/completions" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		b, _ := json.Marshal(classifyResult)
+		// Wrap in OpenAI chat completions response format
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"content": string(b),
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+// mockLLMErrorServer creates a server that returns an error HTTP status.
+func mockLLMErrorServer(t *testing.T, statusCode int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(statusCode)
+		fmt.Fprintf(w, `{"error":{"message":"test error","type":"server_error","code":"%d"}}`, statusCode)
+	}))
+}
+
+func TestAddEndpoint_TextClassification(t *testing.T) {
+	// Create a mock LLM server
+	mockServer := mockLLMServer(t, llm.ClassifyResult{
+		Type:  "meeting",
+		Title: "项目评审会",
+		Date:  "2026-05-03",
+		Time:  "15:00",
+	})
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"明天下午3点项目评审会"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	assertJSONLStatus(t, respBody, "success")
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", respBody)
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["type"] != "meeting" {
+		t.Errorf("expected type meeting, got %v", data["type"])
+	}
+	if data["title"] != "项目评审会" {
+		t.Errorf("expected title 项目评审会, got %v", data["title"])
+	}
+	if data["date"] != "2026-05-03" {
+		t.Errorf("expected date 2026-05-03, got %v", data["date"])
+	}
+}
+
+func TestAddEndpoint_TextCancelOrUpdate(t *testing.T) {
+	mockServer := mockLLMServer(t, llm.ClassifyResult{
+		Type:     "cancel_or_update",
+		Title:    "取消明天下午的会议",
+		TargetID: "abc12345",
+	})
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"取消明天下午的会议 abc12345"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	assertJSONLStatus(t, respBody, "info")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(respBody), &record)
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	action, _ := data["action"].(string)
+	if action != "cancel_or_update" {
+		t.Errorf("expected action cancel_or_update, got %q", action)
+	}
+	classification, _ := data["classification"].(map[string]interface{})
+	if classification["type"] != "cancel_or_update" {
+		t.Errorf("expected classification type cancel_or_update, got %v", classification["type"])
+	}
+}
+
+func TestAddEndpoint_TextLLMNotConfigured(t *testing.T) {
+	// Config with no LLM api_key
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: "",
+				APIKey:  "",
+				Model:   "",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"明天下午3点项目评审会"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "llm_not_configured")
+}
+
+func TestAddEndpoint_TextLLMError(t *testing.T) {
+	// Server that returns 500 error
+	mockServer := mockLLMErrorServer(t, http.StatusInternalServerError)
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"明天下午3点项目评审会"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "llm_error")
+}
+
+func TestAddEndpoint_TextWithExplicitType_NoLLMCall(t *testing.T) {
+	// When both text and type are provided, explicit type should win
+	// (no LLM call needed — verify the mock server is never called by not starting one)
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: "http://127.0.0.1:0", // unreachable
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"明天下午3点项目评审会","type":"task","title":"manual task","date":"2026-05-03"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	// Explicit type should be used, not LLM
+	if data["type"] != "task" {
+		t.Errorf("expected type task, got %v", data["type"])
+	}
+	if data["title"] != "manual task" {
+		t.Errorf("expected title 'manual task', got %v", data["title"])
+	}
+}
+
+func TestAddEndpoint_NormalAddStillWorks(t *testing.T) {
+	// Ensure the existing explicit add flow is unchanged
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"type":"meeting","title":"normal add","date":"2026-05-02","time":"15:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["type"] != "meeting" {
+		t.Errorf("expected type meeting, got %v", data["type"])
 	}
 }

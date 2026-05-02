@@ -42,7 +42,7 @@ var daemonStartCmd = &cobra.Command{
 		// Create storage layer
 		store := storage.New(dataDir, log.New(os.Stderr, "[storage] ", log.LstdFlags))
 
-		srv := daemon.NewServer(port, store)
+		srv := daemon.NewServer(port, store, cfg)
 
 		dir, err := daemon.DefaultStateDir()
 		if err != nil {

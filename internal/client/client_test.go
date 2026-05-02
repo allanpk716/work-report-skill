@@ -22,7 +22,7 @@ func newTestDaemonServer(t *testing.T) *daemon.Server {
 	t.Helper()
 	dir := t.TempDir()
 	store := storage.New(dir, log.New(io.Discard, "", 0))
-	return daemon.NewServer(0, store)
+	return daemon.NewServer(0, store, nil)
 }
 
 func TestCallDaemonGetWithServer(t *testing.T) {

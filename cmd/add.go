@@ -14,6 +14,7 @@ var (
 	addDate          string
 	addTime          string
 	addImage         string
+	addText          string
 	addDescription   string
 	addTags          string
 	addLocation      string
@@ -37,6 +38,9 @@ var addCmd = &cobra.Command{
 		}
 		if addImage != "" {
 			payload["image"] = addImage
+		}
+		if addText != "" {
+			payload["text"] = addText
 		}
 		if addDescription != "" {
 			payload["description"] = addDescription
@@ -96,6 +100,7 @@ func init() {
 	addCmd.Flags().StringVar(&addTitle, "title", "", "Entry title")
 	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD)")
 	addCmd.Flags().StringVar(&addTime, "time", "", "Time (HH:MM)")
+	addCmd.Flags().StringVar(&addText, "text", "", "Natural language text for LLM classification (type/title/date become optional)")
 	addCmd.Flags().StringVar(&addImage, "image", "", "Image path")
 	addCmd.Flags().StringVar(&addDescription, "description", "", "Description")
 	addCmd.Flags().StringVar(&addTags, "tags", "", "Comma-separated tags")

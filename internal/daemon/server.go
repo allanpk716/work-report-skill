@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"wr/internal/config"
 	"wr/internal/storage"
 )
 
@@ -21,14 +22,16 @@ type Server struct {
 	router  *http.ServeMux
 	http    *http.Server
 	storage *storage.Storage
+	config  *config.Config
 }
 
 // NewServer creates a new daemon server bound to the given port with storage.
-func NewServer(port int, store *storage.Storage) *Server {
+func NewServer(port int, store *storage.Storage, cfg *config.Config) *Server {
 	s := &Server{
 		port:    port,
 		router:  http.NewServeMux(),
 		storage: store,
+		config:  cfg,
 	}
 	s.registerRoutes()
 	return s
@@ -42,6 +45,11 @@ func (s *Server) Storage() *storage.Storage {
 // Port returns the port the server is configured to listen on.
 func (s *Server) Port() int {
 	return s.port
+}
+
+// Config returns the server's configuration.
+func (s *Server) Config() *config.Config {
+	return s.config
 }
 
 // Router returns the underlying HTTP handler for testing.
