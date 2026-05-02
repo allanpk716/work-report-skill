@@ -9,25 +9,34 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"wr/internal/storage"
 )
 
 const DefaultPort = 17530
 
 // Server is the HTTP daemon server.
 type Server struct {
-	port   int
-	router *http.ServeMux
-	http   *http.Server
+	port    int
+	router  *http.ServeMux
+	http    *http.Server
+	storage *storage.Storage
 }
 
-// NewServer creates a new daemon server bound to the given port.
-func NewServer(port int) *Server {
+// NewServer creates a new daemon server bound to the given port with storage.
+func NewServer(port int, store *storage.Storage) *Server {
 	s := &Server{
-		port:   port,
-		router: http.NewServeMux(),
+		port:    port,
+		router:  http.NewServeMux(),
+		storage: store,
 	}
 	s.registerRoutes()
 	return s
+}
+
+// Storage returns the server's storage instance.
+func (s *Server) Storage() *storage.Storage {
+	return s.storage
 }
 
 // Port returns the port the server is configured to listen on.

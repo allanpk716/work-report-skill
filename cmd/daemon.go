@@ -3,12 +3,15 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"wr/internal/config"
 	"wr/internal/daemon"
 	"wr/internal/jsonl"
+	"wr/internal/storage"
 
 	"github.com/spf13/cobra"
 )
@@ -22,8 +25,24 @@ var daemonStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the wr daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		port := daemon.DefaultPort
-		srv := daemon.NewServer(port)
+		// Load config
+		cfg, err := config.LoadDefault()
+		if err != nil {
+			return jsonl.Error(fmt.Sprintf("config error: %v", err))
+		}
+
+		port := cfg.Daemon.Port
+		dataDir := cfg.DataDir
+
+		// Ensure work-records directory exists
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
+			return jsonl.Error(fmt.Sprintf("cannot create data dir %s: %v", dataDir, err))
+		}
+
+		// Create storage layer
+		store := storage.New(dataDir, log.New(os.Stderr, "[storage] ", log.LstdFlags))
+
+		srv := daemon.NewServer(port, store)
 
 		dir, err := daemon.DefaultStateDir()
 		if err != nil {
@@ -55,7 +74,7 @@ var daemonStartCmd = &cobra.Command{
 			cancel()
 		}()
 
-		fmt.Fprintf(os.Stderr, "[daemon] starting on port %d (pid=%d)\n", port, os.Getpid())
+		fmt.Fprintf(os.Stderr, "[daemon] starting on port %d (pid=%d) data_dir=%s\n", port, os.Getpid(), dataDir)
 		return srv.Start(ctx, nil)
 	},
 }

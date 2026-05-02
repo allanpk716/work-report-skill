@@ -4,13 +4,25 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"wr/internal/storage"
 )
+
+// newTestServer creates a Server backed by a temp directory for storage.
+func newTestServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+	srv := NewServer(0, store)
+	return srv, dir
+}
 
 // ── State file tests ──
 
@@ -154,10 +166,10 @@ func TestStatePathHelpers(t *testing.T) {
 	}
 }
 
-// ── Handler tests ──
+// ── Handler tests (storage-backed) ──
 
 func TestHealthEndpoint(t *testing.T) {
-	srv := NewServer(0)
+	srv, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
@@ -186,71 +198,288 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestAddEndpoint(t *testing.T) {
-	srv := NewServer(0)
+	srv, dir := newTestServer(t)
+	body := strings.NewReader(`{"type":"meeting","title":"test meeting","date":"2026-05-02","time":"15:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	assertJSONLStatus(t, respBody, "success")
+
+	// Verify record was persisted
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", respBody)
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	shortID, _ := data["short_id"].(string)
+	if shortID == "" {
+		t.Error("expected short_id to be populated")
+	}
+
+	// Verify file was written
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "02")
+	files, err := os.ReadDir(meetingsDir)
+	if err != nil {
+		t.Fatalf("meetings dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected at least one meeting file to be written")
+	}
+}
+
+func TestAddEndpointInvalidType(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"type":"invalid","title":"test","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_type")
+}
+
+func TestAddEndpointMissingTitle(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"type":"meeting","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestAddEndpointMissingDate(t *testing.T) {
+	srv, _ := newTestServer(t)
 	body := strings.NewReader(`{"type":"meeting","title":"test"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
-	if w.Result().StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Result().StatusCode)
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestAddEndpointAllTypes(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for _, typ := range []string{"meeting", "task", "reminder", "log"} {
+		body := strings.NewReader(
+			`{"type":"` + typ + `","title":"test ` + typ + `","date":"2026-05-02"}`,
+		)
+		req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.router.ServeHTTP(w, req)
+
+		assertJSONLStatus(t, w.Body.Bytes(), "success")
 	}
+}
+
+func TestAddEndpointWithTags(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"type":"task","title":"tagged task","date":"2026-05-02","tags":["urgent","review"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
 	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	tags, _ := data["tags"].([]interface{})
+	if len(tags) != 2 {
+		t.Errorf("expected 2 tags, got %d", len(tags))
+	}
 }
 
 func TestListEndpoint(t *testing.T) {
-	srv := NewServer(0)
-	req := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2024-01-01", nil)
+	srv, _ := newTestServer(t)
+
+	// Add a record first
+	addBody := strings.NewReader(`{"type":"meeting","title":"list test","date":"2026-05-02","time":"10:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// List records
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-05-02", nil)
+	w = httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("status = %d", w.Result().StatusCode)
 	}
 	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	entries, _ := data["entries"].([]interface{})
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(entries))
+	}
+}
+
+func TestListEndpointEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	entries, _ := data["entries"].([]interface{})
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries for empty storage, got %d", len(entries))
+	}
 }
 
 func TestCompleteEndpoint(t *testing.T) {
-	srv := NewServer(0)
-	req := httptest.NewRequest(http.MethodPost, "/api/complete/abc123", nil)
+	srv, _ := newTestServer(t)
+
+	// Add a task
+	addBody := strings.NewReader(`{"type":"task","title":"complete test","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
-	if w.Result().StatusCode != http.StatusOK {
-		t.Errorf("status = %d", w.Result().StatusCode)
-	}
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Complete it
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
 	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var compResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &compResp)
+	compData := compResp["data"].(map[string]interface{})
+	status, _ := compData["status"].(string)
+	if status != "completed" {
+		t.Errorf("expected status=completed, got %s", status)
+	}
+}
+
+func TestCompleteEndpointNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/complete/nonexist", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
 }
 
 func TestCancelEndpoint(t *testing.T) {
-	srv := NewServer(0)
-	req := httptest.NewRequest(http.MethodPost, "/api/cancel/abc123", nil)
+	srv, _ := newTestServer(t)
+
+	// Add a task
+	addBody := strings.NewReader(`{"type":"task","title":"cancel test","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
-	if w.Result().StatusCode != http.StatusOK {
-		t.Errorf("status = %d", w.Result().StatusCode)
-	}
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Cancel it
+	req = httptest.NewRequest(http.MethodPost, "/api/cancel/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
 	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var cancelResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &cancelResp)
+	cancelData := cancelResp["data"].(map[string]interface{})
+	status, _ := cancelData["status"].(string)
+	if status != "cancelled" {
+		t.Errorf("expected status=cancelled, got %s", status)
+	}
 }
 
-func TestReportTodayEndpoint(t *testing.T) {
-	srv := NewServer(0)
-	req := httptest.NewRequest(http.MethodGet, "/api/report/today", nil)
+func TestCancelEndpointNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/cancel/nonexist", nil)
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
-	if w.Result().StatusCode != http.StatusOK {
-		t.Errorf("status = %d", w.Result().StatusCode)
-	}
-	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
 }
 
 func TestReportEndpoint(t *testing.T) {
-	srv := NewServer(0)
-	req := httptest.NewRequest(http.MethodGet, "/api/report", nil)
+	srv, _ := newTestServer(t)
+
+	// Add multiple records
+	for _, typ := range []string{"meeting", "task"} {
+		body := strings.NewReader(
+			`{"type":"` + typ + `","title":"report ` + typ + `","date":"2026-05-02"}`,
+		)
+		req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.router.ServeHTTP(w, req)
+	}
+
+	// Get report for the date
+	req := httptest.NewRequest(http.MethodGet, "/api/report?date=2026-05-02", nil)
 	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	count, _ := data["count"].(float64)
+	if count != 2 {
+		t.Errorf("expected 2 records in report, got %v", count)
+	}
+}
+
+func TestReportTodayEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a record for today
+	body := strings.NewReader(`{"type":"log","title":"today log","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/report/today", nil)
+	w = httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
@@ -260,7 +489,7 @@ func TestReportEndpoint(t *testing.T) {
 }
 
 func TestHealthWrongMethod(t *testing.T) {
-	srv := NewServer(0)
+	srv, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
@@ -269,7 +498,7 @@ func TestHealthWrongMethod(t *testing.T) {
 }
 
 func TestCompleteMissingID(t *testing.T) {
-	srv := NewServer(0)
+	srv, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/complete/", nil)
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
@@ -278,7 +507,7 @@ func TestCompleteMissingID(t *testing.T) {
 }
 
 func TestAddInvalidJSON(t *testing.T) {
-	srv := NewServer(0)
+	srv, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -287,11 +516,11 @@ func TestAddInvalidJSON(t *testing.T) {
 	assertJSONLStatus(t, w.Body.Bytes(), "error")
 }
 
-// ── In-process end-to-end test ──
+// ── End-to-end via httptest ──
 
 func TestServerStartAndHealthEndToEnd(t *testing.T) {
-	handler := NewServer(0).router
-	ts := httptest.NewServer(handler)
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv.router)
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/health")
@@ -310,6 +539,59 @@ func TestServerStartAndHealthEndToEnd(t *testing.T) {
 	}
 }
 
+func TestEndToEndAddListCompleteCancel(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv.router)
+	defer ts.Close()
+
+	// Add
+	addPayload := `{"type":"task","title":"e2e task","date":"2026-05-02","tags":["test"]}`
+	resp, err := http.Post(ts.URL+"/api/add", "application/json", strings.NewReader(addPayload))
+	if err != nil {
+		t.Fatalf("POST /api/add: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var addResp map[string]interface{}
+	json.Unmarshal(body, &addResp)
+	if addResp["status"] != "success" {
+		t.Fatalf("add failed: %s", body)
+	}
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// List
+	resp, err = http.Get(ts.URL + "/api/list?type=task&date=2026-05-02")
+	if err != nil {
+		t.Fatalf("GET /api/list: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var listResp map[string]interface{}
+	json.Unmarshal(body, &listResp)
+	listData := listResp["data"].(map[string]interface{})
+	entries, _ := listData["entries"].([]interface{})
+	if len(entries) != 1 {
+		t.Errorf("list: expected 1 entry, got %d", len(entries))
+	}
+
+	// Complete
+	resp, err = http.Post(ts.URL+"/api/complete/"+shortID, "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /api/complete: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var compResp map[string]interface{}
+	json.Unmarshal(body, &compResp)
+	if compResp["status"] != "success" {
+		t.Fatalf("complete failed: %s", body)
+	}
+}
+
 // ── Helpers ──
 
 func assertJSONLStatus(t *testing.T, body []byte, wantStatus string) {
@@ -321,5 +603,17 @@ func assertJSONLStatus(t *testing.T, body []byte, wantStatus string) {
 	}
 	if record["status"] != wantStatus {
 		t.Errorf("status = %v, want %s; body=%s", record["status"], wantStatus, body)
+	}
+}
+
+func assertJSONLCode(t *testing.T, body []byte, wantCode string) {
+	t.Helper()
+	trimmed := bytes.TrimSpace(body)
+	var record map[string]interface{}
+	if err := json.Unmarshal(trimmed, &record); err != nil {
+		t.Fatalf("invalid JSONL: %s\nerr: %v", body, err)
+	}
+	if record["code"] != wantCode {
+		t.Errorf("code = %v, want %s; body=%s", record["code"], wantCode, body)
 	}
 }

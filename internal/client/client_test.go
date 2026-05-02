@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,12 +13,20 @@ import (
 	"testing"
 
 	"wr/internal/daemon"
+	"wr/internal/storage"
 )
 
 // ── Client with running test server ──
 
+func newTestDaemonServer(t *testing.T) *daemon.Server {
+	t.Helper()
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+	return daemon.NewServer(0, store)
+}
+
 func TestCallDaemonGetWithServer(t *testing.T) {
-	handler := daemon.NewServer(0).Router()
+	handler := newTestDaemonServer(t).Router()
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -44,7 +53,7 @@ func TestCallDaemonGetWithServer(t *testing.T) {
 }
 
 func TestCallDaemonPostWithServer(t *testing.T) {
-	handler := daemon.NewServer(0).Router()
+	handler := newTestDaemonServer(t).Router()
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -55,7 +64,7 @@ func TestCallDaemonPostWithServer(t *testing.T) {
 
 	var buf bytes.Buffer
 	err := callDaemonWithDir(&buf, dir, http.MethodPost, "/api/add",
-		strings.NewReader(`{"type":"meeting","title":"sync"}`))
+		strings.NewReader(`{"type":"meeting","title":"sync","date":"2026-05-02"}`))
 	if err != nil {
 		t.Fatalf("CallDaemon: %v", err)
 	}
