@@ -1,7 +1,10 @@
 package cmd
 
 import (
-	"wr/internal/jsonl"
+	"fmt"
+	"os"
+
+	"wr/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -15,15 +18,21 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List work report entries",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return jsonl.Success(map[string]interface{}{
-			"action": "list",
-			"stub":   true,
-			"filters": map[string]string{
-				"type": listType,
-				"date": listDate,
-			},
-			"entries": []interface{}{},
-		})
+		path := "/api/list"
+		params := []string{}
+		if listType != "" {
+			params = append(params, fmt.Sprintf("type=%s", listType))
+		}
+		if listDate != "" {
+			params = append(params, fmt.Sprintf("date=%s", listDate))
+		}
+		if len(params) > 0 {
+			path += "?" + params[0]
+			for _, p := range params[1:] {
+				path += "&" + p
+			}
+		}
+		return client.CallDaemonGet(os.Stdout, path)
 	},
 }
 

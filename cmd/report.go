@@ -1,7 +1,9 @@
 package cmd
 
 import (
-	"wr/internal/jsonl"
+	"os"
+
+	"wr/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -15,11 +17,7 @@ var reportTodayCmd = &cobra.Command{
 	Use:   "today",
 	Short: "Generate today's work report",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return jsonl.Success(map[string]interface{}{
-			"action":  "report_today",
-			"stub":    true,
-			"entries": []interface{}{},
-		})
+		return client.CallDaemonGet(os.Stdout, "/api/report/today")
 	},
 }
 

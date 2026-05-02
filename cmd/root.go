@@ -17,6 +17,8 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Version = version
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
 }
 
 // Execute runs the root command.

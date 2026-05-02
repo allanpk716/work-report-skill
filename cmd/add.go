@@ -1,7 +1,9 @@
 package cmd
 
 import (
-	"wr/internal/jsonl"
+	"os"
+
+	"wr/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -18,16 +20,12 @@ var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a new work report entry",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return jsonl.Success(map[string]interface{}{
-			"action": "add",
-			"stub":   true,
-			"entry": map[string]string{
-				"type":  addType,
-				"title": addTitle,
-				"date":  addDate,
-				"time":  addTime,
-				"image": addImage,
-			},
+		return client.CallDaemonPost(os.Stdout, "/api/add", map[string]string{
+			"type":  addType,
+			"title": addTitle,
+			"date":  addDate,
+			"time":  addTime,
+			"image": addImage,
 		})
 	},
 }

@@ -1,7 +1,10 @@
 package cmd
 
 import (
-	"wr/internal/jsonl"
+	"fmt"
+	"os"
+
+	"wr/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -11,11 +14,8 @@ var cancelCmd = &cobra.Command{
 	Short: "Cancel a work report entry",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return jsonl.Success(map[string]interface{}{
-			"action": "cancel",
-			"stub":   true,
-			"id":     args[0],
-		})
+		path := fmt.Sprintf("/api/cancel/%s", args[0])
+		return client.CallDaemonPost(os.Stdout, path, nil)
 	},
 }
 
