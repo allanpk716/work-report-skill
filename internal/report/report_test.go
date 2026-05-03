@@ -419,4 +419,295 @@ func TestGenerate_CompletedTaskStatus(t *testing.T) {
 	}
 }
 
+func TestGenerateRange_EmptyRange(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	rr, err := GenerateRange(store, "2026-05-02", "2026-05-02", time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.DateFrom != "2026-05-02" {
+		t.Errorf("DateFrom = %q, want 2026-05-02", rr.DateFrom)
+	}
+	if rr.DateTo != "2026-05-02" {
+		t.Errorf("DateTo = %q, want 2026-05-02", rr.DateTo)
+	}
+	if rr.DaysCount != 1 {
+		t.Errorf("DaysCount = %d, want 1", rr.DaysCount)
+	}
+	if rr.Summary.Total != 0 {
+		t.Errorf("Total = %d, want 0", rr.Summary.Total)
+	}
+	if len(rr.MergedMeetings) != 0 || len(rr.MergedTasks) != 0 {
+		t.Error("expected empty merged slices for empty range")
+	}
+}
+
+func TestGenerateRange_SingleDay(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeTask,
+			Title: "single day task",
+			Date:  "2026-05-02",
+		},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-02", "2026-05-02", time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.DaysCount != 1 {
+		t.Errorf("DaysCount = %d, want 1", rr.DaysCount)
+	}
+	if rr.Summary.Tasks != 1 {
+		t.Errorf("Tasks = %d, want 1", rr.Summary.Tasks)
+	}
+	if len(rr.MergedTasks) != 1 {
+		t.Fatalf("MergedTasks len = %d, want 1", len(rr.MergedTasks))
+	}
+	if rr.MergedTasks[0].Title != "single day task" {
+		t.Errorf("MergedTasks[0].Title = %q, want single day task", rr.MergedTasks[0].Title)
+	}
+}
+
+func TestGenerateRange_MultiDay(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	// Day 1
+	addTestRecord(t, store, &models.MeetingRecord{
+		CommonFields: models.CommonFields{Type: models.TypeMeeting, Title: "meeting-d1", Date: "2026-05-01"},
+	})
+	// Day 2
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "task-d2", Date: "2026-05-02"},
+	})
+	// Day 3
+	addTestRecord(t, store, &models.LogRecord{
+		CommonFields: models.CommonFields{Type: models.TypeLog, Title: "log-d3", Date: "2026-05-03"},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.DaysCount != 3 {
+		t.Errorf("DaysCount = %d, want 3", rr.DaysCount)
+	}
+	if rr.Summary.Total != 3 {
+		t.Errorf("Total = %d, want 3", rr.Summary.Total)
+	}
+	if rr.Summary.Meetings != 1 || rr.Summary.Tasks != 1 || rr.Summary.Logs != 1 {
+		t.Errorf("summary counts = meetings=%d tasks=%d logs=%d, want 1/1/1",
+			rr.Summary.Meetings, rr.Summary.Tasks, rr.Summary.Logs)
+	}
+	if len(rr.MergedMeetings) != 1 || len(rr.MergedTasks) != 1 || len(rr.MergedLogs) != 1 {
+		t.Error("expected 1 merged entry per type")
+	}
+}
+
+func TestGenerateRange_DateOrder(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	_, err := GenerateRange(store, "2026-05-05", "2026-05-01", time.UTC, nil)
+	if err == nil {
+		t.Fatal("expected error when from > to")
+	}
+	if !strings.Contains(err.Error(), "after") {
+		t.Errorf("error = %v, want 'after' in message", err)
+	}
+}
+
+func TestGenerateRange_MergedSummary(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	// Two tasks on day 1
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t1", Date: "2026-05-01"},
+	})
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t2", Date: "2026-05-01"},
+	})
+	// One task on day 2
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t3", Date: "2026-05-02"},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.Summary.Tasks != 3 {
+		t.Errorf("Tasks = %d, want 3", rr.Summary.Tasks)
+	}
+	if rr.Summary.Total != 3 {
+		t.Errorf("Total = %d, want 3", rr.Summary.Total)
+	}
+	if len(rr.MergedTasks) != 3 {
+		t.Errorf("MergedTasks len = %d, want 3", len(rr.MergedTasks))
+	}
+}
+
+func TestGenerateWeek_Bounds(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	// Use a fixed "now" by choosing a known date's timezone-relative week.
+	// We can't mock time.Now directly, so we verify structural properties:
+	// - DaysCount should be 7
+	// - DateFrom should be a Monday
+	// - DateTo should be a Sunday
+	rr, err := GenerateWeek(store, time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateWeek: %v", err)
+	}
+
+	if rr.DaysCount != 7 {
+		t.Errorf("DaysCount = %d, want 7", rr.DaysCount)
+	}
+
+	fromTime, _ := time.Parse("2006-01-02", rr.DateFrom)
+	if fromTime.Weekday() != time.Monday {
+		t.Errorf("DateFrom weekday = %v, want Monday", fromTime.Weekday())
+	}
+	toTime, _ := time.Parse("2006-01-02", rr.DateTo)
+	if toTime.Weekday() != time.Sunday {
+		t.Errorf("DateTo weekday = %v, want Sunday", toTime.Weekday())
+	}
+
+	// from and to should be exactly 6 days apart (Mon to Sun inclusive = 7 days)
+	diff := toTime.Sub(fromTime).Hours() / 24
+	if diff != 6 {
+		t.Errorf("date span = %.0f days, want 6", diff)
+	}
+}
+
+func TestGenerateRange_Markdown(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	addTestRecord(t, store, &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:     models.TypeMeeting,
+			Title:    "项目评审",
+			Date:     "2026-04-28",
+			Time:     "10:00",
+			Location: "会议室A",
+		},
+	})
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:   models.TypeTask,
+			Title:  "编写测试",
+			Date:   "2026-04-29",
+			Status: models.StatusCompleted,
+		},
+	})
+
+	rr, err := GenerateRange(store, "2026-04-28", "2026-04-29", time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	md := rr.Markdown
+
+	// Header
+	if !strings.Contains(md, "# 工作周报 2026-04-28 ~ 2026-04-29") {
+		t.Error("markdown missing range header")
+	}
+
+	// Summary line with day count
+	if !strings.Contains(md, "2天") {
+		t.Error("markdown missing day count in summary")
+	}
+
+	// Meeting section with date prefix
+	if !strings.Contains(md, "## 📅 会议 (1)") {
+		t.Error("markdown missing meeting section header")
+	}
+	if !strings.Contains(md, "[2026-04-28] 项目评审") {
+		t.Error("markdown missing date-prefixed meeting entry")
+	}
+
+	// Task section with date prefix and status
+	if !strings.Contains(md, "## ✅ 任务 (1)") {
+		t.Error("markdown missing task section header")
+	}
+	if !strings.Contains(md, "[2026-04-29] 编写测试 [已完成]") {
+		t.Error("markdown missing date-prefixed task entry")
+	}
+}
+
+func TestGenerateRange_Markdown_EmptyDays(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC, nil)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	md := rr.Markdown
+
+	if !strings.Contains(md, "# 工作周报 2026-05-01 ~ 2026-05-03") {
+		t.Error("markdown missing range header")
+	}
+	if !strings.Contains(md, "3天") {
+		t.Error("markdown missing day count")
+	}
+	if strings.Contains(md, "## 📅 会议") {
+		t.Error("empty meeting section should not appear")
+	}
+	if strings.Contains(md, "## ✅ 任务") {
+		t.Error("empty task section should not appear")
+	}
+	if strings.Contains(md, "## 🔔 提醒") {
+		t.Error("empty reminder section should not appear")
+	}
+	if strings.Contains(md, "## 📝 日志") {
+		t.Error("empty log section should not appear")
+	}
+}
+
+func TestGenerateRange_InvalidDate(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir, log.New(io.Discard, "", 0))
+
+	_, err := GenerateRange(store, "not-a-date", "2026-05-02", time.UTC, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid from date")
+	}
+	if !strings.Contains(err.Error(), "invalid from date") {
+		t.Errorf("error = %v, want invalid from date", err)
+	}
+
+	_, err = GenerateRange(store, "2026-05-02", "bad", time.UTC, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid to date")
+	}
+	if !strings.Contains(err.Error(), "invalid to date") {
+		t.Errorf("error = %v, want invalid to date", err)
+	}
+}
+
+func TestGenerateRange_NilStorage(t *testing.T) {
+	_, err := GenerateRange(nil, "2026-05-01", "2026-05-02", time.UTC, nil)
+	if err == nil {
+		t.Fatal("expected error for nil storage")
+	}
+	if !strings.Contains(err.Error(), "storage is nil") {
+		t.Errorf("error = %v, want storage is nil", err)
+	}
+}
+
 

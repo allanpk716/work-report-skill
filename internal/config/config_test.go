@@ -294,6 +294,254 @@ func TestDefaultConfigPath(t *testing.T) {
 	}
 }
 
+func TestSaveCreatesDirsAndWritesJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "dir", "config.json")
+
+	cfg := &Config{
+		Pushover: PushoverConfig{
+			APIToken: "tok123",
+			UserKey:  "key456",
+		},
+		Timezone: "Asia/Shanghai",
+		Daemon:   DaemonConfig{Port: 18080},
+		DataDir:  "/tmp/data",
+	}
+
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// File should exist
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stat saved file: %v", err)
+	}
+
+	// Should roundtrip through Load
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if loaded.Pushover.APIToken != "tok123" {
+		t.Errorf("roundtrip APIToken = %q, want tok123", loaded.Pushover.APIToken)
+	}
+	if loaded.Timezone != "Asia/Shanghai" {
+		t.Errorf("roundtrip Timezone = %q", loaded.Timezone)
+	}
+	if loaded.Daemon.Port != 18080 {
+		t.Errorf("roundtrip Port = %d, want 18080", loaded.Daemon.Port)
+	}
+}
+
+func TestSaveOverwriteExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	cfg1 := &Config{Timezone: "UTC", Daemon: DaemonConfig{Port: 9090}}
+	if err := cfg1.Save(path); err != nil {
+		t.Fatalf("Save first: %v", err)
+	}
+
+	cfg2 := &Config{Timezone: "Asia/Tokyo", Daemon: DaemonConfig{Port: 8080}}
+	if err := cfg2.Save(path); err != nil {
+		t.Fatalf("Save second: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Timezone != "Asia/Tokyo" {
+		t.Errorf("Timezone = %q, want Asia/Tokyo", loaded.Timezone)
+	}
+	if loaded.Daemon.Port != 8080 {
+		t.Errorf("Port = %d, want 8080", loaded.Daemon.Port)
+	}
+}
+
+func TestSetByPathStringFields(t *testing.T) {
+	cfg := defaultConfig()
+
+	tests := []struct {
+		path  string
+		value string
+		want  string
+	}{
+		{"pushover.api_token", "new-token", "new-token"},
+		{"pushover.user_key", "new-key", "new-key"},
+		{"llm.text.provider", "openai", "openai"},
+		{"llm.text.api_key", "sk-abc", "sk-abc"},
+		{"llm.text.api_base", "https://api.openai.com", "https://api.openai.com"},
+		{"llm.text.model", "gpt-4o", "gpt-4o"},
+		{"llm.vision.provider", "zhipu", "zhipu"},
+		{"llm.vision.api_key", "viz-key", "viz-key"},
+		{"llm.vision.api_base", "https://viz.api", "https://viz.api"},
+		{"llm.vision.model", "glm-4v", "glm-4v"},
+		{"data_dir", "/custom/dir", "/custom/dir"},
+		{"timezone", "America/New_York", "America/New_York"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if err := cfg.SetByPath(tt.path, tt.value); err != nil {
+				t.Fatalf("SetByPath(%q, %q): %v", tt.path, tt.value, err)
+			}
+		})
+	}
+
+	// Verify the last values stuck
+	if cfg.LLM.Text.Provider != "openai" {
+		t.Errorf("llm.text.provider = %q", cfg.LLM.Text.Provider)
+	}
+	if cfg.DataDir != "/custom/dir" {
+		t.Errorf("data_dir = %q", cfg.DataDir)
+	}
+	if cfg.Timezone != "America/New_York" {
+		t.Errorf("timezone = %q", cfg.Timezone)
+	}
+}
+
+func TestSetByPathDaemonPort(t *testing.T) {
+	cfg := defaultConfig()
+	if err := cfg.SetByPath("daemon.port", "9999"); err != nil {
+		t.Fatalf("SetByPath daemon.port: %v", err)
+	}
+	if cfg.Daemon.Port != 9999 {
+		t.Errorf("daemon.port = %d, want 9999", cfg.Daemon.Port)
+	}
+}
+
+func TestSetByPathDaemonPortNonInteger(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("daemon.port", "not-a-number")
+	if err == nil {
+		t.Fatal("expected error for non-integer port")
+	}
+}
+
+func TestSetByPathInvalidTimezone(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("timezone", "Invalid/Zone")
+	if err == nil {
+		t.Fatal("expected error for invalid timezone")
+	}
+}
+
+func TestSetByPathUnknownPath(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("nonexistent.field", "value")
+	if err == nil {
+		t.Fatal("expected error for unknown path")
+	}
+}
+
+func TestSetByPathTypoPath(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("llm.text.apikey", "sk-xxx")
+	if err == nil {
+		t.Fatal("expected error for typo path llm.text.apikey")
+	}
+}
+
+func TestSetByPathRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	cfg := defaultConfig()
+	_ = cfg.SetByPath("pushover.api_token", "roundtrip-token")
+	_ = cfg.SetByPath("llm.text.api_key", "sk-roundtrip")
+	_ = cfg.SetByPath("daemon.port", "7777")
+
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if loaded.Pushover.APIToken != "roundtrip-token" {
+		t.Errorf("APIToken = %q, want roundtrip-token", loaded.Pushover.APIToken)
+	}
+	if loaded.LLM.Text.APIKey != "sk-roundtrip" {
+		t.Errorf("LLM.Text.APIKey = %q, want sk-roundtrip", loaded.LLM.Text.APIKey)
+	}
+	if loaded.Daemon.Port != 7777 {
+		t.Errorf("Port = %d, want 7777", loaded.Daemon.Port)
+	}
+}
+
+func TestValidConfigPaths(t *testing.T) {
+	paths := ValidConfigPaths()
+
+	// Must contain essential paths
+	expected := []string{
+		"pushover.api_token",
+		"pushover.user_key",
+		"llm.text.api_key",
+		"llm.text.model",
+		"llm.vision.api_key",
+		"data_dir",
+		"daemon.port",
+		"timezone",
+	}
+	for _, p := range expected {
+		found := false
+		for _, vp := range paths {
+			if vp == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ValidConfigPaths missing %q", p)
+		}
+	}
+}
+
+func TestSaveProducesValidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	cfg := &Config{
+		Pushover: PushoverConfig{
+			APIToken: "token",
+			UserKey:  "user",
+		},
+		LLM: LLMConfig{
+			Text: LLMProviderConfig{
+				Provider: "test",
+				APIKey:   "key",
+				Model:    "model",
+			},
+		},
+		Daemon:   DaemonConfig{Port: 8080},
+		Timezone: "UTC",
+		DataDir:  "/data",
+	}
+
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Must be valid JSON
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("saved file is not valid JSON: %v", err)
+	}
+
+	// Must be pretty-printed (contain newlines)
+	if !contains(string(data), "\n") {
+		t.Error("saved JSON is not pretty-printed (no newlines)")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && searchString(s, sub)
 }

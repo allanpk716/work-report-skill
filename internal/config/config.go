@@ -125,6 +125,13 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// Validate checks that required fields are present and values are in range.
+// This is the exported version of validate, for use by CLI commands that
+// construct configs without going through Load (e.g. wr config init).
+func (c *Config) Validate() error {
+	return c.validate()
+}
+
 // validate checks that required fields are present and values are in range.
 func (c *Config) validate() error {
 	if c.Daemon.Port < 1 || c.Daemon.Port > 65535 {
@@ -186,6 +193,108 @@ func maskSecret(s string) string {
 		return "****"
 	}
 	return s[:4] + "****"
+}
+
+// ValidConfigPaths returns the whitelist of accepted dot-notation paths that
+// SetByPath and the wr config set command may modify. This prevents typos
+// from silently creating bogus keys in the config file.
+func ValidConfigPaths() []string {
+	return []string{
+		"pushover.api_token",
+		"pushover.user_key",
+		"llm.text.provider",
+		"llm.text.api_key",
+		"llm.text.api_base",
+		"llm.text.model",
+		"llm.vision.provider",
+		"llm.vision.api_key",
+		"llm.vision.api_base",
+		"llm.vision.model",
+		"data_dir",
+		"daemon.port",
+		"timezone",
+	}
+}
+
+// Save writes the config as pretty-printed JSON to the given path, creating
+// parent directories as needed.
+func (c *Config) Save(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("config: create dir %s: %w", dir, err)
+	}
+
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("config: marshal: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("config: write %s: %w", path, err)
+	}
+
+	return nil
+}
+
+// SetByPath sets a config value identified by a dot-notation path (e.g.
+// "llm.text.api_key"). Returns an error if the path is not in the
+// ValidConfigPaths whitelist or if the value type does not match the existing
+// field type.
+func (c *Config) SetByPath(path string, value string) error {
+	// Validate the path is in the whitelist
+	if !isValidPath(path) {
+		return fmt.Errorf("config: unknown path %q (valid paths: %v)", path, ValidConfigPaths())
+	}
+
+	switch path {
+	case "pushover.api_token":
+		c.Pushover.APIToken = value
+	case "pushover.user_key":
+		c.Pushover.UserKey = value
+	case "llm.text.provider":
+		c.LLM.Text.Provider = value
+	case "llm.text.api_key":
+		c.LLM.Text.APIKey = value
+	case "llm.text.api_base":
+		c.LLM.Text.APIBase = value
+	case "llm.text.model":
+		c.LLM.Text.Model = value
+	case "llm.vision.provider":
+		c.LLM.Vision.Provider = value
+	case "llm.vision.api_key":
+		c.LLM.Vision.APIKey = value
+	case "llm.vision.api_base":
+		c.LLM.Vision.APIBase = value
+	case "llm.vision.model":
+		c.LLM.Vision.Model = value
+	case "data_dir":
+		c.DataDir = value
+	case "daemon.port":
+		var port int
+		if _, err := fmt.Sscanf(value, "%d", &port); err != nil {
+			return fmt.Errorf("config: daemon.port must be an integer, got %q", value)
+		}
+		c.Daemon.Port = port
+	case "timezone":
+		if _, err := time.LoadLocation(value); err != nil {
+			return fmt.Errorf("config: invalid timezone %q: %w", value, err)
+		}
+		c.Timezone = value
+	default:
+		return fmt.Errorf("config: unhandled path %q", path)
+	}
+
+	return nil
+}
+
+// isValidPath checks whether the given dot-notation path is in the whitelist.
+func isValidPath(path string) bool {
+	for _, p := range ValidConfigPaths() {
+		if p == path {
+			return true
+		}
+	}
+	return false
 }
 
 // Location returns the parsed timezone location for this config.

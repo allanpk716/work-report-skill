@@ -2,12 +2,14 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -758,9 +760,9 @@ func TestJSONFileIsHumanReadable(t *testing.T) {
 }
 
 func TestShortID_DeterministicFromTimestamp(t *testing.T) {
-	// Verify that ShortIDFromTimestamp is deterministic
-	t1 := time.Date(2026, 5, 2, 15, 30, 0, 0, time.UTC)
-	t2 := time.Date(2026, 5, 2, 15, 30, 0, 0, time.UTC)
+	// Verify that ShortIDFromTimestamp is deterministic for same nanosecond
+	t1 := time.Date(2026, 5, 2, 15, 30, 0, 123456789, time.UTC)
+	t2 := time.Date(2026, 5, 2, 15, 30, 0, 123456789, time.UTC)
 
 	id1 := models.ShortIDFromTimestamp(t1)
 	id2 := models.ShortIDFromTimestamp(t2)
@@ -768,8 +770,8 @@ func TestShortID_DeterministicFromTimestamp(t *testing.T) {
 	if id1 != id2 {
 		t.Errorf("same timestamp produced different IDs: %s vs %s", id1, id2)
 	}
-	if len(id1) != 8 {
-		t.Errorf("ShortID length = %d, want 8", len(id1))
+	if len(id1) != 16 {
+		t.Errorf("ShortID length = %d, want 16", len(id1))
 	}
 }
 
@@ -782,6 +784,67 @@ func TestShortID_DifferentTimestamps(t *testing.T) {
 
 	if id1 == id2 {
 		t.Error("different timestamps produced same ShortID")
+	}
+}
+
+func TestShortID_NanosecondDifferentiation(t *testing.T) {
+	// Two timestamps in the same second but different nanoseconds
+	// should produce different IDs
+	t1 := time.Date(2026, 5, 2, 15, 30, 0, 100000000, time.UTC)
+	t2 := time.Date(2026, 5, 2, 15, 30, 0, 200000000, time.UTC)
+
+	id1 := models.ShortIDFromTimestamp(t1)
+	id2 := models.ShortIDFromTimestamp(t2)
+
+	if id1 == id2 {
+		t.Errorf("same-second different-nanosecond timestamps produced same ShortID: %s", id1)
+	}
+}
+
+func TestGetByID_PrefixMatchLegacy8CharID(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add a record (gets a 16-char ShortID)
+	rec := newTestMeeting("前缀匹配测试", "2026-05-02", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf := models.GetCommonFields(result)
+	fullID := cf.ShortID
+
+	if len(fullID) != 16 {
+		t.Fatalf("expected 16-char ShortID, got %d", len(fullID))
+	}
+
+	// Use only the first 8 chars as the query (simulating legacy ID)
+	legacyID := fullID[:8]
+	t.Logf("full ID=%s, legacy query=%s", fullID, legacyID)
+
+	found, path, err := s.GetByID(legacyID)
+	if err != nil {
+		t.Fatalf("GetByID with 8-char prefix %q should find record: %v", legacyID, err)
+	}
+	if path == "" {
+		t.Error("path should not be empty")
+	}
+
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Title != "前缀匹配测试" {
+		t.Errorf("Title = %q, want 前缀匹配测试", foundCF.Title)
+	}
+	if foundCF.ShortID != fullID {
+		t.Errorf("ShortID = %q, want %q", foundCF.ShortID, fullID)
+	}
+
+	// Full 16-char ID should also still work
+	found2, _, err := s.GetByID(fullID)
+	if err != nil {
+		t.Fatalf("GetByID with full 16-char ID should still work: %v", err)
+	}
+	found2CF := models.GetCommonFields(found2)
+	if found2CF.Title != "前缀匹配测试" {
+		t.Errorf("Title with full ID = %q, want 前缀匹配测试", found2CF.Title)
 	}
 }
 
@@ -952,6 +1015,998 @@ func TestCompatibility_NanobotFormat(t *testing.T) {
 	}
 
 	t.Logf("sample data: %d logs, %d tasks, %d meetings", len(logs), len(tasks), len(meetings))
+}
+
+func TestUpdateRecord_BasicFieldUpdate(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestMeeting("原始会议", "2026-05-02", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"title":    "更新会议",
+		"location": "会议室B",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if cf.Title != "更新会议" {
+		t.Errorf("Title = %q, want 更新会议", cf.Title)
+	}
+	if cf.Location != "会议室B" {
+		t.Errorf("Location = %q, want 会议室B", cf.Location)
+	}
+	if cf.UpdatedAt == "" {
+		t.Error("UpdatedAt should be set")
+	}
+
+	// Verify persistence: re-read from disk
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after update: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Title != "更新会议" {
+		t.Errorf("persisted Title = %q, want 更新会议", foundCF.Title)
+	}
+	if foundCF.Location != "会议室B" {
+		t.Errorf("persisted Location = %q, want 会议室B", foundCF.Location)
+	}
+}
+
+func TestUpdateRecord_TimeRelatedFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestMeeting("时间测试", "2026-05-02", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"date":     "2026-05-10",
+		"time":     "15:00",
+		"end_time": "16:30",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if cf.Date != "2026-05-10" {
+		t.Errorf("Date = %q, want 2026-05-10", cf.Date)
+	}
+	if cf.Time != "15:00" {
+		t.Errorf("Time = %q, want 15:00", cf.Time)
+	}
+	if cf.EndTime != "16:30" {
+		t.Errorf("EndTime = %q, want 16:30", cf.EndTime)
+	}
+}
+
+func TestUpdateRecord_TaskFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("待办任务", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"title":          "更新任务",
+		"description":    "详细描述",
+		"related_person": "张三",
+		"priority":       "high",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if cf.Title != "更新任务" {
+		t.Errorf("Title = %q, want 更新任务", cf.Title)
+	}
+	if cf.Description != "详细描述" {
+		t.Errorf("Description = %q, want 详细描述", cf.Description)
+	}
+	if cf.RelatedPerson != "张三" {
+		t.Errorf("RelatedPerson = %q, want 张三", cf.RelatedPerson)
+	}
+	if cf.Priority != "high" {
+		t.Errorf("Priority = %q, want high", cf.Priority)
+	}
+}
+
+func TestUpdateRecord_MeetingTypeSpecificFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestMeeting("团队会议", "2026-05-02", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"participants": []string{"张三", "李四"},
+		"agenda":       "1. 进度同步 2. Q&A",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	meeting, ok := updated.(*models.MeetingRecord)
+	if !ok {
+		t.Fatal("expected *MeetingRecord")
+	}
+	if len(meeting.Participants) != 2 {
+		t.Errorf("Participants len = %d, want 2", len(meeting.Participants))
+	}
+	if meeting.Agenda != "1. 进度同步 2. Q&A" {
+		t.Errorf("Agenda = %q, want agenda text", meeting.Agenda)
+	}
+}
+
+func TestUpdateRecord_ReminderTypeSpecificFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestReminder("提醒测试", "2026-05-02", "09:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"notes":     "记得带材料",
+		"recurring": "daily",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	reminder, ok := updated.(*models.ReminderRecord)
+	if !ok {
+		t.Fatal("expected *ReminderRecord")
+	}
+	if reminder.Notes != "记得带材料" {
+		t.Errorf("Notes = %q, want 记得带材料", reminder.Notes)
+	}
+	if reminder.Recurring != "daily" {
+		t.Errorf("Recurring = %q, want daily", reminder.Recurring)
+	}
+}
+
+func TestUpdateRecord_LogTypeSpecificFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestLog("日志记录", "2026-05-02", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"progress": "50%",
+		"priority": "高",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	logRec, ok := updated.(*models.LogRecord)
+	if !ok {
+		t.Fatal("expected *LogRecord")
+	}
+	if logRec.Progress != "50%" {
+		t.Errorf("Progress = %q, want 50%%", logRec.Progress)
+	}
+	// LogRecord.Priority shadows CommonFields.Priority (MEM031)
+	if logRec.Priority != "高" {
+		t.Errorf("Priority = %q, want 高", logRec.Priority)
+	}
+}
+
+func TestUpdateRecord_TagsField(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("标签测试", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"tags": []string{"urgent", "backend"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if len(cf.Tags) != 2 {
+		t.Fatalf("Tags len = %d, want 2", len(cf.Tags))
+	}
+	if cf.Tags[0] != "urgent" || cf.Tags[1] != "backend" {
+		t.Errorf("Tags = %v, want [urgent backend]", cf.Tags)
+	}
+}
+
+func TestUpdateRecord_TagsWithInterfaceSlice(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("标签测试2", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// []interface{} should also work for tags
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"tags": []interface{}{"a", "b", "c"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if len(cf.Tags) != 3 {
+		t.Fatalf("Tags len = %d, want 3", len(cf.Tags))
+	}
+}
+
+func TestUpdateRecord_RecordNotFound(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	_, err := s.UpdateRecord("nonexist", map[string]interface{}{
+		"title": "不存在",
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent record")
+	}
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Errorf("error = %v, want ErrRecordNotFound", err)
+	}
+}
+
+func TestUpdateRecord_CompletedRecord(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("已完成", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"title": "尝试更新",
+	})
+	if err == nil {
+		t.Fatal("expected error when updating completed record")
+	}
+	if !errors.Is(err, ErrRecordCompleted) {
+		t.Errorf("error = %v, want ErrRecordCompleted", err)
+	}
+}
+
+func TestUpdateRecord_CancelledRecord(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("已取消", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CancelRecord(shortID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"title": "尝试更新",
+	})
+	if err == nil {
+		t.Fatal("expected error when updating cancelled record")
+	}
+	if !errors.Is(err, ErrRecordCancelled) {
+		t.Errorf("error = %v, want ErrRecordCancelled", err)
+	}
+}
+
+func TestUpdateRecord_EmptyFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("空更新", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for empty fields")
+	}
+	if !errors.Is(err, ErrEmptyUpdate) {
+		t.Errorf("error = %v, want ErrEmptyUpdate", err)
+	}
+}
+
+func TestUpdateRecord_TypeFieldDisallowed(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("类型测试", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "meeting",
+	})
+	if err == nil {
+		t.Fatal("expected error when trying to update type field")
+	}
+	if !errors.Is(err, ErrFieldNotAllowed) {
+		t.Errorf("error = %v, want ErrFieldNotAllowed", err)
+	}
+}
+
+func TestUpdateRecord_StatusFieldDisallowed(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("状态测试", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"status": "completed",
+	})
+	if err == nil {
+		t.Fatal("expected error when trying to update status field")
+	}
+}
+
+func TestUpdateRecord_ShortIDFieldDisallowed(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("ID测试", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"short_id": "hacked",
+	})
+	if err == nil {
+		t.Fatal("expected error when trying to update short_id field")
+	}
+}
+
+func TestUpdateRecord_SavedAtFieldDisallowed(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("时间测试", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"saved_at": "2020-01-01T00:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("expected error when trying to update saved_at field")
+	}
+}
+
+func TestUpdateRecord_RemindBefore(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestReminder("提醒", "2026-05-02", "09:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"remind_before": "30m",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if cf.RemindBefore != "30m" {
+		t.Errorf("RemindBefore = %q, want 30m", cf.RemindBefore)
+	}
+}
+
+func TestUpdateRecord_MultipleFieldsAtOnce(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestMeeting("旧会议", "2026-05-02", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"title":        "新会议",
+		"description":  "更新描述",
+		"date":         "2026-05-15",
+		"time":         "15:00",
+		"end_time":     "16:00",
+		"location":     "大会议室",
+		"participants": []string{"王五", "赵六"},
+		"agenda":       "新议程",
+		"tags":         []string{"重要", "季度"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	meeting, ok := updated.(*models.MeetingRecord)
+	if !ok {
+		t.Fatal("expected *MeetingRecord")
+	}
+	cf := models.GetCommonFields(updated)
+
+	if cf.Title != "新会议" {
+		t.Errorf("Title = %q", cf.Title)
+	}
+	if cf.Description != "更新描述" {
+		t.Errorf("Description = %q", cf.Description)
+	}
+	if cf.Date != "2026-05-15" {
+		t.Errorf("Date = %q", cf.Date)
+	}
+	if cf.Time != "15:00" {
+		t.Errorf("Time = %q", cf.Time)
+	}
+	if cf.EndTime != "16:00" {
+		t.Errorf("EndTime = %q", cf.EndTime)
+	}
+	if cf.Location != "大会议室" {
+		t.Errorf("Location = %q", cf.Location)
+	}
+	if len(meeting.Participants) != 2 {
+		t.Errorf("Participants len = %d", len(meeting.Participants))
+	}
+	if meeting.Agenda != "新议程" {
+		t.Errorf("Agenda = %q", meeting.Agenda)
+	}
+	if len(cf.Tags) != 2 {
+		t.Errorf("Tags len = %d", len(cf.Tags))
+	}
+}
+
+func TestUpdateRecord_LogRecordPriorityShadow(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestLog("优先级日志", "2026-05-02", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"priority": "高",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	logRec, ok := updated.(*models.LogRecord)
+	if !ok {
+		t.Fatal("expected *LogRecord")
+	}
+	// LogRecord.Priority shadows CommonFields.Priority (MEM031)
+	if logRec.Priority != "高" {
+		t.Errorf("LogRecord.Priority = %q, want 高", logRec.Priority)
+	}
+
+	// Verify persistence via re-read
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	foundLog, ok := found.(*models.LogRecord)
+	if !ok {
+		t.Fatal("expected *LogRecord on re-read")
+	}
+	if foundLog.Priority != "高" {
+		t.Errorf("persisted LogRecord.Priority = %q, want 高", foundLog.Priority)
+	}
+}
+
+func TestListRecords_DateRange(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add records on three different dates
+	_, _ = s.AddRecord(newTestLog("记录-0425", "2026-04-25", "09:00"))
+	_, _ = s.AddRecord(newTestLog("记录-0428", "2026-04-28", "10:00"))
+	_, _ = s.AddRecord(newTestLog("记录-0501", "2026-05-01", "11:00"))
+
+	// Wide range should return all three
+	results, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeLog,
+		DateFrom:   "2026-04-25",
+		DateTo:     "2026-05-01",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 records in wide range, got %d", len(results))
+	}
+
+	// Narrow range should only return 04/28
+	narrow, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeLog,
+		DateFrom:   "2026-04-27",
+		DateTo:     "2026-04-30",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords narrow: %v", err)
+	}
+	if len(narrow) != 1 {
+		t.Fatalf("expected 1 record in narrow range, got %d", len(narrow))
+	}
+	if narrow[0].Title != "记录-0428" {
+		t.Errorf("Title = %q, want 记录-0428", narrow[0].Title)
+	}
+
+	// Only DateFrom
+	fromOnly, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeLog,
+		DateFrom:   "2026-04-29",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords fromOnly: %v", err)
+	}
+	if len(fromOnly) != 1 {
+		t.Fatalf("expected 1 record with DateFrom=04-29, got %d", len(fromOnly))
+	}
+
+	// Only DateTo
+	toOnly, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeLog,
+		DateTo:     "2026-04-26",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords toOnly: %v", err)
+	}
+	if len(toOnly) != 1 {
+		t.Fatalf("expected 1 record with DateTo=04-26, got %d", len(toOnly))
+	}
+}
+
+func TestListRecords_StatusFilter(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add an active-status task (explicitly set to active)
+	activeTask := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:   models.TypeTask,
+			Title:  "活跃任务",
+			Date:   "2026-05-02",
+			Status: models.StatusActive,
+		},
+	}
+	_, _ = s.AddRecord(activeTask)
+	time.Sleep(1 * time.Second)
+
+	// Add and complete a task (newTestTask sets status=pending)
+	rec2, _ := s.AddRecord(newTestTask("完成任务", "2026-05-02"))
+	shortID2 := models.GetCommonFields(rec2).ShortID
+	_ = s.CompleteRecord(shortID2)
+	time.Sleep(1 * time.Second)
+
+	// Add and cancel a task
+	rec3, _ := s.AddRecord(newTestTask("取消任务", "2026-05-02"))
+	shortID3 := models.GetCommonFields(rec3).ShortID
+	_ = s.CancelRecord(shortID3)
+
+	// Status=active should only return the active one
+	active, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Status:     "active",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords active: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active task, got %d", len(active))
+	}
+	if active[0].Title != "活跃任务" {
+		t.Errorf("Title = %q, want 活跃任务", active[0].Title)
+	}
+
+	// Status=completed should only return completed
+	completed, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Status:     "completed",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords completed: %v", err)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 completed task, got %d", len(completed))
+	}
+	if completed[0].Title != "完成任务" {
+		t.Errorf("Title = %q, want 完成任务", completed[0].Title)
+	}
+
+	// Status=cancelled should only return cancelled
+	cancelled, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Status:     "cancelled",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords cancelled: %v", err)
+	}
+	if len(cancelled) != 1 {
+		t.Fatalf("expected 1 cancelled task, got %d", len(cancelled))
+	}
+	if cancelled[0].Title != "取消任务" {
+		t.Errorf("Title = %q, want 取消任务", cancelled[0].Title)
+	}
+
+	// Status=all should return all three
+	all, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Status:     "all",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 tasks with status=all, got %d", len(all))
+	}
+}
+
+func TestListRecords_KeywordSearch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Records with keywords in title and description
+	task1 := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:        models.TypeTask,
+			Title:       "项目评审准备",
+			Description: "准备评审材料",
+			Date:        "2026-05-02",
+			Status:      models.StatusActive,
+		},
+	}
+	task2 := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:        models.TypeTask,
+			Title:       "周报编写",
+			Description: "包含评审结果",
+			Date:        "2026-05-02",
+			Status:      models.StatusActive,
+		},
+	}
+	task3 := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:        models.TypeTask,
+			Title:       "代码部署",
+			Description: "部署到生产环境",
+			Date:        "2026-05-02",
+			Status:      models.StatusActive,
+		},
+	}
+	_, _ = s.AddRecord(task1)
+	_, _ = s.AddRecord(task2)
+	_, _ = s.AddRecord(task3)
+
+	// Search for "评审" — should match title of task1 and description of task2
+	results, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Query:      "评审",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results matching '评审', got %d", len(results))
+	}
+
+	titles := map[string]bool{}
+	for _, r := range results {
+		titles[r.Title] = true
+	}
+	if !titles["项目评审准备"] {
+		t.Error("expected '项目评审准备' in results (title match)")
+	}
+	if !titles["周报编写"] {
+		t.Error("expected '周报编写' in results (description match)")
+	}
+}
+
+func TestListRecords_CombinedFilters(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add records across dates and statuses
+	_, _ = s.AddRecord(newTestLog("四月日志A", "2026-04-25", "09:00"))
+	_, _ = s.AddRecord(newTestLog("四月日志B", "2026-04-28", "10:00"))
+	_, _ = s.AddRecord(newTestLog("五月日志", "2026-05-01", "11:00"))
+
+	// Combine RecordType + DateFrom + DateTo
+	results, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeLog,
+		DateFrom:   "2026-04-25",
+		DateTo:     "2026-04-30",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 logs in April range, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Date < "2026-04-25" || r.Date > "2026-04-30" {
+			t.Errorf("Date %q outside range [04-25, 04-30]", r.Date)
+		}
+	}
+
+	// Combine type + dateFrom + dateTo + status with meetings (avoid short_id collisions)
+	// Use meetings since they use date-based directories
+	meeting1 := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:   models.TypeMeeting,
+			Title:  "范围内活跃",
+			Date:   "2026-04-26",
+			Time:   "10:00",
+			Status: models.StatusActive,
+		},
+	}
+	_, _ = s.AddRecord(meeting1)
+	time.Sleep(1 * time.Second)
+
+	meeting2 := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:   models.TypeMeeting,
+			Title:  "范围内完成",
+			Date:   "2026-04-27",
+			Time:   "14:00",
+			Status: models.StatusActive,
+		},
+	}
+	rec2, _ := s.AddRecord(meeting2)
+	shortID2 := models.GetCommonFields(rec2).ShortID
+	_ = s.CompleteRecord(shortID2)
+
+	combined, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeMeeting,
+		DateFrom:   "2026-04-25",
+		DateTo:     "2026-04-30",
+		Status:     "active",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords combined: %v", err)
+	}
+	if len(combined) != 1 {
+		t.Fatalf("expected 1 active meeting in range, got %d", len(combined))
+	}
+	if combined[0].Title != "范围内活跃" {
+		t.Errorf("Title = %q, want 范围内活跃", combined[0].Title)
+	}
+}
+
+func TestListRecords_QueryCaseInsensitive(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	task := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:        models.TypeTask,
+			Title:       "API Integration",
+			Description: "Integrate with external service",
+			Date:        "2026-05-02",
+			Status:      models.StatusActive,
+		},
+	}
+	_, _ = s.AddRecord(task)
+
+	// Lowercase query
+	lower, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Query:      "api",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(lower) != 1 {
+		t.Fatalf("expected 1 result for 'api', got %d", len(lower))
+	}
+
+	// Uppercase query
+	upper, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Query:      "API",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(upper) != 1 {
+		t.Fatalf("expected 1 result for 'API', got %d", len(upper))
+	}
+
+	// Mixed case in description
+	mixed, err := s.ListRecords(ListOptions{
+		RecordType: models.TypeTask,
+		Query:      "EXTERNAL",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(mixed) != 1 {
+		t.Fatalf("expected 1 result for 'EXTERNAL', got %d", len(mixed))
+	}
+}
+
+func TestListRecords_EmptyFilters(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	_, _ = s.AddRecord(newTestMeeting("会议1", "2026-05-02", "10:00"))
+	_, _ = s.AddRecord(newTestTask("任务1", "2026-05-02"))
+
+	// Empty new fields should behave identically to the old behavior
+	results, err := s.ListRecords(ListOptions{})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 records with empty filters, got %d", len(results))
+	}
+}
+
+// TestConcurrentAddRecords verifies that 10 goroutines can concurrently call
+// AddRecord without data loss, file overwrites, or ID collisions. The mutex
+// in Storage serializes writes so all operations succeed with unique IDs.
+func TestConcurrentAddRecords(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	const numGoroutines = 10
+	type result struct {
+		rec interface{}
+		err error
+	}
+	results := make([]result, numGoroutines)
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			// Use different record types to spread across directories,
+			// reducing the chance of same-directory filename collision.
+			// Each goroutine gets a unique type based on index.
+			switch idx % 4 {
+			case 0:
+				rec := newTestMeeting(
+					fmt.Sprintf("并发会议-%d", idx),
+					"2026-05-02",
+					fmt.Sprintf("10:%02d", idx),
+				)
+				r, err := s.AddRecord(rec)
+				results[idx] = result{rec: r, err: err}
+			case 1:
+				rec := newTestTask(
+					fmt.Sprintf("并发任务-%d", idx),
+					"2026-05-02",
+				)
+				r, err := s.AddRecord(rec)
+				results[idx] = result{rec: r, err: err}
+			case 2:
+				rec := newTestReminder(
+					fmt.Sprintf("并发提醒-%d", idx),
+					"2026-05-02",
+					fmt.Sprintf("11:%02d", idx),
+				)
+				r, err := s.AddRecord(rec)
+				results[idx] = result{rec: r, err: err}
+			case 3:
+				rec := newTestLog(
+					fmt.Sprintf("并发日志-%d", idx),
+					"2026-05-02",
+					fmt.Sprintf("12:%02d", idx),
+				)
+				r, err := s.AddRecord(rec)
+				results[idx] = result{rec: r, err: err}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// All adds must succeed
+	for i, r := range results {
+		if r.err != nil {
+			t.Errorf("goroutine %d: AddRecord failed: %v", i, r.err)
+		}
+		if r.rec == nil {
+			t.Errorf("goroutine %d: AddRecord returned nil", i)
+		}
+	}
+
+	// All ShortIDs must be unique
+	ids := make(map[string]int)
+	for i, r := range results {
+		if r.rec == nil {
+			continue
+		}
+		cf := models.GetCommonFields(r.rec)
+		if cf == nil {
+			t.Errorf("goroutine %d: nil common fields", i)
+			continue
+		}
+		if first, exists := ids[cf.ShortID]; exists {
+			t.Errorf("duplicate ShortID %q from goroutines %d and %d", cf.ShortID, first, i)
+		}
+		ids[cf.ShortID] = i
+	}
+
+	// Verify all files exist on disk
+	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf(" Walk dir: %v", err)
+	}
+
+	// Count total JSON files written
+	jsonCount := 0
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".json") {
+			jsonCount++
+		}
+		return nil
+	})
+
+	if jsonCount != numGoroutines {
+		t.Errorf("expected %d JSON files on disk, found %d", numGoroutines, jsonCount)
+	}
+
+	t.Logf("concurrent add: %d records written, %d unique ShortIDs, %d files on disk",
+		numGoroutines, len(ids), jsonCount)
 }
 
 func BenchmarkAddRecord(b *testing.B) {

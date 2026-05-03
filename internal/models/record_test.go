@@ -326,11 +326,11 @@ func TestParseInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestShortIDFromFilename verifies deterministic 8-char hex output.
+// TestShortIDFromFilename verifies deterministic 16-char hex output.
 func TestShortIDFromFilename(t *testing.T) {
 	id := ShortIDFromFilename("20260430_103211.json")
-	if len(id) != 8 {
-		t.Errorf("ShortID length = %d, want 8", len(id))
+	if len(id) != 16 {
+		t.Errorf("ShortID length = %d, want 16", len(id))
 	}
 
 	// Same input should produce same output
@@ -347,8 +347,8 @@ func TestShortIDFromFilename(t *testing.T) {
 
 	// Non-standard filename (with suffix)
 	id4 := ShortIDFromFilename("20260317_1023_urine_health.json")
-	if len(id4) != 8 {
-		t.Errorf("ShortID length for non-standard filename = %d, want 8", len(id4))
+	if len(id4) != 16 {
+		t.Errorf("ShortID length for non-standard filename = %d, want 16", len(id4))
 	}
 }
 

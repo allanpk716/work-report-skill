@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -425,10 +426,18 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	recordType := models.RecordType(query.Get("type"))
 	date := query.Get("date")
+	from := query.Get("from")
+	to := query.Get("to")
+	status := query.Get("status")
+	q := query.Get("query")
 
 	opts := storage.ListOptions{
 		RecordType:       recordType,
 		Date:             date,
+		DateFrom:         from,
+		DateTo:           to,
+		Status:           status,
+		Query:            q,
 		IncludeCompleted: false,
 	}
 
@@ -500,6 +509,79 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[daemon] complete: short_id=%s", id)
 	jsonlResponse(w, "success", rec, "")
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/update/")
+	if id == "" {
+		errorResponse(w, "record_not_found", "missing entry id")
+		return
+	}
+
+	var fields map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+		errorResponse(w, "invalid_body", "invalid request body")
+		return
+	}
+
+	updated, err := s.storage.UpdateRecord(id, fields)
+	if err != nil {
+		log.Printf("[daemon] update error: id=%s err=%v", id, err)
+		switch {
+		case errors.Is(err, storage.ErrRecordNotFound):
+			errorResponse(w, "record_not_found", err.Error())
+		case errors.Is(err, storage.ErrRecordCompleted):
+			errorResponse(w, "already_completed", err.Error())
+		case errors.Is(err, storage.ErrRecordCancelled):
+			errorResponse(w, "already_cancelled", err.Error())
+		case errors.Is(err, storage.ErrEmptyUpdate):
+			errorResponse(w, "invalid_body", err.Error())
+		case errors.Is(err, storage.ErrFieldNotAllowed):
+			errorResponse(w, "invalid_field", err.Error())
+		default:
+			errorResponse(w, "storage_error", err.Error())
+		}
+		return
+	}
+
+	// Check if time-related fields changed — if so, re-register scheduler entry
+	schedulerFields := map[string]bool{
+		"time": true, "date": true, "remind_before": true, "recurring": true,
+	}
+	needsSchedulerUpdate := false
+	for field := range fields {
+		if schedulerFields[field] {
+			needsSchedulerUpdate = true
+			break
+		}
+	}
+
+	if s.scheduler != nil && needsSchedulerUpdate {
+		// Unregister old entry (ignore error — may not have been scheduled)
+		_ = s.scheduler.Unregister(id)
+		// Register with updated record
+		if err := s.scheduler.Register(updated); err != nil {
+			log.Printf("[daemon] scheduler re-register warning: short_id=%s err=%v", id, err)
+		}
+	}
+
+	cf := models.GetCommonFields(updated)
+	log.Printf("[daemon] update: short_id=%s type=%s fields=%v", cf.ShortID, cf.Type, fieldKeys(fields))
+
+	jsonlResponse(w, "success", updated, "")
+}
+
+// fieldKeys returns the keys of a map for logging.
+func fieldKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -640,6 +722,149 @@ func (s *Server) handleReportPushDate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.sendReportPush(w, rpt)
+}
+
+func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	query := r.URL.Query()
+	from := query.Get("from")
+	to := query.Get("to")
+	if from == "" || to == "" {
+		errorResponse(w, "invalid_body", "missing required query params: from and to")
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_range error: from=%s to=%s err=%v", from, to, err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate range report: %v", err))
+		return
+	}
+
+	log.Printf("[daemon] report_range: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+		from, to, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
+		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+
+	jsonlResponse(w, "success", rpt, "")
+}
+
+func (s *Server) handleReportWeek(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_week error: err=%v", err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate week report: %v", err))
+		return
+	}
+
+	log.Printf("[daemon] report_week: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+		rpt.DateFrom, rpt.DateTo, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
+		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+
+	jsonlResponse(w, "success", rpt, "")
+}
+
+func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	query := r.URL.Query()
+	from := query.Get("from")
+	to := query.Get("to")
+	if from == "" || to == "" {
+		errorResponse(w, "invalid_body", "missing required query params: from and to")
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_push_range error: from=%s to=%s err=%v", from, to, err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate range report: %v", err))
+		return
+	}
+
+	s.sendRangeReportPush(w, rpt)
+}
+
+func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
+	if err != nil {
+		log.Printf("[daemon] report_push_week error: err=%v", err)
+		errorResponse(w, "storage_error", fmt.Sprintf("failed to generate week report: %v", err))
+		return
+	}
+
+	s.sendRangeReportPush(w, rpt)
+}
+
+// sendRangeReportPush generates a Pushover notification from a range report.
+// Returns pushover_not_configured error code if Pushover credentials are empty.
+func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeReport) {
+	if s.config == nil || s.config.Pushover.APIToken == "" || s.config.Pushover.UserKey == "" {
+		log.Printf("[daemon] report_push_range: pushover_not_configured from=%s to=%s", rpt.DateFrom, rpt.DateTo)
+		errorResponse(w, "pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)")
+		return
+	}
+
+	cfg := pushover.Config{
+		APIToken: s.config.Pushover.APIToken,
+		UserKey:  s.config.Pushover.UserKey,
+	}
+
+	title := fmt.Sprintf("工作报告 %s ~ %s", rpt.DateFrom, rpt.DateTo)
+	if err := pushover.Send(context.Background(), cfg, rpt.Markdown, title, 0); err != nil {
+		log.Printf("[daemon] report_push_range: send failed from=%s to=%s err=%v", rpt.DateFrom, rpt.DateTo, err)
+		errorResponse(w, "push_error", fmt.Sprintf("Pushover send failed: %v", err))
+		return
+	}
+
+	log.Printf("[daemon] report_push_range: sent from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+		rpt.DateFrom, rpt.DateTo, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
+		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+
+	jsonlResponse(w, "success", map[string]interface{}{
+		"date_from": rpt.DateFrom,
+		"date_to":   rpt.DateTo,
+		"days":      rpt.DaysCount,
+		"total":     rpt.Summary.Total,
+		"pushed":    true,
+		"summary":   rpt.Summary,
+	}, "")
 }
 
 // sendReportPush generates a Pushover notification from the daily report.

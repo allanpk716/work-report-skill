@@ -1542,7 +1542,7 @@ func TestReportPushToday_Success(t *testing.T) {
 	srv, _ := newTestServer(t, cfg)
 
 	// Add a record for today
-	body := strings.NewReader(`{"type":"task","title":"push test task","date":"2026-05-02"}`)
+	body := strings.NewReader(fmt.Sprintf(`{"type":"task","title":"push test task","date":"%s"}`, time.Now().In(srv.config.Location()).Format("2006-01-02")))
 	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1894,5 +1894,731 @@ func TestHandleStatusEmptyConfig(t *testing.T) {
 	textInfo := llmInfo["text"].(map[string]interface{})
 	if textInfo["configured"] != false {
 		t.Errorf("expected llm.text configured=false for empty config")
+	}
+}
+
+// ── List filter tests ──
+
+func addRecord(t *testing.T, srv *Server, typ, title, desc, date string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"type":"%s","title":"%s","description":"%s","date":"%s"}`, typ, title, desc, date)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+}
+
+func parseListEntries(t *testing.T, body []byte) []map[string]interface{} {
+	t.Helper()
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(body), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", body)
+	}
+	if record["status"] != "success" {
+		t.Fatalf("expected status=success, got %v", record["status"])
+	}
+	data, _ := record["data"].(map[string]interface{})
+	entries, _ := data["entries"].([]interface{})
+	result := make([]map[string]interface{}, len(entries))
+	for i, e := range entries {
+		result[i] = e.(map[string]interface{})
+	}
+	return result
+}
+
+func TestHandleList_DateRange(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Use meetings — date-tree storage avoids same-second collisions
+	addRecord(t, srv, "meeting", "early meeting", "", "2026-04-20")
+	addRecord(t, srv, "meeting", "in range 1", "", "2026-04-25")
+	addRecord(t, srv, "meeting", "in range 2", "", "2026-04-28")
+	addRecord(t, srv, "meeting", "in range 3", "", "2026-05-01")
+	addRecord(t, srv, "meeting", "late meeting", "", "2026-05-05")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&from=2026-04-25&to=2026-05-01", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	entries := parseListEntries(t, w.Body.Bytes())
+	if len(entries) != 3 {
+		t.Errorf("expected 3 entries in date range, got %d", len(entries))
+		for _, e := range entries {
+			t.Logf("  entry: title=%v date=%v", e["title"], e["date"])
+		}
+	}
+}
+
+func TestHandleList_StatusFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add two tasks, complete one
+	addRecord(t, srv, "task", "active task", "", "2026-05-02")
+
+	time.Sleep(1 * time.Second) // avoid ShortID collision
+
+	body2 := strings.NewReader(`{"type":"task","title":"to complete task","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body2)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp2 map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp2)
+	shortID2 := addResp2["data"].(map[string]interface{})["short_id"].(string)
+
+	// Complete the second task
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID2, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Filter by status=completed
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&status=completed", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	entries, _ := data["entries"].([]interface{})
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 completed entry, got %d", len(entries))
+	}
+	entry := entries[0].(map[string]interface{})
+	if entry["status"] != "completed" {
+		t.Errorf("expected status=completed, got %v", entry["status"])
+	}
+	if entry["short_id"] != shortID2 {
+		t.Errorf("expected short_id=%s, got %v", shortID2, entry["short_id"])
+	}
+
+	// Filter by status=active
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&status=active", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data = record["data"].(map[string]interface{})
+	entries, _ = data["entries"].([]interface{})
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 active entry, got %d", len(entries))
+	}
+	entry = entries[0].(map[string]interface{})
+	if entry["status"] != "active" {
+		t.Errorf("expected status=active, got %v", entry["status"])
+	}
+}
+
+func TestHandleList_KeywordSearch(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Use different types to avoid task ShortID collisions in flat dir
+	addRecord(t, srv, "task", "代码评审", "评审PR #123", "2026-05-02")
+	addRecord(t, srv, "meeting", "周会", "讨论评审流程", "2026-05-02")
+	addRecord(t, srv, "log", "部署日志", "生产环境部署", "2026-05-02")
+
+	// Search for "评审" — should match task title + meeting description
+	req := httptest.NewRequest(http.MethodGet, "/api/list?query=%E8%AF%84%E5%AE%A1", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	entries := parseListEntries(t, w.Body.Bytes())
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries matching '评审', got %d", len(entries))
+		for _, e := range entries {
+			t.Logf("  entry: type=%v title=%v", e["type"], e["title"])
+		}
+	}
+
+	// Verify case-insensitivity with uppercase query
+	req = httptest.NewRequest(http.MethodGet, "/api/list?query=PR", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	entries = parseListEntries(t, w.Body.Bytes())
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry matching 'PR', got %d", len(entries))
+	}
+}
+
+func TestHandleList_CombinedFilters(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Use meetings (date-tree storage) to avoid flat-dir ShortID collisions
+	addRecord(t, srv, "meeting", "设计文档评审", "评审V2设计", "2026-04-25")
+	addRecord(t, srv, "meeting", "代码评审", "评审PR", "2026-04-28")
+	addRecord(t, srv, "log", "周会评审", "评审本周工作", "2026-04-28")
+	addRecord(t, srv, "meeting", "上线部署", "部署到生产", "2026-05-01")
+	addRecord(t, srv, "meeting", "测试评审", "评审测试报告", "2026-05-05")
+
+	// Combined: type=meeting + from=2026-04-25 + to=2026-05-01 + status=active
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&from=2026-04-25&to=2026-05-01&status=active", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	entries := parseListEntries(t, w.Body.Bytes())
+	// Should get: 设计文档评审(04-25), 代码评审(04-28), 上线部署(05-01) — 3 meetings in range
+	if len(entries) != 3 {
+		t.Errorf("expected 3 entries for combined filter, got %d", len(entries))
+		for _, e := range entries {
+			t.Logf("  entry: type=%v title=%v date=%v status=%v",
+				e["type"], e["title"], e["date"], e["status"])
+		}
+	}
+
+	// Verify all are active meetings in the date range
+	for _, e := range entries {
+		if e["type"] != "meeting" {
+			t.Errorf("expected type=meeting, got %v", e["type"])
+		}
+		if e["status"] != "active" {
+			t.Errorf("expected status=active, got %v", e["status"])
+		}
+		dateStr, _ := e["date"].(string)
+		if dateStr < "2026-04-25" || dateStr > "2026-05-01" {
+			t.Errorf("date %s outside range [2026-04-25, 2026-05-01]", dateStr)
+		}
+	}
+}
+
+// ── Update endpoint tests ──
+
+func TestUpdateEndpoint_UpdateTitleOnMeeting(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting
+	addBody := strings.NewReader(`{"type":"meeting","title":"original meeting","date":"2026-05-02","time":"10:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Update title
+	updateBody := strings.NewReader(`{"title":"updated meeting title"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var updateResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &updateResp)
+	data := updateResp["data"].(map[string]interface{})
+	if data["title"] != "updated meeting title" {
+		t.Errorf("expected title='updated meeting title', got %v", data["title"])
+	}
+}
+
+func TestUpdateEndpoint_UpdateTimeAndLocationOnTask(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a task
+	addBody := strings.NewReader(`{"type":"task","title":"task test","date":"2026-05-02","time":"09:00","location":"Office A"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Update time + location
+	updateBody := strings.NewReader(`{"time":"15:00","location":"Room B"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var updateResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &updateResp)
+	data := updateResp["data"].(map[string]interface{})
+	if data["time"] != "15:00" {
+		t.Errorf("expected time=15:00, got %v", data["time"])
+	}
+	if data["location"] != "Room B" {
+		t.Errorf("expected location='Room B', got %v", data["location"])
+	}
+}
+
+func TestUpdateEndpoint_UpdateTimeTriggersSchedulerReregister(t *testing.T) {
+	srv, _, _ := newTestServerWithScheduler(t)
+
+	// Add a reminder with a future date
+	futureDate := time.Now().Add(48 * time.Hour).Format("2006-01-02")
+	addBody := strings.NewReader(fmt.Sprintf(
+		`{"type":"reminder","title":"sched test","date":"%s","time":"10:00","remind_before":"15m"}`,
+		futureDate,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Verify initial scheduler entry
+	state := srv.scheduler.State()
+	if len(state.Entries) != 1 {
+		t.Fatalf("expected 1 scheduler entry after add, got %d", len(state.Entries))
+	}
+
+	// Update time — should trigger scheduler re-register
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify scheduler still has exactly 1 entry (unregistered old + registered new)
+	state = srv.scheduler.State()
+	if len(state.Entries) != 1 {
+		t.Errorf("expected 1 scheduler entry after update, got %d", len(state.Entries))
+	}
+
+	// Verify the entry's trigger time reflects the update
+	entry := state.GetEntry(shortID)
+	if entry == nil {
+		t.Fatal("scheduler entry not found for short_id after update")
+	}
+}
+
+func TestUpdateEndpoint_RecordNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	updateBody := strings.NewReader(`{"title":"no such record"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/nonexist", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
+}
+
+func TestUpdateEndpoint_AlreadyCompleted(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add + complete a task
+	addBody := strings.NewReader(`{"type":"task","title":"complete then update","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	// Try to update the completed record
+	updateBody := strings.NewReader(`{"title":"try update completed"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "already_completed")
+}
+
+func TestUpdateEndpoint_AlreadyCancelled(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add + cancel a task
+	addBody := strings.NewReader(`{"type":"task","title":"cancel then update","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/cancel/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	// Try to update the cancelled record
+	updateBody := strings.NewReader(`{"title":"try update cancelled"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "already_cancelled")
+}
+
+func TestUpdateEndpoint_TypeFieldInvalid(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting
+	addBody := strings.NewReader(`{"type":"meeting","title":"try change type","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Try to update the type field — should fail
+	updateBody := strings.NewReader(`{"type":"task"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_field")
+}
+
+func TestUpdateEndpoint_EmptyFieldsInvalid(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting
+	addBody := strings.NewReader(`{"type":"meeting","title":"empty update test","date":"2026-05-02"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Send empty JSON body
+	updateBody := strings.NewReader(`{}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestUpdateEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/update/abc123", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+}
+
+func TestUpdateEndpoint_MissingID(t *testing.T) {
+	srv, _ := newTestServer(t)
+	updateBody := strings.NewReader(`{"title":"no id"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
+}
+
+func TestUpdateEndpoint_InvalidJSON(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/abc123", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestUpdateEndpoint_NilScheduler_NoPanic(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a task
+	addBody := strings.NewReader(`{"type":"task","title":"no scheduler update","date":"2026-05-02","time":"10:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	shortID := addData["short_id"].(string)
+
+	// Update time — with nil scheduler, should not panic
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+}
+
+// ── Report range and week tests ──
+
+func TestReportRangeEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records across 3 dates
+	addRecord(t, srv, "meeting", "day1 meeting", "", "2026-04-25")
+	addRecord(t, srv, "task", "day1 task", "", "2026-04-25")
+	addRecord(t, srv, "meeting", "day2 meeting", "", "2026-04-26")
+	addRecord(t, srv, "log", "day3 log", "", "2026-04-27")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/report/range?from=2026-04-25&to=2026-04-27", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	daysCount, _ := data["days_count"].(float64)
+	if daysCount != 3 {
+		t.Errorf("expected days_count=3, got %v", daysCount)
+	}
+
+	summary, _ := data["summary"].(map[string]interface{})
+	meetings, _ := summary["meetings"].(float64)
+	if meetings != 2 {
+		t.Errorf("expected 2 meetings, got %v", meetings)
+	}
+	tasks, _ := summary["tasks"].(float64)
+	if tasks != 1 {
+		t.Errorf("expected 1 task, got %v", tasks)
+	}
+	total, _ := summary["total"].(float64)
+	if total != 4 {
+		t.Errorf("expected total=4, got %v", total)
+	}
+
+	// Verify markdown present
+	md, _ := data["markdown"].(string)
+	if md == "" {
+		t.Error("expected markdown field in range report")
+	}
+}
+
+func TestReportRangeEndpoint_Empty(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/report/range?from=2026-01-01&to=2026-01-03", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	daysCount, _ := data["days_count"].(float64)
+	if daysCount != 3 {
+		t.Errorf("expected days_count=3, got %v", daysCount)
+	}
+	summary, _ := data["summary"].(map[string]interface{})
+	total, _ := summary["total"].(float64)
+	if total != 0 {
+		t.Errorf("expected total=0 for empty range, got %v", total)
+	}
+}
+
+func TestReportRangeEndpoint_InvalidDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/report/range?from=not-a-date&to=2026-05-01", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "storage_error")
+}
+
+func TestReportRangeEndpoint_MissingParams(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/report/range?from=2026-05-01", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestReportRangeEndpoint_FromAfterTo(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/report/range?from=2026-05-05&to=2026-05-01", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "storage_error")
+}
+
+func TestReportWeekEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records for today (within current week)
+	addRecord(t, srv, "meeting", "week meeting", "", "2026-05-02")
+	addRecord(t, srv, "task", "week task", "", "2026-05-02")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/report/week", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	daysCount, _ := data["days_count"].(float64)
+	if daysCount != 7 {
+		t.Errorf("expected days_count=7 for week report, got %v", daysCount)
+	}
+	summary, _ := data["summary"].(map[string]interface{})
+	total, _ := summary["total"].(float64)
+	if total != 2 {
+		t.Errorf("expected total=2 in week report, got %v", total)
+	}
+}
+
+func TestReportWeekEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/report/week", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+}
+
+func TestReportPushWeekEndpoint(t *testing.T) {
+	var gotTitle string
+	mockPush := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		gotTitle = r.FormValue("title")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockPush.Close()
+
+	origURL := pushover.PushoverURL()
+	pushover.SetPushoverURL(mockPush.URL)
+	defer pushover.SetPushoverURL(origURL)
+
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "test-token",
+			UserKey:  "test-user",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	addRecord(t, srv, "task", "week push task", "", "2026-05-02")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/report/push/week", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	if data["pushed"] != true {
+		t.Errorf("expected pushed=true, got %v", data["pushed"])
+	}
+	if data["days"] != float64(7) {
+		t.Errorf("expected days=7, got %v", data["days"])
+	}
+	if gotTitle == "" {
+		t.Error("expected Pushover title to be set")
+	}
+}
+
+func TestReportPushRangeEndpoint(t *testing.T) {
+	var gotTitle, gotMessage string
+	mockPush := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		gotTitle = r.FormValue("title")
+		gotMessage = r.FormValue("message")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockPush.Close()
+
+	origURL := pushover.PushoverURL()
+	pushover.SetPushoverURL(mockPush.URL)
+	defer pushover.SetPushoverURL(origURL)
+
+	cfg := &config.Config{
+		Pushover: config.PushoverConfig{
+			APIToken: "test-token",
+			UserKey:  "test-user",
+		},
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	addRecord(t, srv, "meeting", "range push meeting", "", "2026-04-28")
+	addRecord(t, srv, "log", "range push log", "", "2026-04-29")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/report/push/range?from=2026-04-28&to=2026-04-30", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	if data["pushed"] != true {
+		t.Errorf("expected pushed=true, got %v", data["pushed"])
+	}
+	if data["date_from"] != "2026-04-28" {
+		t.Errorf("expected date_from=2026-04-28, got %v", data["date_from"])
+	}
+	if data["date_to"] != "2026-04-30" {
+		t.Errorf("expected date_to=2026-04-30, got %v", data["date_to"])
+	}
+	if gotTitle == "" {
+		t.Error("expected Pushover title to be set")
+	}
+	if !strings.Contains(gotMessage, "range push meeting") {
+		t.Errorf("expected message to contain meeting title, got %q", gotMessage)
 	}
 }

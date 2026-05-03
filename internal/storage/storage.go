@@ -24,15 +24,20 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"wr/internal/models"
 )
 
 // Storage provides CRUD access to work records on disk.
+// All write operations (AddRecord, CompleteRecord, CancelRecord, UpdateRecord)
+// are serialized via a mutex to prevent concurrent file I/O corruption and
+// ShortID collisions.
 type Storage struct {
 	baseDir string
 	logger  *log.Logger
+	mu      sync.Mutex
 }
 
 // New creates a Storage rooted at baseDir (the work-records/ directory).
@@ -50,6 +55,9 @@ func New(baseDir string, logger *log.Logger) *Storage {
 // For meetings and logs, the file is placed under <type>/YYYY/MM/DD/.
 // For tasks and reminders, the file is placed under <type>/active/.
 func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	cf := models.GetCommonFields(rec)
 	if cf == nil {
 		return nil, fmt.Errorf("storage: add: unknown record type")
@@ -99,6 +107,15 @@ type ListOptions struct {
 	RecordType models.RecordType
 	// Date filters records by date string (YYYY-MM-DD). Empty means no filter.
 	Date string
+	// DateFrom filters records on or after this date (YYYY-MM-DD). Empty means no lower bound.
+	DateFrom string
+	// DateTo filters records on or before this date (YYYY-MM-DD). Empty means no upper bound.
+	DateTo string
+	// Status filters by status (active, completed, cancelled, all). Empty means no filter.
+	// When set to "completed" or "all", IncludeCompleted is automatically enabled.
+	Status string
+	// Query performs case-insensitive keyword search against title and description.
+	Query string
 	// IncludeCompleted controls whether to also scan completed directories.
 	// For tasks and reminders this includes completed/ subdirs.
 	// For meetings this includes completed/ subdirs.
@@ -108,18 +125,24 @@ type ListOptions struct {
 
 // ListedRecord is a lightweight view of a record returned by listing.
 type ListedRecord struct {
-	ShortID string
-	Type    models.RecordType
-	Title   string
-	Date    string
-	Time    string
-	Status  string
-	FilePath string
+	ShortID     string
+	Type        models.RecordType
+	Title       string
+	Description string
+	Date        string
+	Time        string
+	Status      string
+	FilePath    string
 }
 
 // ListRecords scans the directory for records matching the options.
 // Returns records sorted by date and time (newest first).
 func (s *Storage) ListRecords(opts ListOptions) ([]ListedRecord, error) {
+	// Auto-enable IncludeCompleted when Status filter requires it.
+	if opts.Status == models.StatusCompleted || opts.Status == "all" {
+		opts.IncludeCompleted = true
+	}
+
 	var results []ListedRecord
 
 	scanTypes := []models.RecordType{opts.RecordType}
@@ -169,6 +192,9 @@ func (s *Storage) GetByID(shortID string) (interface{}, string, error) {
 // status and completed_at fields. For logs, this is a no-op (logs are not
 // completable).
 func (s *Storage) CompleteRecord(shortID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	rec, oldPath, err := s.GetByID(shortID)
 	if err != nil {
 		return err
@@ -229,6 +255,9 @@ func (s *Storage) CompleteRecord(shortID string) error {
 
 // CancelRecord sets a record's status to cancelled, updating the file in place.
 func (s *Storage) CancelRecord(shortID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	rec, path, err := s.GetByID(shortID)
 	if err != nil {
 		return err
@@ -260,6 +289,255 @@ func (s *Storage) CancelRecord(shortID string) error {
 	}
 
 	s.logger.Printf("cancel record: short_id=%s type=%s path=%s", shortID, cf.Type, path)
+	return nil
+}
+
+// allowedUpdateFields lists the fields that may be passed to UpdateRecord.
+// Immutable or system-managed fields (type, status, short_id, saved_at) are excluded.
+var allowedUpdateFields = map[string]bool{
+	"title": true, "description": true, "date": true, "time": true,
+	"end_time": true, "location": true, "related_person": true,
+	"priority": true, "tags": true, "remind_before": true,
+	"recurring": true, "participants": true, "agenda": true,
+	"notes": true, "progress": true,
+}
+
+// ErrRecordNotFound is returned by UpdateRecord when the short ID does not
+// resolve to any record on disk.
+var ErrRecordNotFound = fmt.Errorf("storage: record not found")
+
+// ErrRecordCompleted is returned by UpdateRecord when the target record has
+// already been completed.
+var ErrRecordCompleted = fmt.Errorf("storage: record already completed")
+
+// ErrRecordCancelled is returned by UpdateRecord when the target record has
+// already been cancelled.
+var ErrRecordCancelled = fmt.Errorf("storage: record already cancelled")
+
+// ErrEmptyUpdate is returned by UpdateRecord when the fields map is empty.
+var ErrEmptyUpdate = fmt.Errorf("storage: empty update fields")
+
+// ErrFieldNotAllowed is returned by UpdateRecord when the fields map contains
+// a key that is not in the allowed set (e.g. "type", "status", "short_id").
+var ErrFieldNotAllowed = fmt.Errorf("storage: field not allowed for update")
+
+// UpdateRecord applies field-level updates to the record identified by shortID.
+// It validates that the record exists, is not completed or cancelled, and that
+// only allowed fields are being modified. It writes the updated record back to
+// the same file path and returns the updated record.
+//
+// Allowed fields: title, description, date, time, end_time, location,
+// related_person, priority, tags, remind_before, recurring, participants,
+// agenda, notes, progress.
+//
+// Disallowed fields: type (immutable), status (use Complete/Cancel),
+// short_id, saved_at.
+func (s *Storage) UpdateRecord(shortID string, fields map[string]interface{}) (interface{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(fields) == 0 {
+		return nil, ErrEmptyUpdate
+	}
+
+	// Validate field names before doing any I/O
+	for key := range fields {
+		if !allowedUpdateFields[key] {
+			return nil, fmt.Errorf("%w: %q", ErrFieldNotAllowed, key)
+		}
+	}
+
+	// Resolve record
+	rec, path, err := s.GetByID(shortID)
+	if err != nil {
+		return nil, ErrRecordNotFound
+	}
+
+	cf := models.GetCommonFields(rec)
+	if cf == nil {
+		return nil, fmt.Errorf("storage: update: unknown record type for %s", shortID)
+	}
+
+	// Validate status
+	if cf.Status == models.StatusCompleted {
+		return nil, ErrRecordCompleted
+	}
+	if cf.Status == models.StatusCancelled {
+		return nil, ErrRecordCancelled
+	}
+
+	// Track which fields changed for logging
+	var changedFields []string
+
+	// Apply common fields
+	changedFields = append(changedFields, s.applyCommonFields(cf, fields)...)
+
+	// Apply type-specific fields
+	changedFields = append(changedFields, s.applyTypeFields(rec, fields)...)
+
+	// Set updated timestamp
+	now := time.Now()
+	cf.UpdatedAt = now.Format(time.RFC3339Nano)
+
+	// Marshal and write back
+	data, err := models.MarshalRecord(rec)
+	if err != nil {
+		return nil, fmt.Errorf("storage: update: marshal: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return nil, fmt.Errorf("storage: update: write %s: %w", path, err)
+	}
+
+	s.logger.Printf("update record: short_id=%s type=%s fields=%v path=%s",
+		shortID, cf.Type, changedFields, path)
+
+	return rec, nil
+}
+
+// applyCommonFields sets allowed common fields on cf and returns the names of
+// fields that were actually changed.
+func (s *Storage) applyCommonFields(cf *models.CommonFields, fields map[string]interface{}) []string {
+	var changed []string
+
+	if v, ok := fields["title"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.Title = sv
+			changed = append(changed, "title")
+		}
+	}
+	if v, ok := fields["description"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.Description = sv
+			changed = append(changed, "description")
+		}
+	}
+	if v, ok := fields["date"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.Date = sv
+			changed = append(changed, "date")
+		}
+	}
+	if v, ok := fields["time"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.Time = sv
+			changed = append(changed, "time")
+		}
+	}
+	if v, ok := fields["end_time"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.EndTime = sv
+			changed = append(changed, "end_time")
+		}
+	}
+	if v, ok := fields["location"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.Location = sv
+			changed = append(changed, "location")
+		}
+	}
+	if v, ok := fields["related_person"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.RelatedPerson = sv
+			changed = append(changed, "related_person")
+		}
+	}
+	if v, ok := fields["remind_before"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.RemindBefore = sv
+			changed = append(changed, "remind_before")
+		}
+	}
+	if v, ok := fields["tags"]; ok {
+		if slice := toStringSlice(v); slice != nil {
+			cf.Tags = slice
+			changed = append(changed, "tags")
+		}
+	}
+
+	// priority is handled in applyTypeFields for LogRecord (shadowed field)
+	// and here for all other types
+	if v, ok := fields["priority"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.Priority = sv
+			changed = append(changed, "priority")
+		}
+	}
+
+	return changed
+}
+
+// applyTypeFields sets type-specific fields based on the concrete record type.
+// Returns the names of fields that were changed.
+func (s *Storage) applyTypeFields(rec interface{}, fields map[string]interface{}) []string {
+	var changed []string
+
+	switch v := rec.(type) {
+	case *models.MeetingRecord:
+		if p, ok := fields["participants"]; ok {
+			if slice := toStringSlice(p); slice != nil {
+				v.Participants = slice
+				changed = append(changed, "participants")
+			}
+		}
+		if a, ok := fields["agenda"]; ok {
+			if sv, ok := a.(string); ok {
+				v.Agenda = sv
+				changed = append(changed, "agenda")
+			}
+		}
+	case *models.ReminderRecord:
+		if n, ok := fields["notes"]; ok {
+			if sv, ok := n.(string); ok {
+				v.Notes = sv
+				changed = append(changed, "notes")
+			}
+		}
+		if r, ok := fields["recurring"]; ok {
+			if sv, ok := r.(string); ok {
+				v.Recurring = sv
+				changed = append(changed, "recurring")
+			}
+		}
+	case *models.LogRecord:
+		// LogRecord has its own Priority field that shadows CommonFields.Priority.
+		// Setting priority on LogRecord must go through the outer struct.
+		if p, ok := fields["priority"]; ok {
+			if sv, ok := p.(string); ok {
+				v.Priority = sv
+				changed = append(changed, "priority")
+			}
+		}
+		if pr, ok := fields["progress"]; ok {
+			if sv, ok := pr.(string); ok {
+				v.Progress = sv
+				changed = append(changed, "progress")
+			}
+		}
+	case *models.TaskRecord:
+		// TaskRecord has no type-specific updatable fields in the allowed list.
+		// All its unique fields (completed_at, raw_input, etc.) are system-managed.
+	}
+
+	return changed
+}
+
+// toStringSlice converts an interface{} to []string. Accepts both []string
+// directly and []interface{} containing strings.
+func toStringSlice(v interface{}) []string {
+	if slice, ok := v.([]string); ok {
+		return slice
+	}
+	if slice, ok := v.([]interface{}); ok {
+		result := make([]string, 0, len(slice))
+		for _, item := range slice {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			} else {
+				return nil // not all strings, reject
+			}
+		}
+		return result
+	}
 	return nil
 }
 
@@ -447,20 +725,42 @@ func (s *Storage) recordToListed(rec interface{}, filePath string) *ListedRecord
 		return nil
 	}
 	return &ListedRecord{
-		ShortID:  cf.ShortID,
-		Type:     cf.Type,
-		Title:    cf.Title,
-		Date:     cf.Date,
-		Time:     cf.Time,
-		Status:   cf.Status,
-		FilePath: filePath,
+		ShortID:     cf.ShortID,
+		Type:        cf.Type,
+		Title:       cf.Title,
+		Description: cf.Description,
+		Date:        cf.Date,
+		Time:        cf.Time,
+		Status:      cf.Status,
+		FilePath:    filePath,
 	}
 }
 
 // matchesFilter checks if a listed record matches the filter options.
 func (s *Storage) matchesFilter(lr *ListedRecord, opts ListOptions) bool {
+	// Exact date match (original behavior)
 	if opts.Date != "" && lr.Date != opts.Date {
 		return false
+	}
+	// Date range: from (inclusive)
+	if opts.DateFrom != "" && lr.Date < opts.DateFrom {
+		return false
+	}
+	// Date range: to (inclusive)
+	if opts.DateTo != "" && lr.Date > opts.DateTo {
+		return false
+	}
+	// Status filter: skip when "all" or empty
+	if opts.Status != "" && opts.Status != "all" && lr.Status != opts.Status {
+		return false
+	}
+	// Keyword search: case-insensitive match on title and description
+	if opts.Query != "" {
+		q := strings.ToLower(opts.Query)
+		if !strings.Contains(strings.ToLower(lr.Title), q) &&
+			!strings.Contains(strings.ToLower(lr.Description), q) {
+			return false
+		}
 	}
 	return true
 }
@@ -491,10 +791,19 @@ func (s *Storage) findRecordByID(rt models.RecordType, shortID string) (interfac
 }
 
 // findInDateTree walks a date tree looking for a record by short ID.
+// Supports prefix matching: if an exact match is not found, it will try
+// matching records whose ShortID starts with the query string (enabling
+// resolution of legacy 8-char IDs against newer 16-char IDs).
 func (s *Storage) findInDateTree(root string, shortID string) (interface{}, string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, "", err
+	}
+
+	// Collect prefix-matched candidates in case exact match fails.
+	var prefixCandidates []struct {
+		rec      interface{}
+		fullPath string
 	}
 
 	for _, entry := range entries {
@@ -531,16 +840,47 @@ func (s *Storage) findInDateTree(root string, shortID string) (interface{}, stri
 		if cf != nil && cf.ShortID == shortID {
 			return rec, fullPath, nil
 		}
+
+		// Check prefix match for backward compatibility (8-char → 16-char)
+		if cf != nil && strings.HasPrefix(cf.ShortID, shortID) {
+			prefixCandidates = append(prefixCandidates, struct {
+				rec      interface{}
+				fullPath string
+			}{rec, fullPath})
+		}
+		// Also check filename-derived ID prefix
+		if strings.HasPrefix(computedID, shortID) {
+			prefixCandidates = append(prefixCandidates, struct {
+				rec      interface{}
+				fullPath string
+			}{rec, fullPath})
+		}
+	}
+
+	// If we got exactly one prefix match, use it
+	if len(prefixCandidates) == 1 {
+		return prefixCandidates[0].rec, prefixCandidates[0].fullPath, nil
+	}
+	if len(prefixCandidates) > 1 {
+		return nil, "", fmt.Errorf("short ID %q matches multiple records (ambiguous prefix)", shortID)
 	}
 
 	return nil, "", fmt.Errorf("not found")
 }
 
 // findInFlatDir scans a flat directory for a record by short ID.
+// Supports prefix matching: if an exact match is not found, it will try
+// matching records whose ShortID starts with the query string.
 func (s *Storage) findInFlatDir(dir string, shortID string) (interface{}, string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, "", err
+	}
+
+	// Collect prefix-matched candidates in case exact match fails.
+	var prefixCandidates []struct {
+		rec      interface{}
+		fullPath string
 	}
 
 	for _, entry := range entries {
@@ -567,6 +907,28 @@ func (s *Storage) findInFlatDir(dir string, shortID string) (interface{}, string
 		if cf != nil && cf.ShortID == shortID {
 			return rec, fullPath, nil
 		}
+
+		// Check prefix match for backward compatibility
+		if cf != nil && strings.HasPrefix(cf.ShortID, shortID) {
+			prefixCandidates = append(prefixCandidates, struct {
+				rec      interface{}
+				fullPath string
+			}{rec, fullPath})
+		}
+		if strings.HasPrefix(computedID, shortID) {
+			prefixCandidates = append(prefixCandidates, struct {
+				rec      interface{}
+				fullPath string
+			}{rec, fullPath})
+		}
+	}
+
+	// If we got exactly one prefix match, use it
+	if len(prefixCandidates) == 1 {
+		return prefixCandidates[0].rec, prefixCandidates[0].fullPath, nil
+	}
+	if len(prefixCandidates) > 1 {
+		return nil, "", fmt.Errorf("short ID %q matches multiple records (ambiguous prefix)", shortID)
 	}
 
 	return nil, "", fmt.Errorf("not found")

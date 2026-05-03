@@ -57,12 +57,68 @@ var reportPushDateCmd = &cobra.Command{
 	},
 }
 
+var reportWeekCmd = &cobra.Command{
+	Use:   "week",
+	Short: "Generate report for the current week (Mon–Sun)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return client.CallDaemonGet(os.Stdout, "/api/report/week")
+	},
+}
+
+var reportRangeFrom string
+var reportRangeTo string
+
+var reportRangeCmd = &cobra.Command{
+	Use:   "range",
+	Short: "Generate report for a date range",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if reportRangeFrom == "" || reportRangeTo == "" {
+			return fmt.Errorf("both --from and --to are required")
+		}
+		path := fmt.Sprintf("/api/report/range?from=%s&to=%s", reportRangeFrom, reportRangeTo)
+		return client.CallDaemonGet(os.Stdout, path)
+	},
+}
+
+var reportPushWeekCmd = &cobra.Command{
+	Use:   "week",
+	Short: "Push the current week's report via Pushover",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return client.CallDaemonPost(os.Stdout, "/api/report/push/week", nil)
+	},
+}
+
+var reportPushRangeFrom string
+var reportPushRangeTo string
+
+var reportPushRangeCmd = &cobra.Command{
+	Use:   "range",
+	Short: "Push a date range report via Pushover",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if reportPushRangeFrom == "" || reportPushRangeTo == "" {
+			return fmt.Errorf("both --from and --to are required")
+		}
+		path := fmt.Sprintf("/api/report/push/range?from=%s&to=%s", reportPushRangeFrom, reportPushRangeTo)
+		return client.CallDaemonPost(os.Stdout, path, nil)
+	},
+}
+
 func init() {
+	reportRangeCmd.Flags().StringVar(&reportRangeFrom, "from", "", "Start date (YYYY-MM-DD, required)")
+	reportRangeCmd.Flags().StringVar(&reportRangeTo, "to", "", "End date (YYYY-MM-DD, required)")
+
+	reportPushRangeCmd.Flags().StringVar(&reportPushRangeFrom, "from", "", "Start date (YYYY-MM-DD, required)")
+	reportPushRangeCmd.Flags().StringVar(&reportPushRangeTo, "to", "", "End date (YYYY-MM-DD, required)")
+
 	reportPushCmd.AddCommand(reportPushTodayCmd)
 	reportPushCmd.AddCommand(reportPushDateCmd)
+	reportPushCmd.AddCommand(reportPushWeekCmd)
+	reportPushCmd.AddCommand(reportPushRangeCmd)
 
 	reportCmd.AddCommand(reportTodayCmd)
 	reportCmd.AddCommand(reportDateCmd)
+	reportCmd.AddCommand(reportWeekCmd)
+	reportCmd.AddCommand(reportRangeCmd)
 	reportCmd.AddCommand(reportPushCmd)
 
 	rootCmd.AddCommand(reportCmd)

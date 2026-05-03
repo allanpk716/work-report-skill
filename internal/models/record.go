@@ -2,8 +2,8 @@
 // reminders, logs) that map to the existing nanobot JSON record formats in the
 // work-records/ directory hierarchy.
 //
-// Each record type includes a ShortID field — an 8-character hex string derived
-// from the filename timestamp (e.g. "20260430_103211" → "2a0f2b1c") — used for
+// Each record type includes a ShortID field — a 16-character hex string derived
+// from the filename timestamp (e.g. "20260430_103211" → "2a0f2b1c4e7d9a01") — used for
 // concise CLI references.
 package models
 
@@ -151,10 +151,10 @@ func ParseRecord(data []byte) (interface{}, error) {
 	}
 }
 
-// ShortIDFromFilename generates an 8-character hex short ID from a record
+// ShortIDFromFilename generates a 16-character hex short ID from a record
 // filename (e.g. "20260430_103211.json" or "20260317_1023_urine_health.json").
 // The ID is derived by SHA-256 hashing the filename stem and taking the first
-// 8 hex characters.
+// 16 hex characters (8 bytes).
 func ShortIDFromFilename(filename string) string {
 	// Strip extension if present
 	stem := filename
@@ -162,14 +162,16 @@ func ShortIDFromFilename(filename string) string {
 		stem = stem[:idx]
 	}
 	h := sha256.Sum256([]byte(stem))
-	return fmt.Sprintf("%x", h[:4])
+	return fmt.Sprintf("%x", h[:8])
 }
 
-// ShortIDFromTimestamp generates an 8-character hex short ID from a timestamp.
-// This is the canonical way to create short IDs for new records.
+// ShortIDFromTimestamp generates a 16-character hex short ID from a timestamp.
+// This is the canonical way to create short IDs for new records. The hash input
+// includes nanosecond precision to avoid collisions between records created in
+// the same second.
 func ShortIDFromTimestamp(t time.Time) string {
-	h := sha256.Sum256([]byte(t.Format("20060102_150405")))
-	return fmt.Sprintf("%x", h[:4])
+	h := sha256.Sum256([]byte(t.Format("20060102_150405.999999999")))
+	return fmt.Sprintf("%x", h[:8])
 }
 
 // GetCommonFields extracts the common fields from any record type.
