@@ -4,6 +4,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -89,6 +90,16 @@ func RemoveState(dir string) error {
 		return err2
 	}
 	return nil
+}
+
+// IsPortInUse checks if a TCP port is already in use by attempting to bind.
+func IsPortInUse(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return true // failed to bind — something is using it
+	}
+	ln.Close()
+	return false
 }
 
 func readStateFile(path string) (DaemonState, error) {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"wr/internal/config"
 	"wr/internal/daemon"
@@ -61,6 +63,17 @@ var daemonStartCmd = &cobra.Command{
 			return jsonl.Error(fmt.Sprintf("cannot create state dir: %v", err))
 		}
 
+		// Check for existing daemon state
+		existingState, stateErr := daemon.ReadState(dir)
+		if stateErr == nil {
+			// State file exists — check if daemon is actually running on that port
+			if daemon.IsPortInUse(existingState.Port) {
+				return jsonl.Error(fmt.Sprintf("daemon already running on port %d (pid=%d). Run 'wr daemon stop' first.", existingState.Port, existingState.PID))
+			}
+			// Stale state file — port not in use, clean up and proceed
+			_ = daemon.RemoveState(dir)
+		}
+
 		state := daemon.DaemonState{
 			Port: port,
 			PID:  os.Getpid(),
@@ -71,11 +84,6 @@ var daemonStartCmd = &cobra.Command{
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-
-		// Cleanup state file on exit
-		defer func() {
-			_ = daemon.RemoveState(dir)
-		}()
 
 		// Start scheduler
 		if err := sched.Start(); err != nil {
@@ -132,8 +140,53 @@ var daemonStartCmd = &cobra.Command{
 	},
 }
 
+var daemonStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the wr daemon",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, err := daemon.DefaultStateDir()
+		if err != nil {
+			return jsonl.Error(fmt.Sprintf("cannot determine state dir: %v", err))
+		}
+
+		state, err := daemon.ReadState(dir)
+		if err != nil {
+			return jsonl.Error("daemon is not running (no state file found)")
+		}
+
+		// Try graceful shutdown via HTTP first
+		url := fmt.Sprintf("http://127.0.0.1:%d/api/stop", state.Port)
+		httpClient := &http.Client{Timeout: 3 * time.Second}
+		resp, err := httpClient.Post(url, "", nil)
+		if err == nil {
+			resp.Body.Close()
+			// Wait a moment for graceful shutdown
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// If still running, force kill
+		if daemon.IsPortInUse(state.Port) {
+			proc, err := os.FindProcess(state.PID)
+			if err == nil {
+				_ = proc.Signal(syscall.SIGTERM)
+				time.Sleep(500 * time.Millisecond)
+			}
+			if daemon.IsPortInUse(state.Port) {
+				_ = proc.Kill()
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
+
+		// Always clean up state file
+		_ = daemon.RemoveState(dir)
+
+		return jsonl.Success(fmt.Sprintf("daemon stopped (was pid=%d, port=%d)", state.PID, state.Port))
+	},
+}
+
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
+	daemonCmd.AddCommand(daemonStopCmd)
 	rootCmd.AddCommand(daemonCmd)
 }
 

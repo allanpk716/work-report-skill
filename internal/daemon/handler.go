@@ -65,6 +65,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}, "")
 }
 
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonlResponse(w, "error", nil, "method not allowed")
+		return
+	}
+	jsonlResponse(w, "success", nil, "daemon shutting down")
+	go s.shutdown()
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonlResponse(w, "error", nil, "method not allowed")

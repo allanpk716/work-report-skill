@@ -45,7 +45,9 @@ func CallDaemon(w io.Writer, method, path string, body io.Reader) error {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return writeDaemonError(w, "daemon not running: daemon unreachable at port %d", state.Port)
+		// State file exists but daemon is unreachable — stale state, clean it up
+		_ = daemon.RemoveState(dir)
+		return writeDaemonError(w, "daemon not running (stale state cleaned): daemon unreachable at port %d", state.Port)
 	}
 	defer resp.Body.Close()
 
