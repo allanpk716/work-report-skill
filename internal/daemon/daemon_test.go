@@ -2885,3 +2885,186 @@ func TestHandleImportMethodNotAllowed(t *testing.T) {
 	assertJSONLStatus(t, w.Body.Bytes(), "error")
 	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
 }
+
+// ── Import validation index tests ──
+
+func TestHandleImportMissingTypeAtIndex(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// Record 0 is valid, record 1 is missing type entirely
+	payload := `{"records":[
+		{"type":"meeting","title":"valid meeting","date":"2026-05-04"},
+		{"title":"no type field","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+
+	// Verify error message includes the record index and mentions "type"
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "index 1") {
+		t.Errorf("expected error message to mention 'index 1', got %q", msg)
+	}
+	if !strings.Contains(msg, "type") {
+		t.Errorf("expected error message to mention 'type', got %q", msg)
+	}
+}
+
+func TestHandleImportValidationErrorIncludesIndex(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      string
+		wantIndex    string
+		wantField    string
+	}{
+		{
+			name: "missing title at index 0",
+			payload: `{"records":[
+				{"type":"meeting","date":"2026-05-04"},
+				{"type":"task","title":"valid","date":"2026-05-04"}
+			]}`,
+			wantIndex: "index 0",
+			wantField: "title",
+		},
+		{
+			name: "missing date at index 2",
+			payload: `{"records":[
+				{"type":"meeting","title":"ok","date":"2026-05-04"},
+				{"type":"task","title":"ok","date":"2026-05-04"},
+				{"type":"log","title":"no date"}
+			]}`,
+			wantIndex: "index 2",
+			wantField: "date",
+		},
+		{
+			name: "invalid type at index 1",
+			payload: `{"records":[
+				{"type":"meeting","title":"ok","date":"2026-05-04"},
+				{"type":"bogus","title":"bad type","date":"2026-05-04"}
+			]}`,
+			wantIndex: "index 1",
+			wantField: "type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			body := strings.NewReader(tt.payload)
+			req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.router.ServeHTTP(w, req)
+
+			assertJSONLStatus(t, w.Body.Bytes(), "error")
+			assertJSONLCode(t, w.Body.Bytes(), "import_record")
+
+			var record map[string]interface{}
+			json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+			msg, _ := record["message"].(string)
+			if !strings.Contains(msg, tt.wantIndex) {
+				t.Errorf("expected error to mention %q, got %q", tt.wantIndex, msg)
+			}
+			if !strings.Contains(msg, tt.wantField) {
+				t.Errorf("expected error to mention %q, got %q", tt.wantField, msg)
+			}
+		})
+	}
+}
+
+func TestHandleImportAllRecordTypes(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"team sync","date":"2026-06-01","time":"09:00"},
+		{"type":"task","title":"write tests","date":"2026-06-01"},
+		{"type":"reminder","title":"follow up","date":"2026-06-02","time":"14:00"},
+		{"type":"log","title":"daily standup","date":"2026-06-01"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	if data["imported"].(float64) != 4 {
+		t.Errorf("expected imported=4, got %v", data["imported"])
+	}
+}
+
+// ── Import rollback test ──
+
+func TestHandleImportRollback(t *testing.T) {
+	// Import 3 records where record 2 is invalid.
+	// Verify via the list endpoint that no records were persisted.
+	srv, _ := newTestServer(t)
+
+	// First, add one record to establish a baseline
+	addBody := strings.NewReader(`{"type":"task","title":"pre-existing task","date":"2026-05-04"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify baseline: 1 task on 2026-05-04
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&date=2026-05-04", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var listResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData := listResp["data"].(map[string]interface{})
+	entries, _ := listData["entries"].([]interface{})
+	baselineCount := len(entries)
+	if baselineCount != 1 {
+		t.Fatalf("expected baseline of 1 task, got %d", baselineCount)
+	}
+
+	// Attempt import with invalid record at index 2
+	payload := `{"records":[
+		{"type":"meeting","title":"valid meeting","date":"2026-05-04"},
+		{"type":"task","title":"valid task","date":"2026-05-04"},
+		{"type":"meeting","title":"","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req = httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	// Should fail
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+
+	// Verify rollback: list again, count should be unchanged
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&date=2026-05-04", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData = listResp["data"].(map[string]interface{})
+	entries, _ = listData["entries"].([]interface{})
+	if len(entries) != baselineCount {
+		t.Errorf("rollback failed: expected %d tasks after failed import, got %d (partial writes occurred)", baselineCount, len(entries))
+	}
+
+	// Also verify no meetings were written
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-05-04", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData = listResp["data"].(map[string]interface{})
+	entries, _ = listData["entries"].([]interface{})
+	if len(entries) != 0 {
+		t.Errorf("rollback failed: expected 0 meetings, got %d", len(entries))
+	}
+}

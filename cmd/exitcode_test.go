@@ -482,3 +482,50 @@ func TestExitCodeWithDaemonRouter(t *testing.T) {
 	}
 	validateAllEnvelopes(t, out)
 }
+
+// --- Import CLI tests ---
+
+func TestImportWithoutFileFlag(t *testing.T) {
+	_, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	importFilePath = "" // ensure clean state
+	code, out := executeCmd("import")
+	if code != exitcode.ExitInvalidParams {
+		t.Errorf("expected exit code 2 for import without --file, got %d", code)
+	}
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error, got %v", lines[0]["type"])
+	}
+	validateAllEnvelopes(t, out)
+}
+
+func TestImportNonexistentFile(t *testing.T) {
+	_, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	importFilePath = "" // ensure clean state
+	code, out := executeCmd("import", "--file", "/nonexistent/path/to/records.json")
+	if code != exitcode.ExitInvalidParams {
+		t.Errorf("expected exit code 2 for nonexistent file, got %d", code)
+	}
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	found := false
+	for _, line := range lines {
+		if line["error_code"] == "invalid_body" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error_code=invalid_body, got %v", lines)
+	}
+	validateAllEnvelopes(t, out)
+}
