@@ -501,6 +501,9 @@ func TestImportWithoutFileFlag(t *testing.T) {
 	if lines[0]["type"] != "error" {
 		t.Errorf("expected type=error, got %v", lines[0]["type"])
 	}
+	if lines[0]["error_code"] != "invalid_params" {
+		t.Errorf("expected error_code=invalid_params, got %v", lines[0]["error_code"])
+	}
 	validateAllEnvelopes(t, out)
 }
 

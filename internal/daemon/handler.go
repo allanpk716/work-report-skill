@@ -395,7 +395,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Records) == 0 {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "records array is empty"))
+		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"imported": 0}))
 		return
 	}
 
@@ -685,6 +685,105 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[daemon] cancel: short_id=%s", id)
 	writeEnvelope(w, jsonl.SuccessEnvelope(rec))
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		return
+	}
+
+	query := r.URL.Query()
+	format := query.Get("format")
+	if format == "" {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required query param: format"))
+		return
+	}
+	if format != "json" && format != "markdown" {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_params", fmt.Sprintf("invalid format: %q (must be json or markdown)", format)))
+		return
+	}
+
+	// Build filter options — same pattern as handleList
+	date := query.Get("date")
+	to := query.Get("to")
+	status := query.Get("status")
+	q := query.Get("query")
+
+	opts := storage.ListOptions{
+		RecordType:       models.RecordType(query.Get("type")),
+		Date:             date,
+		DateFrom:         query.Get("from"),
+		DateTo:           to,
+		Status:           status,
+		Query:            q,
+		IncludeCompleted: true, // export should include completed records
+	}
+
+	if format == "json" {
+		records, err := s.storage.ListFullRecords(opts)
+		if err != nil {
+			log.Printf("[daemon] export json error: %v", err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to list records: %v", err)))
+			return
+		}
+		log.Printf("[daemon] export: format=json count=%d", len(records))
+		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+			"format":  "json",
+			"count":   len(records),
+			"records": records,
+		}))
+		return
+	}
+
+	// Markdown format — use report generation for rich rendering
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	var markdown string
+	var count int
+
+	if date != "" {
+		// Single date
+		rpt, err := report.Generate(s.storage, date, log.Default())
+		if err != nil {
+			log.Printf("[daemon] export markdown error: date=%s err=%v", date, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+			return
+		}
+		markdown = rpt.Markdown
+		count = rpt.Summary.Total
+	} else if opts.DateFrom != "" && opts.DateTo != "" {
+		// Date range
+		rpt, err := report.GenerateRange(s.storage, opts.DateFrom, opts.DateTo, loc, log.Default())
+		if err != nil {
+			log.Printf("[daemon] export markdown error: from=%s to=%s err=%v", opts.DateFrom, opts.DateTo, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate range report: %v", err)))
+			return
+		}
+		markdown = rpt.Markdown
+		count = rpt.Summary.Total
+	} else {
+		// No date filter — use today's date
+		today := time.Now().In(loc).Format("2006-01-02")
+		rpt, err := report.Generate(s.storage, today, log.Default())
+		if err != nil {
+			log.Printf("[daemon] export markdown error: date=%s err=%v", today, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+			return
+		}
+		markdown = rpt.Markdown
+		count = rpt.Summary.Total
+	}
+
+	log.Printf("[daemon] export: format=markdown count=%d", count)
+	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+		"format":  "markdown",
+		"count":   count,
+		"content": markdown,
+	}))
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {

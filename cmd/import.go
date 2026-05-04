@@ -27,7 +27,7 @@ var importCmd = &cobra.Command{
 	Short: "Bulk import work report entries from a JSON file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if importFilePath == "" {
-			return writeExitError(exitcode.ExitInvalidParams, "--file is required")
+			return writeExitErrorWithCode(exitcode.ExitInvalidParams, "invalid_params", "--file is required")
 		}
 
 		data, err := os.ReadFile(importFilePath)

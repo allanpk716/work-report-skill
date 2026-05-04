@@ -2837,8 +2837,20 @@ func TestHandleImportEmptyRecords(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
-	assertJSONLStatus(t, w.Body.Bytes(), "error")
-	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+	assertJSONLStatus(t, w.Body.Bytes(), "result")
+
+	// Verify imported=0 in the response
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", w.Body.Bytes())
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["imported"].(float64) != 0 {
+		t.Errorf("imported = %v, want 0", data["imported"])
+	}
 }
 
 func TestHandleImportInvalidBody(t *testing.T) {
@@ -3383,5 +3395,227 @@ func TestIntegration_ImportMinimalFields(t *testing.T) {
 	entries := parseListEntries(t, w.Body.Bytes())
 	if len(entries) != 1 {
 		t.Errorf("expected 1 meeting in list, got %d", len(entries))
+	}
+}
+
+// ── Export endpoint tests ──
+
+func TestHandleExport_MissingFormat(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestHandleExport_InvalidFormat(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=xml", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_params")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "xml") {
+		t.Errorf("expected error message to mention 'xml', got %q", msg)
+	}
+}
+
+func TestHandleExport_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/export?format=json", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestHandleExport_JSONEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "json" {
+		t.Errorf("expected format=json, got %v", data["format"])
+	}
+	if data["count"].(float64) != 0 {
+		t.Errorf("expected count=0 for empty storage, got %v", data["count"])
+	}
+	// records may be nil (JSON null) or empty array — either is valid for count=0
+	records := data["records"]
+	if records != nil {
+		arr, ok := records.([]interface{})
+		if ok && len(arr) != 0 {
+			t.Errorf("expected empty records array, got %d", len(arr))
+		}
+	}
+}
+
+func TestHandleExport_JSONWithRecords(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records
+	addRecord(t, srv, "meeting", "export meeting", "daily standup", "2026-05-02")
+	addRecord(t, srv, "task", "export task", "write code", "2026-05-02")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-02", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "json" {
+		t.Errorf("expected format=json, got %v", data["format"])
+	}
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", data["count"])
+	}
+	records, ok := data["records"].([]interface{})
+	if !ok {
+		t.Fatal("expected records to be an array")
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+
+	// Verify records have full data (not just listed summaries)
+	for _, r := range records {
+		rec := r.(map[string]interface{})
+		if rec["short_id"] == "" {
+			t.Error("exported record should have short_id")
+		}
+		if rec["date"] != "2026-05-02" {
+			t.Errorf("expected date=2026-05-02, got %v", rec["date"])
+		}
+	}
+}
+
+func TestHandleExport_JSONWithFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "type meeting", "", "2026-05-02")
+	addRecord(t, srv, "task", "type task", "", "2026-05-02")
+	addRecord(t, srv, "log", "type log", "", "2026-05-02")
+
+	// Filter by type=meeting
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-02&type=meeting", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	if len(records) != 1 {
+		t.Errorf("expected 1 meeting record with type filter, got %d", len(records))
+	}
+}
+
+func TestHandleExport_MarkdownSingleDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "md meeting", "discuss sprint", "2026-05-03")
+	addRecord(t, srv, "task", "md task", "implement feature", "2026-05-03")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&date=2026-05-03", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "markdown" {
+		t.Errorf("expected format=markdown, got %v", data["format"])
+	}
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", data["count"])
+	}
+	content, ok := data["content"].(string)
+	if !ok || content == "" {
+		t.Fatal("expected non-empty content field for markdown format")
+	}
+	if !strings.Contains(content, "工作日报") {
+		t.Errorf("expected markdown to contain '工作日报', got %q", content)
+	}
+	if !strings.Contains(content, "md meeting") {
+		t.Errorf("expected markdown to contain 'md meeting', got %q", content)
+	}
+	if !strings.Contains(content, "md task") {
+		t.Errorf("expected markdown to contain 'md task', got %q", content)
+	}
+}
+
+func TestHandleExport_MarkdownDateRange(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "range day1", "", "2026-04-20")
+	addRecord(t, srv, "task", "range day2", "", "2026-04-21")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&from=2026-04-20&to=2026-04-21", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "markdown" {
+		t.Errorf("expected format=markdown, got %v", data["format"])
+	}
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", data["count"])
+	}
+	content, _ := data["content"].(string)
+	if !strings.Contains(content, "工作周报") {
+		t.Errorf("expected range markdown to contain '工作周报', got %q", content)
+	}
+}
+
+func TestHandleExport_MarkdownNoDateFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	today := time.Now().Format("2006-01-02")
+	addRecord(t, srv, "log", "today log", "", today)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "markdown" {
+		t.Errorf("expected format=markdown, got %v", data["format"])
+	}
+	if data["count"].(float64) != 1 {
+		t.Errorf("expected count=1 for today's record, got %v", data["count"])
 	}
 }

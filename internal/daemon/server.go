@@ -137,6 +137,7 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/stop", s.handleStop)
 	s.router.HandleFunc("/health", s.handleHealth)
 	s.router.HandleFunc("/api/status", s.handleStatus)
+	s.router.HandleFunc("/api/export", s.handleExport)
 	s.router.HandleFunc("/api/import", s.handleImport)
 	s.router.HandleFunc("/api/add", s.handleAdd)
 	s.router.HandleFunc("/api/list", s.handleList)
