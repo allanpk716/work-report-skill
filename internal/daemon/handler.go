@@ -374,6 +374,76 @@ func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textCont
 	return result, nil
 }
 
+// importRequest is the JSON body expected by the import endpoint.
+type importRequest struct {
+	Records []addRequest `json:"records"`
+}
+
+// handleImport handles POST /api/import — bulk-add records with fail-fast validation.
+// All records are validated before any are persisted. On first invalid record,
+// the request is rejected with an error identifying the offending index.
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		return
+	}
+
+	var req importRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "invalid request body"))
+		return
+	}
+
+	if len(req.Records) == 0 {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "records array is empty"))
+		return
+	}
+
+	// Phase 1: Validate ALL records before persisting any.
+	for i, rec := range req.Records {
+		if rec.Type == "" {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: type", i)))
+			return
+		}
+		if !models.IsValidType(rec.Type) {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: invalid type: %q (must be meeting, task, reminder, or log)", i, rec.Type)))
+			return
+		}
+		if rec.Title == "" {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: title", i)))
+			return
+		}
+		if rec.Date == "" {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: date", i)))
+			return
+		}
+	}
+
+	// Phase 2: Persist all records.
+	imported := 0
+	for _, rec := range req.Records {
+		built := buildRecord(rec)
+		result, err := s.storage.AddRecord(built)
+		if err != nil {
+			log.Printf("[daemon] import: storage error at record index %d: %v", imported, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to add record at index %d: %v", imported, err)))
+			return
+		}
+
+		// Register with scheduler if present (log warning only — never fail primary operation)
+		if s.scheduler != nil {
+			if err := s.scheduler.Register(result); err != nil {
+				log.Printf("[daemon] import: scheduler register warning at index %d: %v", imported, err)
+			}
+		}
+
+		imported++
+	}
+
+	log.Printf("[daemon] import: imported=%d requested=%d", imported, len(req.Records))
+	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"imported": imported}))
+}
+
 // buildRecord creates the correct typed record struct from an addRequest.
 func buildRecord(req addRequest) interface{} {
 	cf := models.CommonFields{

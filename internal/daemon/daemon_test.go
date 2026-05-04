@@ -2721,3 +2721,167 @@ func TestPanicRecovery(t *testing.T) {
 		t.Errorf("health type = %v, want result (server should recover from panic)", healthRecord["type"])
 	}
 }
+
+// ── Import endpoint tests ──
+
+func TestHandleImportSuccess(t *testing.T) {
+	srv, dir := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"imported meeting","date":"2026-05-04","time":"10:00"},
+		{"type":"task","title":"imported task","date":"2026-05-04"},
+		{"type":"reminder","title":"imported reminder","date":"2026-05-05"},
+		{"type":"log","title":"imported log","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify imported count
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", w.Body.Bytes())
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["imported"].(float64) != 4 {
+		t.Errorf("imported = %v, want 4", data["imported"])
+	}
+
+	// Verify files were written — check meeting and task dirs
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "04")
+	files, err := os.ReadDir(meetingsDir)
+	if err != nil {
+		t.Fatalf("meetings dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected meeting file to be written")
+	}
+
+	tasksDir := filepath.Join(dir, "tasks", "active")
+	files, err = os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("tasks dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected task file to be written")
+	}
+
+	remindersDir := filepath.Join(dir, "reminders", "active")
+	files, err = os.ReadDir(remindersDir)
+	if err != nil {
+		t.Fatalf("reminders dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected reminder file to be written")
+	}
+}
+
+func TestHandleImportInvalidType(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"valid","date":"2026-05-04"},
+		{"type":"bogus","title":"invalid type","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+}
+
+func TestHandleImportMissingTitle(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+}
+
+func TestHandleImportMissingDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"task","title":"no date"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+}
+
+func TestHandleImportEmptyRecords(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestHandleImportInvalidBody(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`not json`)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestHandleImportFailFastNoPersistOnInvalid(t *testing.T) {
+	// Verify that when a record fails validation, nothing is persisted.
+	srv, dir := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"should not be saved","date":"2026-05-04"},
+		{"type":"meeting","title":"","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+
+	// No meeting files should have been written
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "04")
+	files, err := os.ReadDir(meetingsDir)
+	if err == nil && len(files) > 0 {
+		t.Errorf("expected no files written on validation failure, got %d files", len(files))
+	}
+}
+
+func TestHandleImportMethodNotAllowed(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/import", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}

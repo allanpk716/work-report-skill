@@ -43,7 +43,7 @@ func (e *ExitError) Unwrap() error {
 // FromErrorCode maps a daemon error_code string to an OS exit code.
 func FromErrorCode(code string) int {
 	switch code {
-	case "invalid_type", "invalid_body", "invalid_field", "method_not_allowed":
+	case "invalid_type", "invalid_body", "invalid_field", "method_not_allowed", "import_record":
 		return ExitInvalidParams
 	case "daemon_not_running":
 		return ExitDaemonUnreachable
