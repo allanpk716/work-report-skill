@@ -4,12 +4,15 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"wr/internal/daemon"
+	"wr/internal/exitcode"
+	"wr/internal/jsonl"
 )
 
 const clientTimeout = 5 * time.Second
@@ -63,6 +66,17 @@ func CallDaemon(w io.Writer, method, path string, body io.Reader) error {
 	}
 
 	fmt.Fprintf(w, "%s", respBody)
+
+	// If daemon returned an error envelope, return ExitError with mapped code.
+	if record["type"] == "error" {
+		errorCode, _ := record["error_code"].(string)
+		msg, _ := record["message"].(string)
+		return &exitcode.ExitError{
+			Code: exitcode.FromErrorCode(errorCode),
+			Err:  errors.New(msg),
+		}
+	}
+
 	return nil
 }
 
@@ -86,13 +100,12 @@ func CallDaemonPost(w io.Writer, path string, payload interface{}) error {
 
 func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
-	record := map[string]interface{}{
-		"status":     "error",
-		"code":       "daemon_not_running",
-		"message":    msg,
-		"suggestion": "Run 'wr daemon start' to start the daemon, then retry your command.",
-	}
-	b, _ := json.Marshal(record)
+	msg += " Run 'wr daemon start' to start the daemon, then retry your command."
+	env := jsonl.ErrorEnvelope("daemon_not_running", msg)
+	b, _ := json.Marshal(env)
 	fmt.Fprintf(w, "%s\n", b)
-	return fmt.Errorf("%s", msg)
+	return &exitcode.ExitError{
+		Code: exitcode.ExitDaemonUnreachable,
+		Err:  errors.New(msg),
+	}
 }

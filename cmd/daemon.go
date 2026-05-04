@@ -7,14 +7,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"wr/internal/config"
 	"wr/internal/daemon"
+	"wr/internal/exitcode"
 	"wr/internal/jsonl"
 	"wr/internal/models"
 	"wr/internal/pushover"
+	"wr/internal/sandbox"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
 
@@ -33,7 +36,7 @@ var daemonStartCmd = &cobra.Command{
 		// Load config
 		cfg, err := config.LoadDefault()
 		if err != nil {
-			return jsonl.Error(fmt.Sprintf("config error: %v", err))
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config error: %v", err))
 		}
 
 		port := cfg.Daemon.Port
@@ -41,11 +44,31 @@ var daemonStartCmd = &cobra.Command{
 
 		// Ensure work-records directory exists
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
-			return jsonl.Error(fmt.Sprintf("cannot create data dir %s: %v", dataDir, err))
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot create data dir %s: %v", dataDir, err))
 		}
 
+		// Set up sandbox directories and daemon log file
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot determine home dir: %v", err))
+		}
+		baseDir := filepath.Join(home, ".work-report")
+
+		if err := sandbox.EnsureSandboxDirs(baseDir); err != nil {
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot create sandbox dirs: %v", err))
+		}
+
+		logFile, err := sandbox.OpenDaemonLog(baseDir)
+		if err != nil {
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot open daemon log: %v", err))
+		}
+		defer logFile.Close()
+
+		// Redirect all default log.Printf output to the daemon log file
+		log.SetOutput(logFile)
+
 		// Create storage layer
-		store := storage.New(dataDir, log.New(os.Stderr, "[storage] ", log.LstdFlags))
+		store := storage.New(dataDir, log.New(logFile, "[storage] ", log.LstdFlags))
 
 		srv := daemon.NewServer(port, store, cfg)
 
@@ -53,14 +76,14 @@ var daemonStartCmd = &cobra.Command{
 		pushoverClient := pushover.NewClient()
 		statePath, err := scheduler.DefaultStatePath()
 		if err != nil {
-			return jsonl.Error(fmt.Sprintf("cannot determine scheduler state path: %v", err))
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot determine scheduler state path: %v", err))
 		}
-		sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, log.New(os.Stderr, "[scheduler] ", log.LstdFlags))
+		sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, log.New(logFile, "[scheduler] ", log.LstdFlags))
 		srv.SetScheduler(sched)
 
 		dir, err := daemon.DefaultStateDir()
 		if err != nil {
-			return jsonl.Error(fmt.Sprintf("cannot create state dir: %v", err))
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot create state dir: %v", err))
 		}
 
 		// Check for existing daemon state
@@ -68,7 +91,7 @@ var daemonStartCmd = &cobra.Command{
 		if stateErr == nil {
 			// State file exists — check if daemon is actually running on that port
 			if daemon.IsPortInUse(existingState.Port) {
-				return jsonl.Error(fmt.Sprintf("daemon already running on port %d (pid=%d). Run 'wr daemon stop' first.", existingState.Port, existingState.PID))
+				return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("daemon already running on port %d (pid=%d). Run 'wr daemon stop' first.", existingState.Port, existingState.PID))
 			}
 			// Stale state file — port not in use, clean up and proceed
 			_ = daemon.RemoveState(dir)
@@ -79,7 +102,7 @@ var daemonStartCmd = &cobra.Command{
 			PID:  os.Getpid(),
 		}
 		if err := daemon.WriteState(dir, state); err != nil {
-			return jsonl.Error(fmt.Sprintf("cannot write state: %v", err))
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot write state: %v", err))
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -130,12 +153,17 @@ var daemonStartCmd = &cobra.Command{
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		go func() {
 			<-sigCh
-			fmt.Fprintf(os.Stderr, "[daemon] shutting down...\n")
+			jsonl.Warning("daemon shutting down")
 			sched.Stop()
 			cancel()
 		}()
 
-		fmt.Fprintf(os.Stderr, "[daemon] starting on port %d (pid=%d) data_dir=%s\n", port, os.Getpid(), dataDir)
+		jsonl.Success(map[string]interface{}{
+			"status":   "starting",
+			"port":     port,
+			"pid":      os.Getpid(),
+			"data_dir": dataDir,
+		})
 		return srv.Start(ctx, nil)
 	},
 }
@@ -146,12 +174,12 @@ var daemonStopCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, err := daemon.DefaultStateDir()
 		if err != nil {
-			return jsonl.Error(fmt.Sprintf("cannot determine state dir: %v", err))
+			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot determine state dir: %v", err))
 		}
 
 		state, err := daemon.ReadState(dir)
 		if err != nil {
-			return jsonl.Error("daemon is not running (no state file found)")
+			return writeExitError(exitcode.ExitFatalError, "daemon is not running (no state file found)")
 		}
 
 		// Try graceful shutdown via HTTP first

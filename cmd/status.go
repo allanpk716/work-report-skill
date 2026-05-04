@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 
 	"wr/internal/client"
 	"wr/internal/config"
+	"wr/internal/jsonl"
 
 	"github.com/spf13/cobra"
 )
@@ -73,19 +72,13 @@ func localStatus() {
 		}
 	}
 
-	response := map[string]interface{}{
-		"status": "success",
-		"data": map[string]interface{}{
-			"daemon": map[string]interface{}{
-				"status":     "not_running",
-				"suggestion": "Run 'wr daemon start' to start the daemon.",
-			},
-			"config": configInfo,
+	jsonl.Success(map[string]interface{}{
+		"daemon": map[string]interface{}{
+			"status":     "not_running",
+			"suggestion": "Run 'wr daemon start' to start the daemon.",
 		},
-	}
-
-	b, _ := json.Marshal(response)
-	fmt.Fprintf(os.Stdout, "%s\n", b)
+		"config": configInfo,
+	})
 }
 
 func init() {

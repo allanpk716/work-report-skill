@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wr/internal/config"
+	"wr/internal/jsonl"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
 )
@@ -74,7 +75,7 @@ func (s *Server) Router() *http.ServeMux {
 func (s *Server) Start(ctx context.Context, onReady func()) error {
 	s.http = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
-		Handler: s.loggingMiddleware(s.router),
+		Handler: s.panicRecoveryMiddleware(s.loggingMiddleware(s.router)),
 	}
 
 	// Graceful shutdown on context cancel or signals
@@ -113,6 +114,21 @@ func (s *Server) shutdown() {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[daemon] %s %s", r.Method, r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// panicRecoveryMiddleware wraps the handler chain with defer/recover so that
+// any panic in a handler (or downstream middleware) is caught and converted
+// into a structured JSONL error envelope with error_code "FATAL_CRASH".
+func (s *Server) panicRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				env := jsonl.ErrorEnvelope("FATAL_CRASH", fmt.Sprintf("panic: %v", err))
+				writeEnvelope(w, env)
+			}
+		}()
 		next.ServeHTTP(w, r)
 	})
 }

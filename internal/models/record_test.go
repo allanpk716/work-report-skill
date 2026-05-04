@@ -2,36 +2,165 @@ package models
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-func init() {
-	// Go test working directory varies by version. Ensure we're in the module root
-	// so relative paths to docs/exsample/ resolve correctly.
-	if _, err := os.Stat("docs/exsample"); os.IsNotExist(err) {
-		// Probably running from internal/models/ — walk up to module root
-		if _, err := os.Stat("../../docs/exsample"); err == nil {
-			if err := os.Chdir("../.."); err != nil {
-				panic("cannot chdir to module root: " + err.Error())
-			}
-		}
-	}
-}
+// Inline sample data fixtures — real sample files from
+// docs/exsample/.nanobot-work-helper--20260501/.nanobot-work-helper/work-records/
+// inlined here so tests are self-contained and work in any worktree.
 
-// sampleDir is the path to the nanobot sample data directory.
-// These are real sample files from docs/exsample/ tracked in git.
-const sampleDir = "docs/exsample/.nanobot-work-helper--20260501/.nanobot-work-helper/work-records"
+const sampleMeetingJSON = `{
+  "type": "meeting",
+  "title": "BM-200 月度总结会",
+  "description": "BM-200 注册检项目月度总结会议",
+  "date": "2026-04-30",
+  "time": "",
+  "end_time": "",
+  "location": "",
+  "related_person": "石艳民",
+  "status": "completed",
+  "tags": [
+    "BM-200",
+    "注册检",
+    "月度总结"
+  ],
+  "saved_at": "2026-04-30T10:32:11.032293",
+  "updated_at": "2026-04-30T10:41:00.000000"
+}`
+
+const sampleTaskActiveJSON = `{
+  "type": "task",
+  "title": "制作外部问题反馈提交表单",
+  "description": "做出以后外部问题反馈的提交表单，避免反馈问题来来回回问几次",
+  "date": "2026-05-06",
+  "time": "",
+  "location": "",
+  "related_person": "",
+  "priority": "high",
+  "status": "pending",
+  "tags": [
+    "流程优化",
+    "外部反馈"
+  ],
+  "saved_at": "2026-04-29T11:52:36.116597"
+}`
+
+const sampleTaskCompletedJSON = `{
+  "type": "task",
+  "title": "帮唐总安装Nanobot",
+  "description": "今天下午17:00去帮唐总安装Nanobot。",
+  "date": "2026-03-11",
+  "time": "17:00",
+  "end_time": "",
+  "location": "未指定",
+  "related_persons": [
+    "唐总"
+  ],
+  "tags": [
+    "协助",
+    "安装"
+  ],
+  "priority": "高",
+  "reminder": "30m",
+  "raw_input": "今天下午17点要去帮唐总安装Nanobot",
+  "processed_at": "2026-03-11T12:11:00",
+  "saved_at": "2026-03-11T12:11:45.241674",
+  "status": "completed",
+  "completed_at": "2026-03-13T23:59:59"
+}`
+
+const sampleReminderActiveJSON = `{
+  "type": "reminder",
+  "title": "问自动化文档编写规范是否完成",
+  "date": "2026-12-01",
+  "time": "09:00",
+  "notes": "去确认自动化文档编写规范是否已完成",
+  "saved_at": "2026-04-15T14:35:46.487827"
+}`
+
+const sampleReminderWithRemindBeforeJSON = `{
+  "type": "reminder",
+  "title": "调研华为交流内容并反馈王总",
+  "description": "给王总调研跟华为交流的内容，涉及大健康、IVD、动物等方向",
+  "date": "2026-04-21",
+  "time": "09:00",
+  "end_time": "",
+  "location": "",
+  "related_person": "王总",
+  "remind_before": "15m",
+  "priority": "medium",
+  "status": "pending",
+  "tags": [
+    "调研",
+    "华为",
+    "大健康",
+    "IVD",
+    "动物"
+  ],
+  "saved_at": "2026-04-16T17:10:00"
+}`
+
+const sampleLogJSON = `{
+  "type": "log",
+  "date": "2026-04-30",
+  "title": "集团算法现状和改进方向PPT评审",
+  "description": "对集团算法现状和改进方向PPT进行了评审，提出了改进意见。",
+  "tags": [
+    "算法",
+    "PPT评审",
+    "集团"
+  ],
+  "saved_at": "2026-05-01T07:34:56.347112"
+}`
+
+const sampleLogWithFieldsJSON = `{
+  "type": "log",
+  "title": "完成代码审查",
+  "description": "对项目相关代码进行了审查，已完成本次审查任务。",
+  "date": "2026-03-11",
+  "time": "09:29",
+  "tags": [
+    "代码审查",
+    "开发"
+  ],
+  "priority": "normal",
+  "progress": "completed",
+  "saved_at": "2026-03-11T09:29:24.848804"
+}`
+
+const sampleMeetingWithRemindBeforeJSON = `{
+  "type": "meeting",
+  "title": "集团软件组纪委会",
+  "description": "明天上午 11 点开集团软件组纪委会",
+  "date": "2026-03-24",
+  "time": "11:00",
+  "end_time": "",
+  "location": "未指定",
+  "remind_before": "15m",
+  "priority": "high",
+  "participants": [],
+  "agenda": "",
+  "saved_at": "2026-03-23T14:41:57.953806"
+}`
+
+const sampleMeetingWithParticipantsJSON = `{
+  "type": "meeting",
+  "title": "跟七部开尿有形临床相关的数据收集会议",
+  "description": "与七部沟通尿有形临床相关的数据收集事宜。",
+  "date": "2026-03-19",
+  "time": "10:00",
+  "end_time": "",
+  "location": "七部",
+  "remind_before": "15m",
+  "priority": "normal",
+  "participants": ["七部相关人员"],
+  "saved_at": "2026-03-18T17:37:00"
+}`
 
 // TestParseMeetingRoundTrip verifies that a meeting JSON file round-trips
 // through ParseRecord → MarshalRecord without data loss.
 func TestParseMeetingRoundTrip(t *testing.T) {
-	path := filepath.Join(sampleDir, "meetings/2026/04/30/20260430_103211.json")
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample file: %v", err)
-	}
+	original := []byte(sampleMeetingJSON)
 
 	parsed, err := ParseRecord(original)
 	if err != nil {
@@ -83,11 +212,7 @@ func TestParseMeetingRoundTrip(t *testing.T) {
 
 // TestParseTaskRoundTrip verifies task record parsing with all optional fields.
 func TestParseTaskRoundTrip(t *testing.T) {
-	path := filepath.Join(sampleDir, "tasks/active/20260506_115236.json")
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample file: %v", err)
-	}
+	original := []byte(sampleTaskActiveJSON)
 
 	parsed, err := ParseRecord(original)
 	if err != nil {
@@ -131,11 +256,7 @@ func TestParseTaskRoundTrip(t *testing.T) {
 
 // TestParseTaskWithCompletedAt verifies the completed task format with extra fields.
 func TestParseTaskWithCompletedAt(t *testing.T) {
-	path := filepath.Join(sampleDir, "tasks/completed/20260311_121145.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample: %v", err)
-	}
+	data := []byte(sampleTaskCompletedJSON)
 
 	parsed, err := ParseRecord(data)
 	if err != nil {
@@ -160,11 +281,7 @@ func TestParseTaskWithCompletedAt(t *testing.T) {
 
 // TestParseReminderRoundTrip verifies reminder record parsing.
 func TestParseReminderRoundTrip(t *testing.T) {
-	path := filepath.Join(sampleDir, "reminders/active/20261201_143546.json")
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample file: %v", err)
-	}
+	original := []byte(sampleReminderActiveJSON)
 
 	parsed, err := ParseRecord(original)
 	if err != nil {
@@ -208,11 +325,7 @@ func TestParseReminderRoundTrip(t *testing.T) {
 
 // TestParseReminderWithRemindBefore verifies the newer reminder format with extra fields.
 func TestParseReminderWithRemindBefore(t *testing.T) {
-	path := filepath.Join(sampleDir, "reminders/2026/04/21/20260421_090000.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample: %v", err)
-	}
+	data := []byte(sampleReminderWithRemindBeforeJSON)
 
 	parsed, err := ParseRecord(data)
 	if err != nil {
@@ -237,11 +350,7 @@ func TestParseReminderWithRemindBefore(t *testing.T) {
 
 // TestParseLogRoundTrip verifies log record parsing.
 func TestParseLogRoundTrip(t *testing.T) {
-	path := filepath.Join(sampleDir, "logs/2026/04/30/20260430_073456.json")
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample file: %v", err)
-	}
+	original := []byte(sampleLogJSON)
 
 	parsed, err := ParseRecord(original)
 	if err != nil {
@@ -282,11 +391,7 @@ func TestParseLogRoundTrip(t *testing.T) {
 
 // TestParseLogWithAllFields verifies a log record that has time, priority, progress.
 func TestParseLogWithAllFields(t *testing.T) {
-	path := filepath.Join(sampleDir, "logs/2026/03/11/20260311_092924.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample: %v", err)
-	}
+	data := []byte(sampleLogWithFieldsJSON)
 
 	parsed, err := ParseRecord(data)
 	if err != nil {
@@ -417,11 +522,7 @@ func TestGetCommonFields(t *testing.T) {
 
 // TestMeetingWithRemindBefore verifies a meeting with remind_before and participants.
 func TestMeetingWithRemindBefore(t *testing.T) {
-	path := filepath.Join(sampleDir, "meetings/2026/03/24/20260324_144157.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample: %v", err)
-	}
+	data := []byte(sampleMeetingWithRemindBeforeJSON)
 
 	parsed, err := ParseRecord(data)
 	if err != nil {
@@ -443,11 +544,7 @@ func TestMeetingWithRemindBefore(t *testing.T) {
 
 // TestMeetingWithParticipants verifies a meeting with participants list.
 func TestMeetingWithParticipants(t *testing.T) {
-	path := filepath.Join(sampleDir, "meetings/2026/03/19/20260319_1000_dept7_meeting.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read sample: %v", err)
-	}
+	data := []byte(sampleMeetingWithParticipantsJSON)
 
 	parsed, err := ParseRecord(data)
 	if err != nil {

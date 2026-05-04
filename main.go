@@ -1,7 +1,11 @@
 package main
 
-import "wr/cmd"
+import (
+	"os"
+
+	"wr/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	os.Exit(cmd.Execute())
 }

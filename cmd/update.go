@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"wr/internal/client"
+	"wr/internal/exitcode"
 
 	"github.com/spf13/cobra"
 )
@@ -81,8 +82,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		if len(fields) == 0 {
-			fmt.Fprintf(os.Stderr, "Error: no fields specified for update\n")
-			return cmd.Help()
+			return writeExitError(exitcode.ExitInvalidParams, "no fields specified for update")
 		}
 
 		path := fmt.Sprintf("/api/update/%s", args[0])

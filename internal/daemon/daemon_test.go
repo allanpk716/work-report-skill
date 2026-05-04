@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"wr/internal/config"
+	"wr/internal/jsonl"
 	"wr/internal/llm"
 	"wr/internal/pushover"
 	"wr/internal/scheduler"
@@ -199,8 +200,8 @@ func TestHealthEndpoint(t *testing.T) {
 	if err := json.Unmarshal(body, &record); err != nil {
 		t.Fatalf("response not valid JSON: %s", body)
 	}
-	if record["status"] != "ok" {
-		t.Errorf("status field = %v, want ok", record["status"])
+	if record["type"] != "result" {
+		t.Errorf("type field = %v, want result", record["type"])
 	}
 	data, ok := record["data"].(map[string]interface{})
 	if !ok {
@@ -565,8 +566,8 @@ func TestServerStartAndHealthEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(body, &record); err != nil {
 		t.Fatalf("invalid JSON: %s", body)
 	}
-	if record["status"] != "ok" {
-		t.Errorf("status = %v, want ok", record["status"])
+	if record["type"] != "result" {
+		t.Errorf("type = %v, want result", record["type"])
 	}
 }
 
@@ -586,7 +587,7 @@ func TestEndToEndAddListCompleteCancel(t *testing.T) {
 
 	var addResp map[string]interface{}
 	json.Unmarshal(body, &addResp)
-	if addResp["status"] != "success" {
+	if addResp["type"] != "result" {
 		t.Fatalf("add failed: %s", body)
 	}
 	addData := addResp["data"].(map[string]interface{})
@@ -618,34 +619,57 @@ func TestEndToEndAddListCompleteCancel(t *testing.T) {
 
 	var compResp map[string]interface{}
 	json.Unmarshal(body, &compResp)
-	if compResp["status"] != "success" {
+	if compResp["type"] != "result" {
 		t.Fatalf("complete failed: %s", body)
 	}
 }
 
 // ── Helpers ──
 
-func assertJSONLStatus(t *testing.T, body []byte, wantStatus string) {
+// parseAndValidateEnvelope unmarshals body into both a raw map and a typed
+// jsonl.Envelope, validates the envelope structure via ValidateEnvelope, and
+// returns both. Every daemon test that checks JSONL output routes through this
+// helper via assertJSONLStatus / assertJSONLCode.
+func parseAndValidateEnvelope(t *testing.T, body []byte) (map[string]interface{}, jsonl.Envelope) {
 	t.Helper()
 	trimmed := bytes.TrimSpace(body)
 	var record map[string]interface{}
 	if err := json.Unmarshal(trimmed, &record); err != nil {
 		t.Fatalf("invalid JSONL: %s\nerr: %v", body, err)
 	}
-	if record["status"] != wantStatus {
-		t.Errorf("status = %v, want %s; body=%s", record["status"], wantStatus, body)
+	var env jsonl.Envelope
+	if err := json.Unmarshal(trimmed, &env); err != nil {
+		t.Fatalf("invalid JSONL envelope struct: %s\nerr: %v", body, err)
+	}
+	if err := jsonl.ValidateEnvelope(env); err != nil {
+		t.Errorf("envelope validation failed: %v; body=%s", err, body)
+	}
+	return record, env
+}
+
+func assertJSONLStatus(t *testing.T, body []byte, wantStatus string) {
+	t.Helper()
+	record, _ := parseAndValidateEnvelope(t, body)
+	// Map old status values to new envelope type values
+	var wantType string
+	switch wantStatus {
+	case "success", "ok", "info":
+		wantType = "result"
+	case "error":
+		wantType = "error"
+	default:
+		wantType = wantStatus
+	}
+	if record["type"] != wantType {
+		t.Errorf("type = %v (mapped from status=%q), want %s; body=%s", record["type"], wantStatus, wantType, body)
 	}
 }
 
 func assertJSONLCode(t *testing.T, body []byte, wantCode string) {
 	t.Helper()
-	trimmed := bytes.TrimSpace(body)
-	var record map[string]interface{}
-	if err := json.Unmarshal(trimmed, &record); err != nil {
-		t.Fatalf("invalid JSONL: %s\nerr: %v", body, err)
-	}
-	if record["code"] != wantCode {
-		t.Errorf("code = %v, want %s; body=%s", record["code"], wantCode, body)
+	record, _ := parseAndValidateEnvelope(t, body)
+	if record["error_code"] != wantCode {
+		t.Errorf("error_code = %v, want %s; body=%s", record["error_code"], wantCode, body)
 	}
 }
 
@@ -1725,8 +1749,8 @@ func TestHandleStatus(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(body), &record); err != nil {
 		t.Fatalf("invalid JSONL: %s", body)
 	}
-	if record["status"] != "success" {
-		t.Errorf("status field = %v, want success", record["status"])
+	if record["type"] != "result" {
+		t.Errorf("type field = %v, want result", record["type"])
 	}
 
 	data, ok := record["data"].(map[string]interface{})
@@ -1915,8 +1939,8 @@ func parseListEntries(t *testing.T, body []byte) []map[string]interface{} {
 	if err := json.Unmarshal(bytes.TrimSpace(body), &record); err != nil {
 		t.Fatalf("invalid JSONL: %s", body)
 	}
-	if record["status"] != "success" {
-		t.Fatalf("expected status=success, got %v", record["status"])
+	if record["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", record["type"])
 	}
 	data, _ := record["data"].(map[string]interface{})
 	entries, _ := data["entries"].([]interface{})
@@ -2491,9 +2515,12 @@ func TestReportRangeEndpoint_FromAfterTo(t *testing.T) {
 func TestReportWeekEndpoint(t *testing.T) {
 	srv, _ := newTestServer(t)
 
+	// Use today's date so records always fall within the current week
+	today := time.Now().Format("2006-01-02")
+
 	// Add records for today (within current week)
-	addRecord(t, srv, "meeting", "week meeting", "", "2026-05-02")
-	addRecord(t, srv, "task", "week task", "", "2026-05-02")
+	addRecord(t, srv, "meeting", "week meeting", "", today)
+	addRecord(t, srv, "task", "week task", "", today)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/report/week", nil)
 	w := httptest.NewRecorder()
@@ -2548,7 +2575,10 @@ func TestReportPushWeekEndpoint(t *testing.T) {
 	}
 	srv, _ := newTestServer(t, cfg)
 
-	addRecord(t, srv, "task", "week push task", "", "2026-05-02")
+	// Use today's date so records always fall within the current week
+	today := time.Now().Format("2006-01-02")
+
+	addRecord(t, srv, "task", "week push task", "", today)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/report/push/week", nil)
 	w := httptest.NewRecorder()
@@ -2620,5 +2650,74 @@ func TestReportPushRangeEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(gotMessage, "range push meeting") {
 		t.Errorf("expected message to contain meeting title, got %q", gotMessage)
+	}
+}
+
+// ── Panic recovery middleware tests ──
+
+func TestPanicRecovery(t *testing.T) {
+	srv, _ := newTestServer(t)
+	router := srv.Router()
+
+	// Register a temporary route that panics
+	router.HandleFunc("/api/test-panic", func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic")
+	})
+
+	// Create test server with full middleware chain (panicRecovery → logging → router)
+	ts := httptest.NewServer(srv.panicRecoveryMiddleware(srv.loggingMiddleware(router)))
+	defer ts.Close()
+
+	// Request the panicking endpoint
+	resp, err := http.Get(ts.URL + "/api/test-panic")
+	if err != nil {
+		t.Fatalf("GET /api/test-panic: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Verify HTTP status is 200 (writeEnvelope always writes 200)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Parse JSONL response and assert FATAL_CRASH envelope
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(body), &record); err != nil {
+		t.Fatalf("invalid JSONL response: %s\nerr: %v", body, err)
+	}
+
+	if record["type"] != "error" {
+		t.Errorf("type = %v, want error", record["type"])
+	}
+	if record["error_code"] != "FATAL_CRASH" {
+		t.Errorf("error_code = %v, want FATAL_CRASH", record["error_code"])
+	}
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "panic: test panic") {
+		t.Errorf("message = %q, want containing 'panic: test panic'", msg)
+	}
+	if record["version"] != "1.0" {
+		t.Errorf("version = %v, want 1.0", record["version"])
+	}
+	if record["tool"] != "wr" {
+		t.Errorf("tool = %v, want wr", record["tool"])
+	}
+
+	// Verify the server continues serving subsequent requests after the panic
+	healthResp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health after panic: %v", err)
+	}
+	defer healthResp.Body.Close()
+
+	healthBody, _ := io.ReadAll(healthResp.Body)
+	var healthRecord map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(healthBody), &healthRecord); err != nil {
+		t.Fatalf("invalid health JSONL: %s", healthBody)
+	}
+	if healthRecord["type"] != "result" {
+		t.Errorf("health type = %v, want result (server should recover from panic)", healthRecord["type"])
 	}
 }

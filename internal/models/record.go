@@ -174,6 +174,16 @@ func ShortIDFromTimestamp(t time.Time) string {
 	return fmt.Sprintf("%x", h[:8])
 }
 
+// ShortIDFromTimestampAndSeq generates a 16-character hex short ID from a
+// timestamp plus a monotonic sequence counter. The counter ensures unique IDs
+// even when the OS clock resolution is too coarse to distinguish sequential
+// calls (common on Windows where time.Now() has ~100ns–1ms granularity).
+func ShortIDFromTimestampAndSeq(t time.Time, seq uint64) string {
+	input := fmt.Sprintf("%s-%d", t.Format("20060102_150405.999999999"), seq)
+	h := sha256.Sum256([]byte(input))
+	return fmt.Sprintf("%x", h[:8])
+}
+
 // GetCommonFields extracts the common fields from any record type.
 func GetCommonFields(r interface{}) *CommonFields {
 	switch v := r.(type) {

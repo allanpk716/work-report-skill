@@ -38,6 +38,7 @@ type Storage struct {
 	baseDir string
 	logger  *log.Logger
 	mu      sync.Mutex
+	seq     uint64 // monotonic counter for unique ShortID generation
 }
 
 // New creates a Storage rooted at baseDir (the work-records/ directory).
@@ -69,7 +70,8 @@ func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
 		cf.Status = models.StatusActive
 	}
 
-	shortID := models.ShortIDFromTimestamp(now)
+	s.seq++
+	shortID := models.ShortIDFromTimestampAndSeq(now, s.seq)
 	cf.ShortID = shortID
 
 	dir := s.activeDirForRecord(cf.Type, cf.Date)
@@ -77,16 +79,10 @@ func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
 		return nil, fmt.Errorf("storage: add: mkdir %s: %w", dir, err)
 	}
 
-	// Use nanosecond-precision timestamp for filename uniqueness.
-	// If a collision occurs (extremely rare), append a counter suffix.
-	filename := now.Format("20060102_150405") + ".json"
+	// Use sequence counter for guaranteed-unique filenames.
+	// The seq counter is monotonic under the mutex, so collisions are impossible.
+	filename := now.Format("20060102_150405") + fmt.Sprintf("_%d", s.seq) + ".json"
 	path := filepath.Join(dir, filename)
-
-	// Handle filename collision by adding nanosecond suffix
-	if _, err := os.Stat(path); err == nil {
-		filename = now.Format("20060102_150405") + fmt.Sprintf("_%d", now.Nanosecond()) + ".json"
-		path = filepath.Join(dir, filename)
-	}
 
 	data, err := models.MarshalRecord(rec)
 	if err != nil {

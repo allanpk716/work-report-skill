@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"testing"
 
 	"wr/internal/daemon"
+	"wr/internal/exitcode"
+	"wr/internal/jsonl"
 	"wr/internal/storage"
 )
 
@@ -47,9 +50,17 @@ func TestCallDaemonGetWithServer(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
 		t.Fatalf("invalid JSONL: %s", buf.String())
 	}
-	if record["status"] != "ok" {
-		t.Errorf("status = %v, want ok; body=%s", record["status"], buf.String())
+	if record["type"] != "result" {
+		t.Errorf("type = %v, want result; body=%s", record["type"], buf.String())
 	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data map in envelope, got %T", record["data"])
+	}
+	if data["version"] != "0.1.0" {
+		t.Errorf("data.version = %v, want 0.1.0; body=%s", data["version"], buf.String())
+	}
+	validateJSONLOutput(t, buf)
 }
 
 func TestCallDaemonPostWithServer(t *testing.T) {
@@ -73,9 +84,17 @@ func TestCallDaemonPostWithServer(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
 		t.Fatalf("invalid JSONL: %s", buf.String())
 	}
-	if record["status"] != "success" {
-		t.Errorf("status = %v, want success; body=%s", record["status"], buf.String())
+	if record["type"] != "result" {
+		t.Errorf("type = %v, want result; body=%s", record["type"], buf.String())
 	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data map in envelope, got %T", record["data"])
+	}
+	if data["type"] != "meeting" {
+		t.Errorf("data.type = %v, want meeting; body=%s", data["type"], buf.String())
+	}
+	validateJSONLOutput(t, buf)
 }
 
 // ── Daemon not running tests ──
@@ -89,19 +108,30 @@ func TestDaemonNotRunningError(t *testing.T) {
 		t.Fatal("expected error when daemon not running")
 	}
 
+	// Verify it's an ExitError with code 3 (daemon unreachable)
+	var exitErr *exitcode.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != exitcode.ExitDaemonUnreachable {
+		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, exitcode.ExitDaemonUnreachable)
+	}
+
 	var record map[string]interface{}
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
 		t.Fatalf("error output not valid JSONL: %s", buf.String())
 	}
-	if record["status"] != "error" {
-		t.Errorf("status = %v, want error", record["status"])
+	if record["type"] != "error" {
+		t.Errorf("type = %v, want error", record["type"])
 	}
-	if record["code"] != "daemon_not_running" {
-		t.Errorf("code = %v, want daemon_not_running", record["code"])
+	if record["error_code"] != "daemon_not_running" {
+		t.Errorf("error_code = %v, want daemon_not_running", record["error_code"])
 	}
-	if suggestion, ok := record["suggestion"].(string); !ok || suggestion == "" {
-		t.Error("suggestion field is missing or empty, want non-empty actionable guidance")
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "wr daemon start") {
+		t.Error("message should contain actionable suggestion, got:", msg)
 	}
+	validateJSONLOutput(t, buf)
 }
 
 func TestDaemonUnreachableError(t *testing.T) {
@@ -115,19 +145,29 @@ func TestDaemonUnreachableError(t *testing.T) {
 		t.Fatal("expected error when daemon unreachable")
 	}
 
+	var exitErr *exitcode.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != exitcode.ExitDaemonUnreachable {
+		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, exitcode.ExitDaemonUnreachable)
+	}
+
 	var record map[string]interface{}
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
 		t.Fatalf("error output not valid JSONL: %s", buf.String())
 	}
-	if record["status"] != "error" {
-		t.Errorf("status = %v, want error", record["status"])
+	if record["type"] != "error" {
+		t.Errorf("type = %v, want error", record["type"])
 	}
-	if record["code"] != "daemon_not_running" {
-		t.Errorf("code = %v, want daemon_not_running", record["code"])
+	if record["error_code"] != "daemon_not_running" {
+		t.Errorf("error_code = %v, want daemon_not_running", record["error_code"])
 	}
-	if suggestion, ok := record["suggestion"].(string); !ok || suggestion == "" {
-		t.Error("suggestion field is missing or empty, want non-empty actionable guidance")
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "wr daemon start") {
+		t.Error("message should contain actionable suggestion, got:", msg)
 	}
+	validateJSONLOutput(t, buf)
 }
 
 func TestDaemonCorruptStateNotRunning(t *testing.T) {
@@ -140,16 +180,117 @@ func TestDaemonCorruptStateNotRunning(t *testing.T) {
 		t.Fatal("expected error with corrupt state")
 	}
 
+	var exitErr *exitcode.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != exitcode.ExitDaemonUnreachable {
+		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, exitcode.ExitDaemonUnreachable)
+	}
+
 	var record map[string]interface{}
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
 		t.Fatalf("error output not valid JSONL: %s", buf.String())
 	}
-	if record["code"] != "daemon_not_running" {
-		t.Errorf("code = %v, want daemon_not_running", record["code"])
+	if record["error_code"] != "daemon_not_running" {
+		t.Errorf("error_code = %v, want daemon_not_running", record["error_code"])
 	}
-	if suggestion, ok := record["suggestion"].(string); !ok || suggestion == "" {
-		t.Error("suggestion field is missing or empty, want non-empty actionable guidance")
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "wr daemon start") {
+		t.Error("message should contain actionable suggestion, got:", msg)
 	}
+	validateJSONLOutput(t, buf)
+}
+
+// ── Daemon error response mapping tests ──
+
+func TestDaemonErrorResponse_InvalidType(t *testing.T) {
+	// Mock daemon that returns an error envelope with error_code=invalid_type
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		env := jsonl.ErrorEnvelope("invalid_type", "invalid type")
+		b, _ := json.Marshal(env)
+		w.Write(b)
+	}))
+	defer ts.Close()
+
+	port := extractPort(t, ts.URL)
+	dir := t.TempDir()
+	daemon.WriteState(dir, daemon.DaemonState{Port: port, PID: os.Getpid()})
+
+	var buf bytes.Buffer
+	err := callDaemonWithDir(&buf, dir, http.MethodPost, "/api/add",
+		strings.NewReader(`{"type":"bad"}`))
+	if err == nil {
+		t.Fatal("expected error for daemon error response")
+	}
+
+	var exitErr *exitcode.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != exitcode.ExitInvalidParams {
+		t.Errorf("ExitError.Code = %d, want %d (ExitInvalidParams)", exitErr.Code, exitcode.ExitInvalidParams)
+	}
+	validateJSONLOutput(t, buf)
+}
+
+func TestDaemonErrorResponse_LLMError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		env := jsonl.ErrorEnvelope("llm_error", "LLM classification failed")
+		b, _ := json.Marshal(env)
+		w.Write(b)
+	}))
+	defer ts.Close()
+
+	port := extractPort(t, ts.URL)
+	dir := t.TempDir()
+	daemon.WriteState(dir, daemon.DaemonState{Port: port, PID: os.Getpid()})
+
+	var buf bytes.Buffer
+	err := callDaemonWithDir(&buf, dir, http.MethodGet, "/api/list", nil)
+	if err == nil {
+		t.Fatal("expected error for daemon error response")
+	}
+
+	var exitErr *exitcode.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != exitcode.ExitNetworkError {
+		t.Errorf("ExitError.Code = %d, want %d (ExitNetworkError)", exitErr.Code, exitcode.ExitNetworkError)
+	}
+	validateJSONLOutput(t, buf)
+}
+
+func TestDaemonSuccessResponse_NoError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		env := jsonl.SuccessEnvelope(map[string]interface{}{"status": "ok"})
+		b, _ := json.Marshal(env)
+		w.Write(b)
+	}))
+	defer ts.Close()
+
+	port := extractPort(t, ts.URL)
+	dir := t.TempDir()
+	daemon.WriteState(dir, daemon.DaemonState{Port: port, PID: os.Getpid()})
+
+	var buf bytes.Buffer
+	err := callDaemonWithDir(&buf, dir, http.MethodGet, "/health", nil)
+	if err != nil {
+		t.Fatalf("expected no error for success response, got: %v", err)
+	}
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", buf.String())
+	}
+	if record["type"] != "result" {
+		t.Errorf("type = %v, want result", record["type"])
+	}
+	validateJSONLOutput(t, buf)
 }
 
 // ── Helpers ──
@@ -195,6 +336,17 @@ func callDaemonWithDir(w io.Writer, dir, method, path string, body io.Reader) er
 	}
 
 	w.Write(respBody)
+
+	// Mirror production behavior: check for daemon error envelopes.
+	if record["type"] == "error" {
+		errorCode, _ := record["error_code"].(string)
+		msg, _ := record["message"].(string)
+		return &exitcode.ExitError{
+			Code: exitcode.FromErrorCode(errorCode),
+			Err:  errors.New(msg),
+		}
+	}
+
 	return nil
 }
 
@@ -208,4 +360,22 @@ func extractPort(t *testing.T, url string) int {
 	var port int
 	fmt.Sscanf(parts[2], "%d", &port)
 	return port
+}
+
+// validateJSONLOutput reads JSONL from buf, unmarshals each line into
+// jsonl.Envelope, and validates the envelope structure.
+func validateJSONLOutput(t *testing.T, buf bytes.Buffer) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var env jsonl.Envelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			t.Fatalf("invalid JSONL line: %s\nerr: %v", line, err)
+		}
+		if err := jsonl.ValidateEnvelope(env); err != nil {
+			t.Errorf("envelope validation failed: %v; line=%s", err, line)
+		}
+	}
 }

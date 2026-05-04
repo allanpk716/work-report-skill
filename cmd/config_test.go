@@ -30,6 +30,24 @@ func parseJSONL(data []byte) []map[string]interface{} {
 	return results
 }
 
+// assertValidJSONLEnvelope validates that every JSONL line in data has a
+// structurally valid envelope (version, tool, type, timestamp).
+func assertValidJSONLEnvelope(t *testing.T, data []byte) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var env jsonl.Envelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			t.Fatalf("invalid JSONL line: %s\nerr: %v", line, err)
+		}
+		if err := jsonl.ValidateEnvelope(env); err != nil {
+			t.Errorf("envelope validation failed: %v; line=%s", err, line)
+		}
+	}
+}
+
 // setupConfigEnv creates a temp home dir so config commands operate in isolation.
 // Returns the temp home dir and a cleanup function.
 func setupConfigEnv(t *testing.T) (homeDir string, cleanup func()) {
@@ -95,12 +113,13 @@ func TestConfigInitDefaults(t *testing.T) {
 	defer cleanup()
 
 	out, _ := runConfigCmd("config", "init")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 JSONL line, got %d (output: %s)", len(lines), string(out))
 	}
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected status=success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 
 	data, ok := lines[0]["data"].(map[string]interface{})
@@ -144,13 +163,14 @@ func TestConfigInitWithFlags(t *testing.T) {
 		"--pushover-token", "tok123",
 		"--llm-text-key", "sk-text-key",
 	)
+	assertValidJSONLEnvelope(t, out)
 
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 JSONL line, got %d", len(lines))
 	}
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected status=success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 
 	// Load and verify flag overrides
@@ -178,13 +198,14 @@ func TestConfigInitInvalidPort(t *testing.T) {
 	defer cleanup()
 
 	out, _ := runConfigCmd("config", "init", "--daemon-port", "99999")
+	assertValidJSONLEnvelope(t, out)
 
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 JSONL line, got %d", len(lines))
 	}
-	if lines[0]["status"] != "error" {
-		t.Errorf("expected status=error for invalid port, got %v", lines[0]["status"])
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error for invalid port, got %v", lines[0]["type"])
 	}
 	msg, _ := lines[0]["message"].(string)
 	if !strings.Contains(msg, "validation") {
@@ -197,13 +218,14 @@ func TestConfigInitInvalidTimezone(t *testing.T) {
 	defer cleanup()
 
 	out, _ := runConfigCmd("config", "init", "--timezone", "Invalid/Zone")
+	assertValidJSONLEnvelope(t, out)
 
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
-	if lines[0]["status"] != "error" {
-		t.Errorf("expected status=error for invalid timezone, got %v", lines[0]["status"])
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error for invalid timezone, got %v", lines[0]["type"])
 	}
 }
 
@@ -217,12 +239,13 @@ func TestConfigSetBasic(t *testing.T) {
 	runConfigCmd("config", "init")
 
 	out, _ := runConfigCmd("config", "set", "daemon.port", "3000")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 JSONL line, got %d", len(lines))
 	}
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected status=success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 	data, _ := lines[0]["data"].(map[string]interface{})
 	if data["key"] != "daemon.port" {
@@ -250,9 +273,10 @@ func TestConfigSetLLMApiKey(t *testing.T) {
 	runConfigCmd("config", "init")
 
 	out, _ := runConfigCmd("config", "set", "llm.text.api_key", "sk-abc123")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 
 	path, _ := config.DefaultConfigPath()
@@ -269,9 +293,10 @@ func TestConfigSetUnknownPath(t *testing.T) {
 	runConfigCmd("config", "init")
 
 	out, _ := runConfigCmd("config", "set", "nonexistent.path", "value")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
-	if lines[0]["status"] != "error" {
-		t.Errorf("expected error for unknown path, got %v", lines[0]["status"])
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error for unknown path, got %v", lines[0]["type"])
 	}
 }
 
@@ -282,9 +307,10 @@ func TestConfigSetInvalidPort(t *testing.T) {
 	runConfigCmd("config", "init")
 
 	out, _ := runConfigCmd("config", "set", "daemon.port", "notanumber")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
-	if lines[0]["status"] != "error" {
-		t.Errorf("expected error for non-numeric port, got %v", lines[0]["status"])
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error for non-numeric port, got %v", lines[0]["type"])
 	}
 }
 
@@ -310,12 +336,13 @@ func TestConfigShow(t *testing.T) {
 	runConfigCmd("config", "init", "--llm-text-key", "sk-secret-key-12345")
 
 	out, _ := runConfigCmd("config", "show")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
-		t.Fatalf("expected 1 JSONL line, got %d", len(lines))
+		t.Fatalf("expected 1 JSONL line, got %d (len(lines))", len(lines))
 	}
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected status=success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 
 	data, ok := lines[0]["data"].(map[string]interface{})
@@ -347,9 +374,10 @@ func TestConfigShowBeforeInit(t *testing.T) {
 
 	// Show without init — should still work with defaults
 	out, _ := runConfigCmd("config", "show")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 
 	data, _ := lines[0]["data"].(map[string]interface{})
@@ -367,8 +395,9 @@ func TestConfigInitSetShowRoundtrip(t *testing.T) {
 
 	// Step 1: init with some flags
 	out, _ := runConfigCmd("config", "init", "--timezone", "UTC", "--pushover-token", "tok-abcdef")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
-	if lines[0]["status"] != "success" {
+	if lines[0]["type"] != "result" {
 		t.Fatalf("init failed: %v", lines[0])
 	}
 
@@ -379,15 +408,17 @@ func TestConfigInitSetShowRoundtrip(t *testing.T) {
 
 	// Step 2: set a value
 	out, _ = runConfigCmd("config", "set", "llm.vision.model", "gpt-4o")
+	assertValidJSONLEnvelope(t, out)
 	lines = parseJSONL(out)
-	if lines[0]["status"] != "success" {
+	if lines[0]["type"] != "result" {
 		t.Fatalf("set failed: %v", lines[0])
 	}
 
 	// Step 3: show and verify
 	out, _ = runConfigCmd("config", "show")
+	assertValidJSONLEnvelope(t, out)
 	lines = parseJSONL(out)
-	if lines[0]["status"] != "success" {
+	if lines[0]["type"] != "result" {
 		t.Fatalf("show failed: %v", lines[0])
 	}
 
@@ -421,9 +452,10 @@ func TestConfigInitIdempotent(t *testing.T) {
 	runConfigCmd("config", "init", "--daemon-port", "8080")
 
 	out, _ := runConfigCmd("config", "init", "--daemon-port", "9090")
+	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
-	if lines[0]["status"] != "success" {
-		t.Fatalf("expected success, got %v", lines[0]["status"])
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 
 	path, _ := config.DefaultConfigPath()
@@ -461,11 +493,12 @@ func TestConfigAllSetByPathPaths(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
 			out, _ := runConfigCmd("config", "set", tc.path, tc.value)
+			assertValidJSONLEnvelope(t, out)
 			lines := parseJSONL(out)
 			if len(lines) != 1 {
 				t.Fatalf("expected 1 line for %s, got %d (output: %s)", tc.path, len(lines), string(out))
 			}
-			if lines[0]["status"] != "success" {
+			if lines[0]["type"] != "result" {
 				t.Fatalf("expected success for %s, got %v", tc.path, lines[0])
 			}
 		})
