@@ -3068,3 +3068,320 @@ func TestHandleImportRollback(t *testing.T) {
 		t.Errorf("rollback failed: expected 0 meetings, got %d", len(entries))
 	}
 }
+
+// ── Integration tests: import→list round-trip ──
+
+// readStoredRecord reads the first JSON record file in the given subdirectory
+// and unmarshals it into a map. Returns the map and the list of files found.
+func readStoredRecord(t *testing.T, dir, subpath string) (map[string]interface{}, []os.DirEntry) {
+	t.Helper()
+	fullDir := filepath.Join(dir, subpath)
+	files, err := os.ReadDir(fullDir)
+	if err != nil {
+		t.Fatalf("dir %s should exist: %v", subpath, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("expected at least one file in %s, found none", subpath)
+	}
+	data, err := os.ReadFile(filepath.Join(fullDir, files[0].Name()))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var record map[string]interface{}
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	return record, files
+}
+
+// TestIntegration_ImportThenListRoundTrip imports valid records and verifies
+// they appear in the list endpoint with fresh ShortIDs.
+func TestIntegration_ImportThenListRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Import 3 records of different types
+	payload := `{"records":[
+		{"type":"meeting","title":"import-list meeting","date":"2026-06-15","time":"10:00"},
+		{"type":"task","title":"import-list task","date":"2026-06-15"},
+		{"type":"log","title":"import-list log","date":"2026-06-15"}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var importResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &importResp)
+	importData := importResp["data"].(map[string]interface{})
+	if importData["imported"].(float64) != 3 {
+		t.Fatalf("expected imported=3, got %v", importData["imported"])
+	}
+
+	// List meetings and verify the imported record is present with a ShortID
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-15", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	meetingEntries := parseListEntries(t, w.Body.Bytes())
+	if len(meetingEntries) != 1 {
+		t.Fatalf("expected 1 meeting entry, got %d", len(meetingEntries))
+	}
+	meetingShortID, _ := meetingEntries[0]["short_id"].(string)
+	if meetingShortID == "" {
+		t.Error("imported meeting should have a fresh ShortID")
+	}
+	if meetingEntries[0]["title"] != "import-list meeting" {
+		t.Errorf("meeting title = %v, want 'import-list meeting'", meetingEntries[0]["title"])
+	}
+	if meetingEntries[0]["type"] != "meeting" {
+		t.Errorf("meeting type = %v, want 'meeting'", meetingEntries[0]["type"])
+	}
+	if meetingEntries[0]["date"] != "2026-06-15" {
+		t.Errorf("meeting date = %v, want '2026-06-15'", meetingEntries[0]["date"])
+	}
+
+	// List tasks
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&date=2026-06-15", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	taskEntries := parseListEntries(t, w.Body.Bytes())
+	if len(taskEntries) != 1 {
+		t.Fatalf("expected 1 task entry, got %d", len(taskEntries))
+	}
+	taskShortID, _ := taskEntries[0]["short_id"].(string)
+	if taskShortID == "" {
+		t.Error("imported task should have a fresh ShortID")
+	}
+	if taskEntries[0]["title"] != "import-list task" {
+		t.Errorf("task title = %v, want 'import-list task'", taskEntries[0]["title"])
+	}
+
+	// List logs
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=log&date=2026-06-15", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	logEntries := parseListEntries(t, w.Body.Bytes())
+	if len(logEntries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(logEntries))
+	}
+	logShortID, _ := logEntries[0]["short_id"].(string)
+	if logShortID == "" {
+		t.Error("imported log should have a fresh ShortID")
+	}
+
+	// Verify all ShortIDs are unique (freshly generated)
+	shortIDs := map[string]bool{meetingShortID: true}
+	if shortIDs[taskShortID] {
+		t.Error("task and meeting should have different ShortIDs")
+	}
+	shortIDs[taskShortID] = true
+	if shortIDs[logShortID] {
+		t.Error("log should have a unique ShortID")
+	}
+}
+
+// TestIntegration_ImportInvalidRollbackViaList imports invalid records and verifies
+// that zero new records appear in the list endpoint (full rollback).
+func TestIntegration_ImportInvalidRollbackViaList(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a pre-existing record to establish baseline
+	addRecord(t, srv, "meeting", "baseline meeting", "", "2026-06-20")
+
+	// Verify baseline: 1 meeting
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-20", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	baselineEntries := parseListEntries(t, w.Body.Bytes())
+	if len(baselineEntries) != 1 {
+		t.Fatalf("expected 1 baseline meeting, got %d", len(baselineEntries))
+	}
+	baselineID := baselineEntries[0]["short_id"].(string)
+
+	// Attempt import with an invalid record at index 1
+	payload := `{"records":[
+		{"type":"meeting","title":"should not persist","date":"2026-06-20"},
+		{"type":"bogus","title":"invalid type","date":"2026-06-20"}
+	]}`
+	req = httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+
+	// Verify rollback: list should show only the baseline record
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-20", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	afterEntries := parseListEntries(t, w.Body.Bytes())
+	if len(afterEntries) != 1 {
+		t.Errorf("rollback failed: expected 1 meeting after failed import, got %d", len(afterEntries))
+	}
+	if afterEntries[0]["short_id"].(string) != baselineID {
+		t.Errorf("after rollback, remaining record should be the baseline, got short_id=%v", afterEntries[0]["short_id"])
+	}
+}
+
+// TestIntegration_ImportWithOptionalFields imports records with optional fields
+// and verifies the stored files preserve all optional fields correctly.
+func TestIntegration_ImportWithOptionalFields(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	payload := `{"records":[
+		{"type":"meeting","title":"full fields meeting","date":"2026-07-01","time":"14:00","description":"quarterly review","tags":["review","quarterly"],"location":"Room 3A","remind_before":"30m"},
+		{"type":"task","title":"full fields task","date":"2026-07-01","description":"finish implementation","tags":["dev"],"location":"Remote","priority":"high"},
+		{"type":"reminder","title":"full fields reminder","date":"2026-07-02","time":"09:00","description":"follow up","remind_before":"15m","recurring":"weekly"},
+		{"type":"log","title":"full fields log","date":"2026-07-01","description":"daily standup notes","tags":["standup"]}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var importResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &importResp)
+	importData := importResp["data"].(map[string]interface{})
+	if importData["imported"].(float64) != 4 {
+		t.Fatalf("expected imported=4, got %v", importData["imported"])
+	}
+
+	// Verify meeting: description, tags, location, remind_before
+	meeting, _ := readStoredRecord(t, dir, "meetings/2026/07/01")
+	if meeting["description"] != "quarterly review" {
+		t.Errorf("meeting description = %v, want 'quarterly review'", meeting["description"])
+	}
+	tags, _ := meeting["tags"].([]interface{})
+	if len(tags) != 2 || tags[0] != "review" || tags[1] != "quarterly" {
+		t.Errorf("meeting tags = %v, want [review, quarterly]", tags)
+	}
+	if meeting["location"] != "Room 3A" {
+		t.Errorf("meeting location = %v, want 'Room 3A'", meeting["location"])
+	}
+	if meeting["remind_before"] != "30m" {
+		t.Errorf("meeting remind_before = %v, want '30m'", meeting["remind_before"])
+	}
+	if meeting["time"] != "14:00" {
+		t.Errorf("meeting time = %v, want '14:00'", meeting["time"])
+	}
+	if meeting["short_id"] == "" {
+		t.Error("meeting should have a short_id")
+	}
+
+	// Verify task: description, tags, location, priority
+	task, _ := readStoredRecord(t, dir, "tasks/active")
+	if task["description"] != "finish implementation" {
+		t.Errorf("task description = %v, want 'finish implementation'", task["description"])
+	}
+	taskTags, _ := task["tags"].([]interface{})
+	if len(taskTags) != 1 || taskTags[0] != "dev" {
+		t.Errorf("task tags = %v, want [dev]", taskTags)
+	}
+	if task["location"] != "Remote" {
+		t.Errorf("task location = %v, want 'Remote'", task["location"])
+	}
+	if task["priority"] != "high" {
+		t.Errorf("task priority = %v, want 'high'", task["priority"])
+	}
+
+	// Verify reminder: description, remind_before, recurring
+	reminder, _ := readStoredRecord(t, dir, "reminders/active")
+	if reminder["description"] != "follow up" {
+		t.Errorf("reminder description = %v, want 'follow up'", reminder["description"])
+	}
+	if reminder["remind_before"] != "15m" {
+		t.Errorf("reminder remind_before = %v, want '15m'", reminder["remind_before"])
+	}
+	if reminder["recurring"] != "weekly" {
+		t.Errorf("reminder recurring = %v, want 'weekly'", reminder["recurring"])
+	}
+	if reminder["time"] != "09:00" {
+		t.Errorf("reminder time = %v, want '09:00'", reminder["time"])
+	}
+
+	// Verify log: description, tags
+	logRec, _ := readStoredRecord(t, dir, "logs/2026/07/01")
+	if logRec["description"] != "daily standup notes" {
+		t.Errorf("log description = %v, want 'daily standup notes'", logRec["description"])
+	}
+	logTags, _ := logRec["tags"].([]interface{})
+	if len(logTags) != 1 || logTags[0] != "standup" {
+		t.Errorf("log tags = %v, want [standup]", logTags)
+	}
+}
+
+// TestIntegration_ImportMinimalFields imports records with only the required
+// fields (type, title, date) and verifies they persist correctly.
+func TestIntegration_ImportMinimalFields(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	payload := `{"records":[
+		{"type":"meeting","title":"minimal meeting","date":"2026-08-01"},
+		{"type":"task","title":"minimal task","date":"2026-08-01"},
+		{"type":"reminder","title":"minimal reminder","date":"2026-08-02"},
+		{"type":"log","title":"minimal log","date":"2026-08-01"}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var importResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &importResp)
+	importData := importResp["data"].(map[string]interface{})
+	if importData["imported"].(float64) != 4 {
+		t.Fatalf("expected imported=4, got %v", importData["imported"])
+	}
+
+	// Verify meeting: only type, title, date populated; optional fields absent
+	meeting, _ := readStoredRecord(t, dir, "meetings/2026/08/01")
+	if meeting["type"] != "meeting" {
+		t.Errorf("meeting type = %v, want 'meeting'", meeting["type"])
+	}
+	if meeting["title"] != "minimal meeting" {
+		t.Errorf("meeting title = %v, want 'minimal meeting'", meeting["title"])
+	}
+	if meeting["date"] != "2026-08-01" {
+		t.Errorf("meeting date = %v, want '2026-08-01'", meeting["date"])
+	}
+	if meeting["short_id"] == "" {
+		t.Error("meeting should have a short_id")
+	}
+	if meeting["status"] != "active" {
+		t.Errorf("meeting status = %v, want 'active'", meeting["status"])
+	}
+
+	// Verify task
+	task, _ := readStoredRecord(t, dir, "tasks/active")
+	if task["title"] != "minimal task" {
+		t.Errorf("task title = %v, want 'minimal task'", task["title"])
+	}
+	if task["date"] != "2026-08-01" {
+		t.Errorf("task date = %v, want '2026-08-01'", task["date"])
+	}
+
+	// Verify reminder
+	reminder, _ := readStoredRecord(t, dir, "reminders/active")
+	if reminder["title"] != "minimal reminder" {
+		t.Errorf("reminder title = %v, want 'minimal reminder'", reminder["title"])
+	}
+	if reminder["date"] != "2026-08-02" {
+		t.Errorf("reminder date = %v, want '2026-08-02'", reminder["date"])
+	}
+
+	// Verify log
+	logRec, _ := readStoredRecord(t, dir, "logs/2026/08/01")
+	if logRec["title"] != "minimal log" {
+		t.Errorf("log title = %v, want 'minimal log'", logRec["title"])
+	}
+
+	// Verify round-trip via list: all 3 meeting-date records should be findable
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-08-01", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	entries := parseListEntries(t, w.Body.Bytes())
+	if len(entries) != 1 {
+		t.Errorf("expected 1 meeting in list, got %d", len(entries))
+	}
+}
