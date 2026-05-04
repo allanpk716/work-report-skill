@@ -485,6 +485,49 @@ func TestExitCodeWithDaemonRouter(t *testing.T) {
 
 // --- Import CLI tests ---
 
+func TestExportWithoutFormatExit2(t *testing.T) {
+	_, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	resetExportFlags()
+	code, out := executeCmd("export")
+	if code != exitcode.ExitInvalidParams {
+		t.Errorf("expected exit code 2 for export without --format, got %d", code)
+	}
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error, got %v", lines[0]["type"])
+	}
+	validateAllEnvelopes(t, out)
+}
+
+func TestExportInvalidFormatCSVExit2(t *testing.T) {
+	_, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	resetExportFlags()
+	code, out := executeCmd("export", "--format", "csv")
+	if code != exitcode.ExitInvalidParams {
+		t.Errorf("expected exit code 2 for export --format csv, got %d", code)
+	}
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	if lines[0]["type"] != "error" {
+		t.Errorf("expected type=error, got %v", lines[0]["type"])
+	}
+	// Error message should mention that csv is invalid
+	msg, _ := lines[0]["message"].(string)
+	if !strings.Contains(msg, "json") && !strings.Contains(msg, "markdown") {
+		t.Errorf("expected error message to mention valid formats, got %q", msg)
+	}
+	validateAllEnvelopes(t, out)
+}
+
 func TestImportWithoutFileFlag(t *testing.T) {
 	_, cleanup := setupTempHome(t)
 	defer cleanup()

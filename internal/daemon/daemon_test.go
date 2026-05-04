@@ -3596,6 +3596,286 @@ func TestHandleExport_MarkdownDateRange(t *testing.T) {
 	}
 }
 
+func TestHandleExport_InvalidFormatCSV(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=csv", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_params")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "csv") {
+		t.Errorf("expected error message to mention 'csv', got %q", msg)
+	}
+}
+
+func TestHandleExport_JSONDateRange(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records across multiple dates
+	addRecord(t, srv, "meeting", "early meeting", "", "2026-04-20")
+	addRecord(t, srv, "meeting", "in range 1", "", "2026-04-25")
+	addRecord(t, srv, "task", "in range 2", "", "2026-04-28")
+	addRecord(t, srv, "meeting", "late meeting", "", "2026-05-05")
+
+	// Export JSON with from/to date range
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&from=2026-04-25&to=2026-04-28", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2 for date range, got %v", data["count"])
+	}
+	records := data["records"].([]interface{})
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records in range, got %d", len(records))
+	}
+	for _, r := range records {
+		rec := r.(map[string]interface{})
+		title, _ := rec["title"].(string)
+		if title == "early meeting" || title == "late meeting" {
+			t.Errorf("record %q should not be in range [2026-04-25, 2026-04-28]", title)
+		}
+	}
+}
+
+func TestHandleExport_MarkdownEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// No records added — export markdown for a specific date
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&date=2026-12-25", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 0 {
+		t.Errorf("expected count=0 for empty markdown export, got %v", data["count"])
+	}
+	content, _ := data["content"].(string)
+	// Markdown should still be generated (with empty sections) — not empty string
+	if content == "" {
+		t.Error("expected non-empty markdown content even for empty result set")
+	}
+}
+
+func TestHandleExport_JSONStatusFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a task, complete it
+	addRecord(t, srv, "task", "active export task", "", "2026-05-10")
+
+	time.Sleep(1 * time.Second) // avoid ShortID collision
+
+	body := strings.NewReader(`{"type":"task","title":"completed export task","date":"2026-05-10"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	shortID := addResp["data"].(map[string]interface{})["short_id"].(string)
+
+	// Complete the second task
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Export with status=completed — export uses IncludeCompleted=true
+	req = httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-10&status=completed", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	if len(records) != 1 {
+		t.Fatalf("expected 1 completed record, got %d", len(records))
+	}
+	rec := records[0].(map[string]interface{})
+	if rec["status"] != "completed" {
+		t.Errorf("expected status=completed, got %v", rec["status"])
+	}
+	if rec["title"] != "completed export task" {
+		t.Errorf("expected title='completed export task', got %v", rec["title"])
+	}
+}
+
+func TestHandleExport_JSONQueryFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "代码评审", "评审PR #123", "2026-05-15")
+	addRecord(t, srv, "task", "写测试", "为export写测试", "2026-05-15")
+	addRecord(t, srv, "log", "部署日志", "生产环境部署", "2026-05-15")
+
+	// Export JSON with query filter "评审"
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-15&query=%E8%AF%84%E5%AE%A1", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	// Should match meeting "代码评审" title and meeting "评审PR #123" description
+	if len(records) < 1 {
+		t.Errorf("expected at least 1 record matching '评审', got %d", len(records))
+	}
+}
+
+func TestHandleExport_JSONCombinedFilters(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "design review", "sprint planning", "2026-04-25")
+	addRecord(t, srv, "task", "code review", "review PR", "2026-04-28")
+	addRecord(t, srv, "log", "daily log", "review work", "2026-04-28")
+	addRecord(t, srv, "meeting", "deploy meeting", "deploy to prod", "2026-05-01")
+
+	// Combined: type=meeting + from/to + query=review
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&type=meeting&from=2026-04-25&to=2026-05-01&query=review", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+
+	// Should match only the "design review" meeting in range
+	if len(records) != 1 {
+		t.Errorf("expected 1 meeting matching 'review' in date range, got %d", len(records))
+		for _, r := range records {
+			rec := r.(map[string]interface{})
+			t.Logf("  record: type=%v title=%v date=%v", rec["type"], rec["title"], rec["date"])
+		}
+	}
+}
+
+// ── Integration: export round-trip tests ──
+
+func TestIntegration_ExportJsonRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records via the add endpoint
+	addRecord(t, srv, "meeting", "export-int meeting", "sprint planning", "2026-06-10")
+	addRecord(t, srv, "task", "export-int task", "implement export", "2026-06-10")
+	addRecord(t, srv, "log", "export-int log", "daily notes", "2026-06-10")
+
+	// Export as JSON
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-06-10", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 3 {
+		t.Fatalf("expected count=3, got %v", data["count"])
+	}
+
+	records := data["records"].([]interface{})
+	if len(records) != 3 {
+		t.Fatalf("expected 3 exported records, got %d", len(records))
+	}
+
+	// Verify all records have essential fields and correct content
+	titles := map[string]bool{}
+	for _, r := range records {
+		rec := r.(map[string]interface{})
+		if rec["short_id"] == "" {
+			t.Error("exported record should have short_id")
+		}
+		if rec["date"] != "2026-06-10" {
+			t.Errorf("expected date=2026-06-10, got %v", rec["date"])
+		}
+		if rec["status"] == "" {
+			t.Error("exported record should have status")
+		}
+		title, _ := rec["title"].(string)
+		titles[title] = true
+	}
+	if !titles["export-int meeting"] || !titles["export-int task"] || !titles["export-int log"] {
+		t.Errorf("expected all 3 titles present, got %v", titles)
+	}
+
+	// Verify JSON output is valid and can round-trip
+	jsonBytes, _ := json.Marshal(records)
+	var roundTripped []map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &roundTripped); err != nil {
+		t.Fatalf("exported records should be valid JSON for round-trip: %v", err)
+	}
+	if len(roundTripped) != 3 {
+		t.Errorf("round-tripped record count = %d, want 3", len(roundTripped))
+	}
+}
+
+func TestIntegration_ExportMarkdownRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records
+	addRecord(t, srv, "meeting", "md-int meeting", "discuss architecture", "2026-06-15")
+	addRecord(t, srv, "task", "md-int task", "implement feature", "2026-06-15")
+	addRecord(t, srv, "log", "md-int log", "notes from today", "2026-06-15")
+
+	// Export as markdown
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&date=2026-06-15", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 3 {
+		t.Fatalf("expected count=3, got %v", data["count"])
+	}
+
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Fatal("expected non-empty markdown content")
+	}
+
+	// Verify markdown contains expected sections and record titles
+	if !strings.Contains(content, "工作日报") {
+		t.Error("expected markdown to contain '工作日报' header")
+	}
+	if !strings.Contains(content, "md-int meeting") {
+		t.Error("expected markdown to contain 'md-int meeting'")
+	}
+	if !strings.Contains(content, "md-int task") {
+		t.Error("expected markdown to contain 'md-int task'")
+	}
+	if !strings.Contains(content, "md-int log") {
+		t.Error("expected markdown to contain 'md-int log'")
+	}
+}
+
 func TestHandleExport_MarkdownNoDateFilter(t *testing.T) {
 	srv, _ := newTestServer(t)
 
