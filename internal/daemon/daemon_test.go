@@ -2721,3 +2721,1181 @@ func TestPanicRecovery(t *testing.T) {
 		t.Errorf("health type = %v, want result (server should recover from panic)", healthRecord["type"])
 	}
 }
+
+// ── Import endpoint tests ──
+
+func TestHandleImportSuccess(t *testing.T) {
+	srv, dir := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"imported meeting","date":"2026-05-04","time":"10:00"},
+		{"type":"task","title":"imported task","date":"2026-05-04"},
+		{"type":"reminder","title":"imported reminder","date":"2026-05-05"},
+		{"type":"log","title":"imported log","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify imported count
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", w.Body.Bytes())
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["imported"].(float64) != 4 {
+		t.Errorf("imported = %v, want 4", data["imported"])
+	}
+
+	// Verify files were written — check meeting and task dirs
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "04")
+	files, err := os.ReadDir(meetingsDir)
+	if err != nil {
+		t.Fatalf("meetings dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected meeting file to be written")
+	}
+
+	tasksDir := filepath.Join(dir, "tasks", "active")
+	files, err = os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("tasks dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected task file to be written")
+	}
+
+	remindersDir := filepath.Join(dir, "reminders", "active")
+	files, err = os.ReadDir(remindersDir)
+	if err != nil {
+		t.Fatalf("reminders dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected reminder file to be written")
+	}
+}
+
+func TestHandleImportInvalidType(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"valid","date":"2026-05-04"},
+		{"type":"bogus","title":"invalid type","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+}
+
+func TestHandleImportMissingTitle(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+}
+
+func TestHandleImportMissingDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"task","title":"no date"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+}
+
+func TestHandleImportEmptyRecords(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "result")
+
+	// Verify imported=0 in the response
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", w.Body.Bytes())
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["imported"].(float64) != 0 {
+		t.Errorf("imported = %v, want 0", data["imported"])
+	}
+}
+
+func TestHandleImportInvalidBody(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`not json`)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestHandleImportFailFastNoPersistOnInvalid(t *testing.T) {
+	// Verify that when a record fails validation, nothing is persisted.
+	srv, dir := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"should not be saved","date":"2026-05-04"},
+		{"type":"meeting","title":"","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+
+	// No meeting files should have been written
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "04")
+	files, err := os.ReadDir(meetingsDir)
+	if err == nil && len(files) > 0 {
+		t.Errorf("expected no files written on validation failure, got %d files", len(files))
+	}
+}
+
+func TestHandleImportMethodNotAllowed(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/import", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+// ── Import validation index tests ──
+
+func TestHandleImportMissingTypeAtIndex(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// Record 0 is valid, record 1 is missing type entirely
+	payload := `{"records":[
+		{"type":"meeting","title":"valid meeting","date":"2026-05-04"},
+		{"title":"no type field","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+
+	// Verify error message includes the record index and mentions "type"
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "index 1") {
+		t.Errorf("expected error message to mention 'index 1', got %q", msg)
+	}
+	if !strings.Contains(msg, "type") {
+		t.Errorf("expected error message to mention 'type', got %q", msg)
+	}
+}
+
+func TestHandleImportValidationErrorIncludesIndex(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      string
+		wantIndex    string
+		wantField    string
+	}{
+		{
+			name: "missing title at index 0",
+			payload: `{"records":[
+				{"type":"meeting","date":"2026-05-04"},
+				{"type":"task","title":"valid","date":"2026-05-04"}
+			]}`,
+			wantIndex: "index 0",
+			wantField: "title",
+		},
+		{
+			name: "missing date at index 2",
+			payload: `{"records":[
+				{"type":"meeting","title":"ok","date":"2026-05-04"},
+				{"type":"task","title":"ok","date":"2026-05-04"},
+				{"type":"log","title":"no date"}
+			]}`,
+			wantIndex: "index 2",
+			wantField: "date",
+		},
+		{
+			name: "invalid type at index 1",
+			payload: `{"records":[
+				{"type":"meeting","title":"ok","date":"2026-05-04"},
+				{"type":"bogus","title":"bad type","date":"2026-05-04"}
+			]}`,
+			wantIndex: "index 1",
+			wantField: "type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			body := strings.NewReader(tt.payload)
+			req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.router.ServeHTTP(w, req)
+
+			assertJSONLStatus(t, w.Body.Bytes(), "error")
+			assertJSONLCode(t, w.Body.Bytes(), "import_record")
+
+			var record map[string]interface{}
+			json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+			msg, _ := record["message"].(string)
+			if !strings.Contains(msg, tt.wantIndex) {
+				t.Errorf("expected error to mention %q, got %q", tt.wantIndex, msg)
+			}
+			if !strings.Contains(msg, tt.wantField) {
+				t.Errorf("expected error to mention %q, got %q", tt.wantField, msg)
+			}
+		})
+	}
+}
+
+func TestHandleImportAllRecordTypes(t *testing.T) {
+	srv, _ := newTestServer(t)
+	payload := `{"records":[
+		{"type":"meeting","title":"team sync","date":"2026-06-01","time":"09:00"},
+		{"type":"task","title":"write tests","date":"2026-06-01"},
+		{"type":"reminder","title":"follow up","date":"2026-06-02","time":"14:00"},
+		{"type":"log","title":"daily standup","date":"2026-06-01"}
+	]}`
+	body := strings.NewReader(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data, _ := record["data"].(map[string]interface{})
+	if data["imported"].(float64) != 4 {
+		t.Errorf("expected imported=4, got %v", data["imported"])
+	}
+}
+
+// ── Import rollback test ──
+
+func TestHandleImportRollback(t *testing.T) {
+	// Import 3 records where record 2 is invalid.
+	// Verify via the list endpoint that no records were persisted.
+	srv, _ := newTestServer(t)
+
+	// First, add one record to establish a baseline
+	addBody := strings.NewReader(`{"type":"task","title":"pre-existing task","date":"2026-05-04"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", addBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify baseline: 1 task on 2026-05-04
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&date=2026-05-04", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var listResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData := listResp["data"].(map[string]interface{})
+	entries, _ := listData["entries"].([]interface{})
+	baselineCount := len(entries)
+	if baselineCount != 1 {
+		t.Fatalf("expected baseline of 1 task, got %d", baselineCount)
+	}
+
+	// Attempt import with invalid record at index 2
+	payload := `{"records":[
+		{"type":"meeting","title":"valid meeting","date":"2026-05-04"},
+		{"type":"task","title":"valid task","date":"2026-05-04"},
+		{"type":"meeting","title":"","date":"2026-05-04"}
+	]}`
+	body := strings.NewReader(payload)
+	req = httptest.NewRequest(http.MethodPost, "/api/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	// Should fail
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "import_record")
+
+	// Verify rollback: list again, count should be unchanged
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&date=2026-05-04", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData = listResp["data"].(map[string]interface{})
+	entries, _ = listData["entries"].([]interface{})
+	if len(entries) != baselineCount {
+		t.Errorf("rollback failed: expected %d tasks after failed import, got %d (partial writes occurred)", baselineCount, len(entries))
+	}
+
+	// Also verify no meetings were written
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-05-04", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData = listResp["data"].(map[string]interface{})
+	entries, _ = listData["entries"].([]interface{})
+	if len(entries) != 0 {
+		t.Errorf("rollback failed: expected 0 meetings, got %d", len(entries))
+	}
+}
+
+// ── Integration tests: import→list round-trip ──
+
+// readStoredRecord reads the first JSON record file in the given subdirectory
+// and unmarshals it into a map. Returns the map and the list of files found.
+func readStoredRecord(t *testing.T, dir, subpath string) (map[string]interface{}, []os.DirEntry) {
+	t.Helper()
+	fullDir := filepath.Join(dir, subpath)
+	files, err := os.ReadDir(fullDir)
+	if err != nil {
+		t.Fatalf("dir %s should exist: %v", subpath, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("expected at least one file in %s, found none", subpath)
+	}
+	data, err := os.ReadFile(filepath.Join(fullDir, files[0].Name()))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var record map[string]interface{}
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	return record, files
+}
+
+// TestIntegration_ImportThenListRoundTrip imports valid records and verifies
+// they appear in the list endpoint with fresh ShortIDs.
+func TestIntegration_ImportThenListRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Import 3 records of different types
+	payload := `{"records":[
+		{"type":"meeting","title":"import-list meeting","date":"2026-06-15","time":"10:00"},
+		{"type":"task","title":"import-list task","date":"2026-06-15"},
+		{"type":"log","title":"import-list log","date":"2026-06-15"}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var importResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &importResp)
+	importData := importResp["data"].(map[string]interface{})
+	if importData["imported"].(float64) != 3 {
+		t.Fatalf("expected imported=3, got %v", importData["imported"])
+	}
+
+	// List meetings and verify the imported record is present with a ShortID
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-15", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	meetingEntries := parseListEntries(t, w.Body.Bytes())
+	if len(meetingEntries) != 1 {
+		t.Fatalf("expected 1 meeting entry, got %d", len(meetingEntries))
+	}
+	meetingShortID, _ := meetingEntries[0]["short_id"].(string)
+	if meetingShortID == "" {
+		t.Error("imported meeting should have a fresh ShortID")
+	}
+	if meetingEntries[0]["title"] != "import-list meeting" {
+		t.Errorf("meeting title = %v, want 'import-list meeting'", meetingEntries[0]["title"])
+	}
+	if meetingEntries[0]["type"] != "meeting" {
+		t.Errorf("meeting type = %v, want 'meeting'", meetingEntries[0]["type"])
+	}
+	if meetingEntries[0]["date"] != "2026-06-15" {
+		t.Errorf("meeting date = %v, want '2026-06-15'", meetingEntries[0]["date"])
+	}
+
+	// List tasks
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=task&date=2026-06-15", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	taskEntries := parseListEntries(t, w.Body.Bytes())
+	if len(taskEntries) != 1 {
+		t.Fatalf("expected 1 task entry, got %d", len(taskEntries))
+	}
+	taskShortID, _ := taskEntries[0]["short_id"].(string)
+	if taskShortID == "" {
+		t.Error("imported task should have a fresh ShortID")
+	}
+	if taskEntries[0]["title"] != "import-list task" {
+		t.Errorf("task title = %v, want 'import-list task'", taskEntries[0]["title"])
+	}
+
+	// List logs
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=log&date=2026-06-15", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	logEntries := parseListEntries(t, w.Body.Bytes())
+	if len(logEntries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(logEntries))
+	}
+	logShortID, _ := logEntries[0]["short_id"].(string)
+	if logShortID == "" {
+		t.Error("imported log should have a fresh ShortID")
+	}
+
+	// Verify all ShortIDs are unique (freshly generated)
+	shortIDs := map[string]bool{meetingShortID: true}
+	if shortIDs[taskShortID] {
+		t.Error("task and meeting should have different ShortIDs")
+	}
+	shortIDs[taskShortID] = true
+	if shortIDs[logShortID] {
+		t.Error("log should have a unique ShortID")
+	}
+}
+
+// TestIntegration_ImportInvalidRollbackViaList imports invalid records and verifies
+// that zero new records appear in the list endpoint (full rollback).
+func TestIntegration_ImportInvalidRollbackViaList(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a pre-existing record to establish baseline
+	addRecord(t, srv, "meeting", "baseline meeting", "", "2026-06-20")
+
+	// Verify baseline: 1 meeting
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-20", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	baselineEntries := parseListEntries(t, w.Body.Bytes())
+	if len(baselineEntries) != 1 {
+		t.Fatalf("expected 1 baseline meeting, got %d", len(baselineEntries))
+	}
+	baselineID := baselineEntries[0]["short_id"].(string)
+
+	// Attempt import with an invalid record at index 1
+	payload := `{"records":[
+		{"type":"meeting","title":"should not persist","date":"2026-06-20"},
+		{"type":"bogus","title":"invalid type","date":"2026-06-20"}
+	]}`
+	req = httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+
+	// Verify rollback: list should show only the baseline record
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-20", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	afterEntries := parseListEntries(t, w.Body.Bytes())
+	if len(afterEntries) != 1 {
+		t.Errorf("rollback failed: expected 1 meeting after failed import, got %d", len(afterEntries))
+	}
+	if afterEntries[0]["short_id"].(string) != baselineID {
+		t.Errorf("after rollback, remaining record should be the baseline, got short_id=%v", afterEntries[0]["short_id"])
+	}
+}
+
+// TestIntegration_ImportWithOptionalFields imports records with optional fields
+// and verifies the stored files preserve all optional fields correctly.
+func TestIntegration_ImportWithOptionalFields(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	payload := `{"records":[
+		{"type":"meeting","title":"full fields meeting","date":"2026-07-01","time":"14:00","description":"quarterly review","tags":["review","quarterly"],"location":"Room 3A","remind_before":"30m"},
+		{"type":"task","title":"full fields task","date":"2026-07-01","description":"finish implementation","tags":["dev"],"location":"Remote","priority":"high"},
+		{"type":"reminder","title":"full fields reminder","date":"2026-07-02","time":"09:00","description":"follow up","remind_before":"15m","recurring":"weekly"},
+		{"type":"log","title":"full fields log","date":"2026-07-01","description":"daily standup notes","tags":["standup"]}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var importResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &importResp)
+	importData := importResp["data"].(map[string]interface{})
+	if importData["imported"].(float64) != 4 {
+		t.Fatalf("expected imported=4, got %v", importData["imported"])
+	}
+
+	// Verify meeting: description, tags, location, remind_before
+	meeting, _ := readStoredRecord(t, dir, "meetings/2026/07/01")
+	if meeting["description"] != "quarterly review" {
+		t.Errorf("meeting description = %v, want 'quarterly review'", meeting["description"])
+	}
+	tags, _ := meeting["tags"].([]interface{})
+	if len(tags) != 2 || tags[0] != "review" || tags[1] != "quarterly" {
+		t.Errorf("meeting tags = %v, want [review, quarterly]", tags)
+	}
+	if meeting["location"] != "Room 3A" {
+		t.Errorf("meeting location = %v, want 'Room 3A'", meeting["location"])
+	}
+	if meeting["remind_before"] != "30m" {
+		t.Errorf("meeting remind_before = %v, want '30m'", meeting["remind_before"])
+	}
+	if meeting["time"] != "14:00" {
+		t.Errorf("meeting time = %v, want '14:00'", meeting["time"])
+	}
+	if meeting["short_id"] == "" {
+		t.Error("meeting should have a short_id")
+	}
+
+	// Verify task: description, tags, location, priority
+	task, _ := readStoredRecord(t, dir, "tasks/active")
+	if task["description"] != "finish implementation" {
+		t.Errorf("task description = %v, want 'finish implementation'", task["description"])
+	}
+	taskTags, _ := task["tags"].([]interface{})
+	if len(taskTags) != 1 || taskTags[0] != "dev" {
+		t.Errorf("task tags = %v, want [dev]", taskTags)
+	}
+	if task["location"] != "Remote" {
+		t.Errorf("task location = %v, want 'Remote'", task["location"])
+	}
+	if task["priority"] != "high" {
+		t.Errorf("task priority = %v, want 'high'", task["priority"])
+	}
+
+	// Verify reminder: description, remind_before, recurring
+	reminder, _ := readStoredRecord(t, dir, "reminders/active")
+	if reminder["description"] != "follow up" {
+		t.Errorf("reminder description = %v, want 'follow up'", reminder["description"])
+	}
+	if reminder["remind_before"] != "15m" {
+		t.Errorf("reminder remind_before = %v, want '15m'", reminder["remind_before"])
+	}
+	if reminder["recurring"] != "weekly" {
+		t.Errorf("reminder recurring = %v, want 'weekly'", reminder["recurring"])
+	}
+	if reminder["time"] != "09:00" {
+		t.Errorf("reminder time = %v, want '09:00'", reminder["time"])
+	}
+
+	// Verify log: description, tags
+	logRec, _ := readStoredRecord(t, dir, "logs/2026/07/01")
+	if logRec["description"] != "daily standup notes" {
+		t.Errorf("log description = %v, want 'daily standup notes'", logRec["description"])
+	}
+	logTags, _ := logRec["tags"].([]interface{})
+	if len(logTags) != 1 || logTags[0] != "standup" {
+		t.Errorf("log tags = %v, want [standup]", logTags)
+	}
+}
+
+// TestIntegration_ImportMinimalFields imports records with only the required
+// fields (type, title, date) and verifies they persist correctly.
+func TestIntegration_ImportMinimalFields(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	payload := `{"records":[
+		{"type":"meeting","title":"minimal meeting","date":"2026-08-01"},
+		{"type":"task","title":"minimal task","date":"2026-08-01"},
+		{"type":"reminder","title":"minimal reminder","date":"2026-08-02"},
+		{"type":"log","title":"minimal log","date":"2026-08-01"}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var importResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &importResp)
+	importData := importResp["data"].(map[string]interface{})
+	if importData["imported"].(float64) != 4 {
+		t.Fatalf("expected imported=4, got %v", importData["imported"])
+	}
+
+	// Verify meeting: only type, title, date populated; optional fields absent
+	meeting, _ := readStoredRecord(t, dir, "meetings/2026/08/01")
+	if meeting["type"] != "meeting" {
+		t.Errorf("meeting type = %v, want 'meeting'", meeting["type"])
+	}
+	if meeting["title"] != "minimal meeting" {
+		t.Errorf("meeting title = %v, want 'minimal meeting'", meeting["title"])
+	}
+	if meeting["date"] != "2026-08-01" {
+		t.Errorf("meeting date = %v, want '2026-08-01'", meeting["date"])
+	}
+	if meeting["short_id"] == "" {
+		t.Error("meeting should have a short_id")
+	}
+	if meeting["status"] != "active" {
+		t.Errorf("meeting status = %v, want 'active'", meeting["status"])
+	}
+
+	// Verify task
+	task, _ := readStoredRecord(t, dir, "tasks/active")
+	if task["title"] != "minimal task" {
+		t.Errorf("task title = %v, want 'minimal task'", task["title"])
+	}
+	if task["date"] != "2026-08-01" {
+		t.Errorf("task date = %v, want '2026-08-01'", task["date"])
+	}
+
+	// Verify reminder
+	reminder, _ := readStoredRecord(t, dir, "reminders/active")
+	if reminder["title"] != "minimal reminder" {
+		t.Errorf("reminder title = %v, want 'minimal reminder'", reminder["title"])
+	}
+	if reminder["date"] != "2026-08-02" {
+		t.Errorf("reminder date = %v, want '2026-08-02'", reminder["date"])
+	}
+
+	// Verify log
+	logRec, _ := readStoredRecord(t, dir, "logs/2026/08/01")
+	if logRec["title"] != "minimal log" {
+		t.Errorf("log title = %v, want 'minimal log'", logRec["title"])
+	}
+
+	// Verify round-trip via list: all 3 meeting-date records should be findable
+	req = httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-08-01", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	entries := parseListEntries(t, w.Body.Bytes())
+	if len(entries) != 1 {
+		t.Errorf("expected 1 meeting in list, got %d", len(entries))
+	}
+}
+
+// ── Export endpoint tests ──
+
+func TestHandleExport_MissingFormat(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestHandleExport_InvalidFormat(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=xml", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_params")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "xml") {
+		t.Errorf("expected error message to mention 'xml', got %q", msg)
+	}
+}
+
+func TestHandleExport_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/export?format=json", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestHandleExport_JSONEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "json" {
+		t.Errorf("expected format=json, got %v", data["format"])
+	}
+	if data["count"].(float64) != 0 {
+		t.Errorf("expected count=0 for empty storage, got %v", data["count"])
+	}
+	// records may be nil (JSON null) or empty array — either is valid for count=0
+	records := data["records"]
+	if records != nil {
+		arr, ok := records.([]interface{})
+		if ok && len(arr) != 0 {
+			t.Errorf("expected empty records array, got %d", len(arr))
+		}
+	}
+}
+
+func TestHandleExport_JSONWithRecords(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records
+	addRecord(t, srv, "meeting", "export meeting", "daily standup", "2026-05-02")
+	addRecord(t, srv, "task", "export task", "write code", "2026-05-02")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-02", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "json" {
+		t.Errorf("expected format=json, got %v", data["format"])
+	}
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", data["count"])
+	}
+	records, ok := data["records"].([]interface{})
+	if !ok {
+		t.Fatal("expected records to be an array")
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+
+	// Verify records have full data (not just listed summaries)
+	for _, r := range records {
+		rec := r.(map[string]interface{})
+		if rec["short_id"] == "" {
+			t.Error("exported record should have short_id")
+		}
+		if rec["date"] != "2026-05-02" {
+			t.Errorf("expected date=2026-05-02, got %v", rec["date"])
+		}
+	}
+}
+
+func TestHandleExport_JSONWithFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "type meeting", "", "2026-05-02")
+	addRecord(t, srv, "task", "type task", "", "2026-05-02")
+	addRecord(t, srv, "log", "type log", "", "2026-05-02")
+
+	// Filter by type=meeting
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-02&type=meeting", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	if len(records) != 1 {
+		t.Errorf("expected 1 meeting record with type filter, got %d", len(records))
+	}
+}
+
+func TestHandleExport_MarkdownSingleDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "md meeting", "discuss sprint", "2026-05-03")
+	addRecord(t, srv, "task", "md task", "implement feature", "2026-05-03")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&date=2026-05-03", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "markdown" {
+		t.Errorf("expected format=markdown, got %v", data["format"])
+	}
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", data["count"])
+	}
+	content, ok := data["content"].(string)
+	if !ok || content == "" {
+		t.Fatal("expected non-empty content field for markdown format")
+	}
+	if !strings.Contains(content, "工作日报") {
+		t.Errorf("expected markdown to contain '工作日报', got %q", content)
+	}
+	if !strings.Contains(content, "md meeting") {
+		t.Errorf("expected markdown to contain 'md meeting', got %q", content)
+	}
+	if !strings.Contains(content, "md task") {
+		t.Errorf("expected markdown to contain 'md task', got %q", content)
+	}
+}
+
+func TestHandleExport_MarkdownDateRange(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "range day1", "", "2026-04-20")
+	addRecord(t, srv, "task", "range day2", "", "2026-04-21")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&from=2026-04-20&to=2026-04-21", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "markdown" {
+		t.Errorf("expected format=markdown, got %v", data["format"])
+	}
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", data["count"])
+	}
+	content, _ := data["content"].(string)
+	if !strings.Contains(content, "工作周报") {
+		t.Errorf("expected range markdown to contain '工作周报', got %q", content)
+	}
+}
+
+func TestHandleExport_InvalidFormatCSV(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=csv", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_params")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	msg, _ := record["message"].(string)
+	if !strings.Contains(msg, "csv") {
+		t.Errorf("expected error message to mention 'csv', got %q", msg)
+	}
+}
+
+func TestHandleExport_JSONDateRange(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records across multiple dates
+	addRecord(t, srv, "meeting", "early meeting", "", "2026-04-20")
+	addRecord(t, srv, "meeting", "in range 1", "", "2026-04-25")
+	addRecord(t, srv, "task", "in range 2", "", "2026-04-28")
+	addRecord(t, srv, "meeting", "late meeting", "", "2026-05-05")
+
+	// Export JSON with from/to date range
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&from=2026-04-25&to=2026-04-28", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 2 {
+		t.Errorf("expected count=2 for date range, got %v", data["count"])
+	}
+	records := data["records"].([]interface{})
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records in range, got %d", len(records))
+	}
+	for _, r := range records {
+		rec := r.(map[string]interface{})
+		title, _ := rec["title"].(string)
+		if title == "early meeting" || title == "late meeting" {
+			t.Errorf("record %q should not be in range [2026-04-25, 2026-04-28]", title)
+		}
+	}
+}
+
+func TestHandleExport_MarkdownEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// No records added — export markdown for a specific date
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&date=2026-12-25", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 0 {
+		t.Errorf("expected count=0 for empty markdown export, got %v", data["count"])
+	}
+	content, _ := data["content"].(string)
+	// Markdown should still be generated (with empty sections) — not empty string
+	if content == "" {
+		t.Error("expected non-empty markdown content even for empty result set")
+	}
+}
+
+func TestHandleExport_JSONStatusFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a task, complete it
+	addRecord(t, srv, "task", "active export task", "", "2026-05-10")
+
+	time.Sleep(1 * time.Second) // avoid ShortID collision
+
+	body := strings.NewReader(`{"type":"task","title":"completed export task","date":"2026-05-10"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	shortID := addResp["data"].(map[string]interface{})["short_id"].(string)
+
+	// Complete the second task
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Export with status=completed — export uses IncludeCompleted=true
+	req = httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-10&status=completed", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	if len(records) != 1 {
+		t.Fatalf("expected 1 completed record, got %d", len(records))
+	}
+	rec := records[0].(map[string]interface{})
+	if rec["status"] != "completed" {
+		t.Errorf("expected status=completed, got %v", rec["status"])
+	}
+	if rec["title"] != "completed export task" {
+		t.Errorf("expected title='completed export task', got %v", rec["title"])
+	}
+}
+
+func TestHandleExport_JSONQueryFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "代码评审", "评审PR #123", "2026-05-15")
+	addRecord(t, srv, "task", "写测试", "为export写测试", "2026-05-15")
+	addRecord(t, srv, "log", "部署日志", "生产环境部署", "2026-05-15")
+
+	// Export JSON with query filter "评审"
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-05-15&query=%E8%AF%84%E5%AE%A1", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	// Should match meeting "代码评审" title and meeting "评审PR #123" description
+	if len(records) < 1 {
+		t.Errorf("expected at least 1 record matching '评审', got %d", len(records))
+	}
+}
+
+func TestHandleExport_JSONCombinedFilters(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecord(t, srv, "meeting", "design review", "sprint planning", "2026-04-25")
+	addRecord(t, srv, "task", "code review", "review PR", "2026-04-28")
+	addRecord(t, srv, "log", "daily log", "review work", "2026-04-28")
+	addRecord(t, srv, "meeting", "deploy meeting", "deploy to prod", "2026-05-01")
+
+	// Combined: type=meeting + from/to + query=review
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&type=meeting&from=2026-04-25&to=2026-05-01&query=review", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+
+	// Should match only the "design review" meeting in range
+	if len(records) != 1 {
+		t.Errorf("expected 1 meeting matching 'review' in date range, got %d", len(records))
+		for _, r := range records {
+			rec := r.(map[string]interface{})
+			t.Logf("  record: type=%v title=%v date=%v", rec["type"], rec["title"], rec["date"])
+		}
+	}
+}
+
+// ── Integration: export round-trip tests ──
+
+func TestIntegration_ExportJsonRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records via the add endpoint
+	addRecord(t, srv, "meeting", "export-int meeting", "sprint planning", "2026-06-10")
+	addRecord(t, srv, "task", "export-int task", "implement export", "2026-06-10")
+	addRecord(t, srv, "log", "export-int log", "daily notes", "2026-06-10")
+
+	// Export as JSON
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json&date=2026-06-10", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 3 {
+		t.Fatalf("expected count=3, got %v", data["count"])
+	}
+
+	records := data["records"].([]interface{})
+	if len(records) != 3 {
+		t.Fatalf("expected 3 exported records, got %d", len(records))
+	}
+
+	// Verify all records have essential fields and correct content
+	titles := map[string]bool{}
+	for _, r := range records {
+		rec := r.(map[string]interface{})
+		if rec["short_id"] == "" {
+			t.Error("exported record should have short_id")
+		}
+		if rec["date"] != "2026-06-10" {
+			t.Errorf("expected date=2026-06-10, got %v", rec["date"])
+		}
+		if rec["status"] == "" {
+			t.Error("exported record should have status")
+		}
+		title, _ := rec["title"].(string)
+		titles[title] = true
+	}
+	if !titles["export-int meeting"] || !titles["export-int task"] || !titles["export-int log"] {
+		t.Errorf("expected all 3 titles present, got %v", titles)
+	}
+
+	// Verify JSON output is valid and can round-trip
+	jsonBytes, _ := json.Marshal(records)
+	var roundTripped []map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &roundTripped); err != nil {
+		t.Fatalf("exported records should be valid JSON for round-trip: %v", err)
+	}
+	if len(roundTripped) != 3 {
+		t.Errorf("round-tripped record count = %d, want 3", len(roundTripped))
+	}
+}
+
+func TestIntegration_ExportMarkdownRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add records
+	addRecord(t, srv, "meeting", "md-int meeting", "discuss architecture", "2026-06-15")
+	addRecord(t, srv, "task", "md-int task", "implement feature", "2026-06-15")
+	addRecord(t, srv, "log", "md-int log", "notes from today", "2026-06-15")
+
+	// Export as markdown
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown&date=2026-06-15", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["count"].(float64) != 3 {
+		t.Fatalf("expected count=3, got %v", data["count"])
+	}
+
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Fatal("expected non-empty markdown content")
+	}
+
+	// Verify markdown contains expected sections and record titles
+	if !strings.Contains(content, "工作日报") {
+		t.Error("expected markdown to contain '工作日报' header")
+	}
+	if !strings.Contains(content, "md-int meeting") {
+		t.Error("expected markdown to contain 'md-int meeting'")
+	}
+	if !strings.Contains(content, "md-int task") {
+		t.Error("expected markdown to contain 'md-int task'")
+	}
+	if !strings.Contains(content, "md-int log") {
+		t.Error("expected markdown to contain 'md-int log'")
+	}
+}
+
+func TestHandleExport_MarkdownNoDateFilter(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	today := time.Now().Format("2006-01-02")
+	addRecord(t, srv, "log", "today log", "", today)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=markdown", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	if data["format"] != "markdown" {
+		t.Errorf("expected format=markdown, got %v", data["format"])
+	}
+	if data["count"].(float64) != 1 {
+		t.Errorf("expected count=1 for today's record, got %v", data["count"])
+	}
+}

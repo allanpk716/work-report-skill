@@ -374,6 +374,76 @@ func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textCont
 	return result, nil
 }
 
+// importRequest is the JSON body expected by the import endpoint.
+type importRequest struct {
+	Records []addRequest `json:"records"`
+}
+
+// handleImport handles POST /api/import — bulk-add records with fail-fast validation.
+// All records are validated before any are persisted. On first invalid record,
+// the request is rejected with an error identifying the offending index.
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		return
+	}
+
+	var req importRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "invalid request body"))
+		return
+	}
+
+	if len(req.Records) == 0 {
+		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"imported": 0}))
+		return
+	}
+
+	// Phase 1: Validate ALL records before persisting any.
+	for i, rec := range req.Records {
+		if rec.Type == "" {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: type", i)))
+			return
+		}
+		if !models.IsValidType(rec.Type) {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: invalid type: %q (must be meeting, task, reminder, or log)", i, rec.Type)))
+			return
+		}
+		if rec.Title == "" {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: title", i)))
+			return
+		}
+		if rec.Date == "" {
+			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: date", i)))
+			return
+		}
+	}
+
+	// Phase 2: Persist all records.
+	imported := 0
+	for _, rec := range req.Records {
+		built := buildRecord(rec)
+		result, err := s.storage.AddRecord(built)
+		if err != nil {
+			log.Printf("[daemon] import: storage error at record index %d: %v", imported, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to add record at index %d: %v", imported, err)))
+			return
+		}
+
+		// Register with scheduler if present (log warning only — never fail primary operation)
+		if s.scheduler != nil {
+			if err := s.scheduler.Register(result); err != nil {
+				log.Printf("[daemon] import: scheduler register warning at index %d: %v", imported, err)
+			}
+		}
+
+		imported++
+	}
+
+	log.Printf("[daemon] import: imported=%d requested=%d", imported, len(req.Records))
+	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"imported": imported}))
+}
+
 // buildRecord creates the correct typed record struct from an addRequest.
 func buildRecord(req addRequest) interface{} {
 	cf := models.CommonFields{
@@ -615,6 +685,105 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[daemon] cancel: short_id=%s", id)
 	writeEnvelope(w, jsonl.SuccessEnvelope(rec))
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		return
+	}
+
+	query := r.URL.Query()
+	format := query.Get("format")
+	if format == "" {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required query param: format"))
+		return
+	}
+	if format != "json" && format != "markdown" {
+		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_params", fmt.Sprintf("invalid format: %q (must be json or markdown)", format)))
+		return
+	}
+
+	// Build filter options — same pattern as handleList
+	date := query.Get("date")
+	to := query.Get("to")
+	status := query.Get("status")
+	q := query.Get("query")
+
+	opts := storage.ListOptions{
+		RecordType:       models.RecordType(query.Get("type")),
+		Date:             date,
+		DateFrom:         query.Get("from"),
+		DateTo:           to,
+		Status:           status,
+		Query:            q,
+		IncludeCompleted: true, // export should include completed records
+	}
+
+	if format == "json" {
+		records, err := s.storage.ListFullRecords(opts)
+		if err != nil {
+			log.Printf("[daemon] export json error: %v", err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to list records: %v", err)))
+			return
+		}
+		log.Printf("[daemon] export: format=json count=%d", len(records))
+		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+			"format":  "json",
+			"count":   len(records),
+			"records": records,
+		}))
+		return
+	}
+
+	// Markdown format — use report generation for rich rendering
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	var markdown string
+	var count int
+
+	if date != "" {
+		// Single date
+		rpt, err := report.Generate(s.storage, date, log.Default())
+		if err != nil {
+			log.Printf("[daemon] export markdown error: date=%s err=%v", date, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+			return
+		}
+		markdown = rpt.Markdown
+		count = rpt.Summary.Total
+	} else if opts.DateFrom != "" && opts.DateTo != "" {
+		// Date range
+		rpt, err := report.GenerateRange(s.storage, opts.DateFrom, opts.DateTo, loc, log.Default())
+		if err != nil {
+			log.Printf("[daemon] export markdown error: from=%s to=%s err=%v", opts.DateFrom, opts.DateTo, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate range report: %v", err)))
+			return
+		}
+		markdown = rpt.Markdown
+		count = rpt.Summary.Total
+	} else {
+		// No date filter — use today's date
+		today := time.Now().In(loc).Format("2006-01-02")
+		rpt, err := report.Generate(s.storage, today, log.Default())
+		if err != nil {
+			log.Printf("[daemon] export markdown error: date=%s err=%v", today, err)
+			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+			return
+		}
+		markdown = rpt.Markdown
+		count = rpt.Summary.Total
+	}
+
+	log.Printf("[daemon] export: format=markdown count=%d", count)
+	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+		"format":  "markdown",
+		"count":   count,
+		"content": markdown,
+	}))
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {

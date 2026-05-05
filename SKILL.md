@@ -385,6 +385,138 @@ Generate and push a report via Pushover notification. Requires Pushover credenti
 
 ---
 
+### wr import
+
+Bulk import work report entries from a JSON file. Validates all records before persisting any — if any record is invalid, nothing is written.
+
+**Usage:**
+
+```
+wr import --file <path>
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--file` | string | `""` | Path to JSON file containing records to import (required) |
+
+**Input format:**
+
+The file must contain either:
+- A JSON array of record objects: `[{"type":"meeting","title":"...","date":"..."}, ...]`
+- A JSON object with a `"records"` key: `{"records":[{"type":"meeting","title":"...","date":"..."}]}`
+
+Each record object supports the same fields as `wr add` (type, title, date, time, description, tags, location, related_person, priority, remind_before, recurring, end_time, participants, agenda, notes, progress).
+
+**Required fields per record:** `type` (must be one of: `meeting`, `task`, `reminder`, `log`), `title`, `date` (`YYYY-MM-DD`).
+
+**Behavior:**
+- All records are validated before any are persisted (fail-fast with rollback).
+- Imported records receive fresh ShortIDs and new `saved_at` timestamps.
+- If any record fails validation, NO records are written to storage.
+- The CLI uses a 30-second timeout (longer than other commands) to accommodate bulk imports.
+
+**Example:**
+
+```bash
+wr import --file /tmp/records.json
+```
+
+**Input file example:**
+
+```json
+[
+  {"type":"meeting","title":"Sprint planning","date":"2026-05-01","time":"09:00","participants":["Alice","Bob"]},
+  {"type":"task","title":"Review PR #42","date":"2026-05-02","priority":"high"},
+  {"type":"log","title":"Deployed v2.1","date":"2026-05-03","progress":"completed"}
+]
+```
+
+**Success output:**
+
+```json
+{"status":"success","data":{"imported":3}}
+```
+
+**Validation error output (record at index 1 missing date):**
+
+```json
+{"status":"error","code":"import_record","message":"record at index 1: missing required field: date"}
+```
+
+**Error codes:** `invalid_body` (file read error, malformed JSON, wrong JSON structure), `import_record` (per-record validation failure with index and field info), `storage_error`, `daemon_not_running`
+
+---
+
+### wr export
+
+Export work report entries in JSON or Markdown format with optional filters.
+
+**Usage:**
+
+```
+wr export --format <json|markdown> [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--format` | string | `""` | Output format: `json` or `markdown` (required) |
+| `--date` | string | `""` | Exact date filter (`YYYY-MM-DD`) |
+| `--from` | string | `""` | Date range start, inclusive (`YYYY-MM-DD`) |
+| `--to` | string | `""` | Date range end, inclusive (`YYYY-MM-DD`) |
+| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `log` |
+| `--status` | string | `""` | Filter by status: `active`, `completed`, `cancelled`, `all` |
+| `--query` | string | `""` | Keyword search in title and description |
+| `--file` | string | `""` | Output file path (default: stdout) |
+
+**Notes:**
+- `--format` is required. `--format csv` (or any value other than `json`/`markdown`) returns `invalid_params` error.
+- Multiple filter flags are combined (AND logic), same as `wr list`.
+- Unlike `wr list`, export includes completed records by default (`IncludeCompleted` is always true).
+- For Markdown format without a date filter, today's date is used (consistent with `wr report today`).
+- Use `--file` to write output to disk instead of stdout. When `--file` is specified, nothing is written to stdout on success.
+
+**JSON format example:**
+
+```bash
+wr export --format json --from 2026-05-01 --to 2026-05-07
+```
+
+**Output:**
+
+```json
+{"status":"success","data":{"count":3,"records":[{"type":"meeting","title":"Sprint planning","date":"2026-05-01","time":"09:00","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-01T09:00:00+08:00"},{"type":"task","title":"Review PR #42","date":"2026-05-02","status":"completed","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-02T10:00:00+08:00"},{"type":"log","title":"Deployed v2.1","date":"2026-05-03","status":"active","short_id":"c3d4e5f6a7b89012","saved_at":"2026-05-03T14:00:00+08:00"}]}}
+```
+
+**Markdown format example:**
+
+```bash
+wr export --format markdown --date 2026-05-03
+```
+
+**Output:**
+
+```json
+{"status":"success","data":{"format":"markdown","content":"## Work Report — 2026-05-03\n\n### Meetings\n- Sprint planning (09:00)\n\n### Tasks\n- Review PR #42\n\n### Logs\n- Deployed v2.1\n"}}
+```
+
+**Export to file:**
+
+```bash
+wr export --format json --from 2026-05-01 --to 2026-05-07 --file output.json
+```
+
+Writes the response directly to `output.json`. No stdout output on success.
+
+**Empty results (no matching records):** Returns success with empty array (JSON) or empty report (Markdown). Not an error.
+
+**Error codes:** `invalid_params` (missing or unsupported format), `storage_error`, `daemon_not_running`
+
+---
+
 ### wr daemon
 
 Manage the wr daemon process. This is a command group.
@@ -574,6 +706,8 @@ Complete table of error codes that may appear in the `"code"` field of error res
 | `llm_error` | LLM API call failed | Check API key validity, network connectivity, and model name. Retry once. |
 | `pushover_not_configured` | Pushover credentials are missing | Run `wr config set pushover.api_token <token>` and `wr config set pushover.user_key <key>`. |
 | `push_error` | Pushover notification delivery failed | Check Pushover credentials and network. |
+| `import_record` | Per-record validation failure during import | Check the record at the specified index for missing or invalid fields (type, title, or date). Fix the record in the import file and retry. |
+| `invalid_params` | Missing or unsupported command parameter (e.g., `--format`) | Check the command's required flags. For export, `--format` must be `json` or `markdown`. |
 
 ---
 
@@ -733,6 +867,53 @@ wr add --image /tmp/whiteboard.jpg --text "whiteboard notes from meeting"
 # If LLM returns cancel_or_update, the response has status "info" and no record is created
 ```
 
+### Data Import
+
+```bash
+# Import records from a JSON file
+wr import --file /tmp/records.json
+
+# Import file can be a JSON array
+echo '[{"type":"task","title":"Write tests","date":"2026-05-03"}]' > /tmp/one.json
+wr import --file /tmp/one.json
+
+# Or an object with "records" key
+echo '{"records":[{"type":"log","title":"Deployed v2.1","date":"2026-05-03"}]}' > /tmp/obj.json
+wr import --file /tmp/obj.json
+
+# Verify imported records appear in list
+wr list --date 2026-05-03
+```
+
+### Data Export
+
+```bash
+# Export all records for a date range as JSON
+wr export --format json --from 2026-05-01 --to 2026-05-07
+
+# Export today's records as Markdown
+wr export --format markdown --date today
+
+# Export specific type to a file
+wr export --format json --type meeting --from 2026-05-01 --to 2026-05-31 --file meetings.json
+
+# Export all records (no date filter — defaults to today for markdown)
+wr export --format json
+
+# Export completed tasks
+wr export --format json --status completed --type task
+```
+
+### Backup and Restore
+
+```bash
+# Export all records for backup
+wr export --format json --file backup.json
+
+# Restore from backup on another machine
+wr import --file backup.json
+```
+
 ---
 
 ## Configuration
@@ -819,3 +1000,13 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 9. **Report date defaults to "today" in configured timezone.** The daemon uses the timezone from config (default: `Asia/Shanghai`) to determine "today".
 
 10. **Tags are comma-separated strings.** In `wr add`, use `--tags "tag1,tag2"`. In `wr update`, use `--tags "tag1,tag2"` (replaces the entire list, does not append).
+
+11. **Import validates all records before writing any.** If record at index 5 has a missing field, records 0–4 are NOT written either. Fix the invalid record and retry the entire import.
+
+12. **Imported records get fresh ShortIDs.** The original ShortIDs from the source are not preserved. Use `wr list` to find the new ShortIDs after import.
+
+13. **Export includes completed records by default.** Unlike `wr list` which excludes completed records, `wr export` includes them. This is intentional — export is for data migration/backup, where you want all records.
+
+14. **Export Markdown without date filter defaults to today.** If you don't specify `--date`, `--from`, or `--to`, Markdown export uses today's date. JSON export without date filters returns all records.
+
+15. **Import file accepts two JSON shapes.** The file can be a bare JSON array `[{...}]` or an object with a `records` key `{"records":[{...}]}`. Both produce the same result.
