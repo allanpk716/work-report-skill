@@ -3,14 +3,20 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allan716/agent-cli-sdk"
 
 	"wr/internal/config"
+	"wr/internal/daemon"
 )
 
 // setupAgentTest creates an isolated test environment for agent meta-commands.
@@ -764,5 +770,242 @@ func TestAgentDaemonStop_NotRunning(t *testing.T) {
 	}
 	if !strings.Contains(env.Message, "not running") {
 		t.Errorf("expected error message to mention 'not running', got: %s", env.Message)
+	}
+}
+
+
+// --- Detach flag tests ---
+
+func TestAgentDaemonStart_DetachFlag(t *testing.T) {
+	_, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Find the daemon start command
+	startCmd, _, err := rootCmd.Find([]string{"agent", "daemon", "start"})
+	if err != nil {
+		t.Fatalf("cannot find daemon start command: %v", err)
+	}
+
+	// Check --detach flag exists
+	fl := startCmd.Flags().Lookup("detach")
+	if fl == nil {
+		t.Fatal("expected --detach flag to be registered")
+	}
+	if fl.DefValue != "false" {
+		t.Errorf("expected --detach default=false, got %s", fl.DefValue)
+	}
+
+	// Verify --detach appears in help output
+	var buf strings.Builder
+	startCmd.SetOut(&buf)
+	_ = startCmd.Help()
+	helpOutput := buf.String()
+	if !strings.Contains(helpOutput, "--detach") {
+		t.Error("expected --detach to appear in help output")
+	}
+}
+
+func TestAgentDaemonStart_InternalDaemonizeHidden(t *testing.T) {
+	_, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Find the daemon start command
+	startCmd, _, err := rootCmd.Find([]string{"agent", "daemon", "start"})
+	if err != nil {
+		t.Fatalf("cannot find daemon start command: %v", err)
+	}
+
+	// Check --internal-daemonize flag exists but is hidden
+	fl := startCmd.Flags().Lookup("internal-daemonize")
+	if fl == nil {
+		t.Fatal("expected --internal-daemonize flag to be registered")
+	}
+	if !fl.Hidden {
+		t.Error("expected --internal-daemonize flag to be hidden")
+	}
+
+	// Verify --internal-daemonize does NOT appear in help output
+	var buf strings.Builder
+	startCmd.SetOut(&buf)
+	_ = startCmd.Help()
+	helpOutput := buf.String()
+	if strings.Contains(helpOutput, "--internal-daemonize") {
+		t.Error("expected --internal-daemonize to be hidden from help output")
+	}
+}
+
+func TestAgentDaemonStart_Detach_AlreadyRunning(t *testing.T) {
+	tmpHome, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Bind a port to simulate a running daemon
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cannot bind port: %v", err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	// Write daemon state file pointing to our bound port
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.WriteState(stateDir, daemon.DaemonState{
+		Port: port,
+		PID:  os.Getpid(),
+	}); err != nil {
+		t.Fatalf("cannot write state: %v", err)
+	}
+
+	output := captureAgentOutput(func() {
+		resetConfigFlags()
+		rootCmd.SetArgs([]string{"agent", "daemon", "start", "--detach"})
+		_ = rootCmd.Execute()
+	})
+
+	env := parseSingleEnvelope(t, output)
+
+	// Should be an error envelope
+	if env.Type != agentsdk.TypeError {
+		t.Fatalf("expected type=error, got %v", env.Type)
+	}
+	if !strings.Contains(env.Message, "already running") {
+		t.Errorf("expected error message to mention 'already running', got: %s", env.Message)
+	}
+	if !strings.Contains(env.Message, fmt.Sprintf("port %d", port)) {
+		t.Errorf("expected error message to mention port %d, got: %s", port, env.Message)
+	}
+	if !strings.Contains(env.Message, fmt.Sprintf("pid=%d", os.Getpid())) {
+		t.Errorf("expected error message to mention pid=%d, got: %s", os.Getpid(), env.Message)
+	}
+}
+
+func TestAgentDaemonStart_Detach_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// Find a free port for the daemon
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cannot find free port: %v", err)
+	}
+	daemonPort := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Build binary
+	tmpDir := t.TempDir()
+	binaryName := "wr"
+	if runtime.GOOS == "windows" {
+		binaryName = "wr.exe"
+	}
+	binaryPath := filepath.Join(tmpDir, binaryName)
+
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	buildCmd.Dir = "" // use current working directory
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, output)
+	}
+
+	// Create temp home with config
+	tmpHome := t.TempDir()
+	wrHome := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(wrHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Daemon:   config.DaemonConfig{Port: daemonPort},
+		Timezone: "UTC",
+	}
+	cfgPath := filepath.Join(wrHome, "config.json")
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatalf("cannot save config: %v", err)
+	}
+
+	// Always clean up the daemon
+	defer func() {
+		stopCmd := exec.Command(binaryPath, "agent", "daemon", "stop")
+		stopCmd.Env = append(os.Environ(),
+			"HOME="+tmpHome,
+			"USERPROFILE="+tmpHome,
+			"WR_HOME="+wrHome,
+		)
+		stopCmd.CombinedOutput()
+	}()
+
+	// Run with --detach
+	cmd := exec.Command(binaryPath, "agent", "daemon", "start", "--detach")
+	cmd.Env = append(os.Environ(),
+		"HOME="+tmpHome,
+		"USERPROFILE="+tmpHome,
+		"WR_HOME="+wrHome,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("detach command failed: %v\noutput: %s", err, output)
+	}
+
+	// Parse JSONL output
+	line := strings.TrimSpace(string(output))
+	if line == "" {
+		t.Fatal("expected non-empty JSONL output from --detach")
+	}
+
+	var env agentsdk.Envelope
+	if err := json.Unmarshal([]byte(line), &env); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, line)
+	}
+	if err := agentsdk.ValidateEnvelope(env); err != nil {
+		t.Fatalf("envelope validation failed: %v", err)
+	}
+
+	// Verify envelope type
+	if env.Type != agentsdk.TypeResult {
+		t.Errorf("expected type=result, got %v", env.Type)
+	}
+
+	// Verify data fields
+	data, ok := env.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data to be a map, got %T", env.Data)
+	}
+
+	status, _ := data["status"].(string)
+	if status != "running" {
+		t.Errorf("expected status=running, got %v", status)
+	}
+
+	pid, _ := data["pid"].(float64)
+	if pid <= 0 {
+		t.Errorf("expected positive pid, got %v", pid)
+	}
+
+	port, _ := data["port"].(float64)
+	if int(port) != daemonPort {
+		t.Errorf("expected port=%d, got %v", daemonPort, port)
+	}
+
+	// Verify daemon is actually running by checking status
+	time.Sleep(200 * time.Millisecond) // small settle
+	statusCmd := exec.Command(binaryPath, "agent", "daemon", "status")
+	statusCmd.Env = cmd.Env
+	statusOutput, err := statusCmd.CombinedOutput()
+	if err != nil {
+		t.Logf("status check output: %s", statusOutput)
+		// Non-fatal: the daemon may have shut down quickly
+	} else {
+		var statusEnv agentsdk.Envelope
+		if jsonErr := json.Unmarshal([]byte(strings.TrimSpace(string(statusOutput))), &statusEnv); jsonErr == nil {
+			if statusEnv.Type == agentsdk.TypeResult {
+				statusData, _ := statusEnv.Data.(map[string]interface{})
+				if s, _ := statusData["status"].(string); s == "not_running" {
+					t.Error("daemon reported not_running immediately after --detach reported running")
+				}
+			}
+		}
 	}
 }
