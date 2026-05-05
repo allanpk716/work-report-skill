@@ -339,12 +339,9 @@ func newDaemonStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			// Daemon is not running — output JSONL with status=not_running
-			app.JSONL().Success(map[string]interface{}{
-				"status":     "not_running",
-				"suggestion": "Run 'wr agent daemon start' to start the daemon.",
-			})
-			return nil
+			// Daemon is not running — return error envelope
+			return writeExitErrorWithCode(agentsdk.ExitNetworkError, "daemon_not_running",
+				fmt.Sprintf("daemon is not running: %v. Run 'wr agent daemon start' to start the daemon.", err))
 		},
 	}
 }

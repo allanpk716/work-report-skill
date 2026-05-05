@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	agentsdk "github.com/allan716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 
 	"wr/internal/config"
 	"wr/internal/daemon"
@@ -728,24 +728,39 @@ func TestAgentDaemonStatus_NotRunning(t *testing.T) {
 
 	env := parseSingleEnvelope(t, output)
 
-	// Should be a result envelope with status=not_running
-	if env.Type != agentsdk.TypeResult {
-		t.Fatalf("expected type=result, got %v", env.Type)
+	// Should be an error envelope with daemon_not_running
+	if env.Type != agentsdk.TypeError {
+		t.Fatalf("expected type=error, got %v", env.Type)
 	}
-
-	data, ok := env.Data.(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected data to be a map, got %T", env.Data)
+	if env.ErrorCode != "daemon_not_running" {
+		t.Errorf("expected error_code=daemon_not_running, got %v", env.ErrorCode)
 	}
-
-	status, _ := data["status"].(string)
-	if status != "not_running" {
-		t.Errorf("expected status=not_running, got %v", status)
+	if !strings.Contains(env.Message, "agent daemon start") {
+		t.Errorf("expected error message to contain 'agent daemon start', got: %s", env.Message)
 	}
+}
 
-	suggestion, _ := data["suggestion"].(string)
-	if !strings.Contains(suggestion, "agent daemon start") {
-		t.Errorf("expected suggestion to mention 'agent daemon start', got: %s", suggestion)
+func TestStatus_DaemonNotRunning(t *testing.T) {
+	_, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	output := captureAgentOutput(func() {
+		resetConfigFlags()
+		rootCmd.SetArgs([]string{"status"})
+		_ = rootCmd.Execute()
+	})
+
+	env := parseSingleEnvelope(t, output)
+
+	// Should be an error envelope with daemon_not_running
+	if env.Type != agentsdk.TypeError {
+		t.Fatalf("expected type=error, got %v", env.Type)
+	}
+	if env.ErrorCode != "daemon_not_running" {
+		t.Errorf("expected error_code=daemon_not_running, got %v", env.ErrorCode)
+	}
+	if !strings.Contains(env.Message, "agent daemon start") {
+		t.Errorf("expected error message to contain 'agent daemon start', got: %s", env.Message)
 	}
 }
 
