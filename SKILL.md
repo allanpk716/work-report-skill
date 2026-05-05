@@ -10,6 +10,20 @@
 
 ---
 
+## Migration Notes
+
+**M005 SDK migration (v0.1.0):** Daemon commands moved from `wr daemon` to the `wr agent daemon` namespace. The old bare paths (`wr daemon start`, `wr daemon stop`, `wr daemon status`) are no longer registered. All daemon management commands are now under `wr agent daemon`:
+
+| Old command | New command |
+|-------------|-------------|
+| `wr daemon start` | `wr agent daemon start` |
+| `wr daemon stop` | `wr agent daemon stop` |
+| `wr daemon status` | `wr agent daemon status` |
+
+If you have scripts or workflows using the old paths, update them to include the `agent` prefix.
+
+---
+
 ## Quick Start
 
 ```
@@ -21,9 +35,12 @@ wr config set llm.text.api_key sk-xxx
 wr config set llm.text.model gpt-4o-mini
 
 # 3. Start the daemon (blocks until stopped)
-wr daemon start &
+wr agent daemon start > /dev/null 2>&1 &
 
-# 4. Add a record
+# 4. Wait for daemon readiness
+while ! wr status 2>/dev/null | grep -q '"running"'; do sleep 1; done
+
+# 5. Add a record
 wr add --type meeting --title "Standup" --date 2026-05-03 --time 10:00
 
 # 5. List records
@@ -37,35 +54,68 @@ wr report today
 
 ## JSONL Format
 
-Every CLI command outputs exactly one JSONL line to stdout. The envelope structure:
+Every CLI command outputs exactly one JSONL line to stdout. The `type` field is the primary discriminator — always inspect `type` first to determine how to handle the response.
 
-### Success shape
+### Envelope fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | string | Envelope version, always `"1.0"` |
+| `tool` | string | Tool name, always `"wr"` |
+| `type` | string | Response type: `result`, `error`, `warning`, or `progress` |
+| `timestamp` | string | ISO-8601 UTC timestamp (e.g. `"2026-05-03T14:00:00Z"`) |
+| `data` | object | Present when `type` is `result`. Contains the response payload. |
+| `error_code` | string | Present when `type` is `error`. Machine-readable error code (see Error Code Reference). |
+| `message` | string | Present when `type` is `error` or `warning`. Human-readable description. |
+| `percent` | number | Present when `type` is `progress`. Completion percentage (0–100). |
+
+### Result shape
 
 ```json
-{"status":"success","data":{...}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{...}}
 ```
 
-- `status` — always `"success"`
+- `type` — always `"result"` for successful responses
 - `data` — the response payload (object or array)
 
 ### Error shape
 
 ```json
-{"status":"error","code":"daemon_not_running","message":"daemon not running: ...","suggestion":"Run 'wr daemon start' to start the daemon, then retry your command."}
+{"version":"1.0","tool":"wr","type":"error","timestamp":"2026-05-03T14:00:00Z","error_code":"daemon_not_running","message":"daemon not running: ..."}
 ```
 
-- `status` — always `"error"`
-- `code` — machine-readable error code (see Error Code Reference)
+- `type` — always `"error"`
+- `error_code` — machine-readable error code (see Error Code Reference)
 - `message` — human-readable description of what went wrong
-- `suggestion` — (sometimes present) recommended next action
 
-### Info shape
+### Warning shape
 
 ```json
-{"status":"info","data":{"action":"cancel_or_update","classification":{...}}}
+{"version":"1.0","tool":"wr","type":"warning","timestamp":"2026-05-03T14:00:00Z","message":"..."}
 ```
 
-- Returned when LLM classification determines the user wants to cancel or update an existing record rather than add a new one.
+- `type` — always `"warning"`
+- `message` — description of the warning condition
+
+### Progress shape
+
+```json
+{"version":"1.0","tool":"wr","type":"progress","timestamp":"2026-05-03T14:00:00Z","percent":50,"message":"Processing..."}
+```
+
+- `type` — always `"progress"`
+- `percent` — completion percentage (0–100)
+- `message` — progress description
+
+### Cancel/update result
+
+When LLM classification determines the user wants to cancel or update an existing record rather than add a new one, the response is a normal `result` type:
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"action":"cancel_or_update","classification":{...}}}
+```
+
+No record is created — inspect `data.action` to determine next steps.
 
 ---
 
@@ -101,7 +151,7 @@ wr add [flags]
 
 **Notes:**
 - If both `--text` (or `--image`) and `--type` are provided, the explicit flags take precedence over LLM classification.
-- If LLM classification returns `cancel_or_update` type, no record is created — the response has `status: "info"`.
+- If LLM classification returns `cancel_or_update` type, no record is created — the response has `type: "result"` with `data.action` set to `"cancel_or_update"`.
 
 **Manual example:**
 
@@ -112,7 +162,7 @@ wr add --type meeting --title "Project sync" --date 2026-05-03 --time 14:00 --lo
 **Output:**
 
 ```json
-{"status":"success","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","location":"Room 3A","tags":["project","weekly"],"priority":"","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","location":"Room 3A","tags":["project","weekly"],"priority":"","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00"}}
 ```
 
 **LLM text classification example:**
@@ -169,7 +219,7 @@ wr list --date 2026-05-03 --type meeting
 **Output:**
 
 ```json
-{"status":"success","data":{"action":"list","count":2,"entries":[{"short_id":"a1b2c3d4e5f67890","type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","status":"active"},{"short_id":"f0e1d2c3b4a56789","type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"active"}]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"list","count":2,"entries":[{"short_id":"a1b2c3d4e5f67890","type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","status":"active"},{"short_id":"f0e1d2c3b4a56789","type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"active"}]}}
 ```
 
 **Error codes:** `storage_error`, `daemon_not_running`
@@ -222,7 +272,7 @@ wr update a1b2c3d4e5f67890 --time 15:00 --location "Room 5B"
 **Output:**
 
 ```json
-{"status":"success","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T14:30:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:30:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T14:30:00+08:00"}}
 ```
 
 **Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_body`, `invalid_field`, `storage_error`, `daemon_not_running`
@@ -256,7 +306,7 @@ wr complete a1b2c3d4e5f67890
 **Output:**
 
 ```json
-{"status":"success","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","status":"completed","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T16:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","status":"completed","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00"}}
 ```
 
 **Error codes:** `record_not_found`, `storage_error`, `daemon_not_running`
@@ -290,7 +340,7 @@ wr cancel f0e1d2c3b4a56789
 **Output:**
 
 ```json
-{"status":"success","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T12:00:00Z","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00"}}
 ```
 
 **Error codes:** `record_not_found`, `storage_error`, `daemon_not_running`
@@ -320,7 +370,7 @@ wr report today
 **Output:**
 
 ```json
-{"status":"success","data":{"date":"2026-05-03","summary":{"meetings":2,"tasks":3,"reminders":1,"logs":4,"total":10},"markdown":"...","entries":[...]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","summary":{"meetings":2,"tasks":3,"reminders":1,"logs":4,"total":10},"markdown":"...","entries":[...]}}
 ```
 
 ##### wr report date \<YYYY-MM-DD\>
@@ -344,7 +394,7 @@ wr report week
 **Output:**
 
 ```json
-{"status":"success","data":{"date_from":"2026-04-27","date_to":"2026-05-03","days_count":7,"summary":{"meetings":8,"tasks":12,"reminders":3,"logs":15,"total":38},"markdown":"..."}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date_from":"2026-04-27","date_to":"2026-05-03","days_count":7,"summary":{"meetings":8,"tasks":12,"reminders":3,"logs":15,"total":38},"markdown":"..."}}
 ```
 
 ##### wr report range
@@ -378,7 +428,7 @@ Generate and push a report via Pushover notification. Requires Pushover credenti
 **Push success output:**
 
 ```json
-{"status":"success","data":{"date":"2026-05-03","total":10,"pushed":true,"summary":{"meetings":2,"tasks":3,"reminders":1,"logs":4,"total":10}}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","total":10,"pushed":true,"summary":{"meetings":2,"tasks":3,"reminders":1,"logs":4,"total":10}}}
 ```
 
 **Error codes:** `storage_error`, `pushover_not_configured`, `push_error`, `invalid_body`, `daemon_not_running`
@@ -436,13 +486,13 @@ wr import --file /tmp/records.json
 **Success output:**
 
 ```json
-{"status":"success","data":{"imported":3}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"imported":3}}
 ```
 
 **Validation error output (record at index 1 missing date):**
 
 ```json
-{"status":"error","code":"import_record","message":"record at index 1: missing required field: date"}
+{"version":"1.0","tool":"wr","type":"error","timestamp":"2026-05-03T14:00:00Z","error_code":"import_record","message":"record at index 1: missing required field: date"}
 ```
 
 **Error codes:** `invalid_body` (file read error, malformed JSON, wrong JSON structure), `import_record` (per-record validation failure with index and field info), `storage_error`, `daemon_not_running`
@@ -488,7 +538,7 @@ wr export --format json --from 2026-05-01 --to 2026-05-07
 **Output:**
 
 ```json
-{"status":"success","data":{"count":3,"records":[{"type":"meeting","title":"Sprint planning","date":"2026-05-01","time":"09:00","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-01T09:00:00+08:00"},{"type":"task","title":"Review PR #42","date":"2026-05-02","status":"completed","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-02T10:00:00+08:00"},{"type":"log","title":"Deployed v2.1","date":"2026-05-03","status":"active","short_id":"c3d4e5f6a7b89012","saved_at":"2026-05-03T14:00:00+08:00"}]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"count":3,"records":[{"type":"meeting","title":"Sprint planning","date":"2026-05-01","time":"09:00","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-01T09:00:00+08:00"},{"type":"task","title":"Review PR #42","date":"2026-05-02","status":"completed","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-02T10:00:00+08:00"},{"type":"log","title":"Deployed v2.1","date":"2026-05-03","status":"active","short_id":"c3d4e5f6a7b89012","saved_at":"2026-05-03T14:00:00+08:00"}]}}
 ```
 
 **Markdown format example:**
@@ -500,7 +550,7 @@ wr export --format markdown --date 2026-05-03
 **Output:**
 
 ```json
-{"status":"success","data":{"format":"markdown","content":"## Work Report — 2026-05-03\n\n### Meetings\n- Sprint planning (09:00)\n\n### Tasks\n- Review PR #42\n\n### Logs\n- Deployed v2.1\n"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"format":"markdown","content":"## Work Report — 2026-05-03\n\n### Meetings\n- Sprint planning (09:00)\n\n### Tasks\n- Review PR #42\n\n### Logs\n- Deployed v2.1\n"}}
 ```
 
 **Export to file:**
@@ -517,22 +567,22 @@ Writes the response directly to `output.json`. No stdout output on success.
 
 ---
 
-### wr daemon
+### wr agent daemon
 
-Manage the wr daemon process. This is a command group.
+Manage the wr agent daemon process. This is a command group.
 
 **Usage:**
 
 ```
-wr daemon <subcommand>
+wr agent daemon <subcommand>
 ```
 
-#### wr daemon start
+#### wr agent daemon start
 
 Start the daemon. This is a foreground process — it blocks until stopped with SIGINT/SIGTERM. Run in the background with `&` or a process manager.
 
 ```bash
-wr daemon start > /dev/null 2>&1 &
+wr agent daemon start > /dev/null 2>&1 &
 ```
 
 **Flags:** None.
@@ -572,13 +622,13 @@ wr status
 **Daemon running output:**
 
 ```json
-{"status":"success","data":{"daemon":{"version":"0.1.0","status":"running","pid":12345,"port":18080},"config":{"exists":true,"pushover":{"configured":true},"llm":{"text":{"configured":true},"vision":{"configured":false}},"data_dir":{"path":"/home/user/.work-report/work-records","accessible":true}},"scheduler":{"running":true,"entries_count":3}}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"daemon":{"version":"0.1.0","status":"running","pid":12345,"port":18080},"config":{"exists":true,"pushover":{"configured":true},"llm":{"text":{"configured":true},"vision":{"configured":false}},"data_dir":{"path":"/home/user/.work-report/work-records","accessible":true}},"scheduler":{"running":true,"entries_count":3}}}
 ```
 
 **Daemon not running output:**
 
 ```json
-{"status":"success","data":{"daemon":{"status":"not_running","suggestion":"Run 'wr daemon start' to start the daemon."},"config":{"exists":true,"pushover":{"configured":false},"llm":{"text":{"configured":true},"vision":{"configured":false}},"data_dir":{"path":"/home/user/.work-report/work-records","accessible":true}}}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"daemon":{"status":"not_running","suggestion":"Run 'wr agent daemon start' to start the daemon."},"config":{"exists":true,"pushover":{"configured":false},"llm":{"text":{"configured":true},"vision":{"configured":false}},"data_dir":{"path":"/home/user/.work-report/work-records","accessible":true}}}}
 ```
 
 ---
@@ -623,7 +673,7 @@ wr config init --llm-text-key sk-xxx --llm-text-model gpt-4o-mini
 **Output:**
 
 ```json
-{"status":"success","data":{"path":"/home/user/.work-report/config.json"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"path":"/home/user/.work-report/config.json"}}
 ```
 
 #### wr config set \<key\> \<value\>
@@ -659,7 +709,7 @@ wr config set llm.text.api_key sk-newkey123
 **Output:**
 
 ```json
-{"status":"success","data":{"key":"llm.text.api_key","value":"sk-newkey123"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"key":"llm.text.api_key","value":"sk-newkey123"}}
 ```
 
 #### wr config show
@@ -673,7 +723,7 @@ wr config show
 **Output:**
 
 ```json
-{"status":"success","data":{"pushover":{"api_token":"sk-x****","user_key":"user****"},"llm":{"text":{"provider":"","api_key":"sk-x****","api_base":"","model":"gpt-4o-mini"},"vision":{"provider":"","api_key":"","api_base":"","model":""}},"data_dir":"/home/user/.work-report/work-records","daemon":{"port":18080},"timezone":"Asia/Shanghai"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"pushover":{"api_token":"sk-x****","user_key":"user****"},"llm":{"text":{"provider":"","api_key":"sk-x****","api_base":"","model":"gpt-4o-mini"},"vision":{"provider":"","api_key":"","api_base":"","model":""}},"data_dir":"/home/user/.work-report/work-records","daemon":{"port":18080},"timezone":"Asia/Shanghai"}}
 ```
 
 ---
@@ -690,11 +740,11 @@ wr --version
 
 ## Error Code Reference
 
-Complete table of error codes that may appear in the `"code"` field of error responses.
+Complete table of error codes that may appear in the `"error_code"` field of error responses.
 
 | Code | Meaning | Recommended Agent Response |
 |------|---------|---------------------------|
-| `daemon_not_running` | Daemon is not reachable (no state file, corrupt state, connection refused, timeout) | Run `wr daemon start` in background, wait briefly, then retry the original command. |
+| `daemon_not_running` | Daemon is not reachable (no state file, corrupt state, connection refused, timeout) | Run `wr agent daemon start` in background, wait for readiness, then retry the original command. |
 | `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `log`. Or provide `--text`/`--image` for LLM classification. |
 | `invalid_body` | Missing required fields or malformed request body | Check that required flags (`--title`, `--date`, `--type`) are provided. |
 | `invalid_field` | Attempted to update a field that is not allowed | Check the field name in the update command. |
@@ -789,9 +839,12 @@ wr config set pushover.api_token your-token
 wr config set pushover.user_key your-key
 
 # 4. Start the daemon
-wr daemon start > /dev/null 2>&1 &
+wr agent daemon start > /dev/null 2>&1 &
 
-# 5. Verify it's running
+# 5. Wait for daemon readiness
+while ! wr status 2>/dev/null | grep -q '"running"'; do sleep 1; done
+
+# 6. Verify it's running
 wr status
 ```
 
@@ -864,7 +917,7 @@ wr add --text "明天上午10点和产品团队开需求评审会"
 # Image classification — daemon uses vision LLM
 wr add --image /tmp/whiteboard.jpg --text "whiteboard notes from meeting"
 
-# If LLM returns cancel_or_update, the response has status "info" and no record is created
+# If LLM returns cancel_or_update, the response has type "result" and no record is created
 ```
 
 ### Data Import
@@ -981,7 +1034,7 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 ## Tips & Gotchas
 
-1. **Daemon must be running.** Almost every command (add, list, update, complete, cancel, report, status) requires the daemon. The only commands that work without it are `wr config init`, `wr config set`, and `wr config show`. If you see `daemon_not_running`, start the daemon with `wr daemon start` and retry.
+1. **Daemon must be running.** Almost every command (add, list, update, complete, cancel, report, status) requires the daemon. The only commands that work without it are `wr config init`, `wr config set`, and `wr config show`. If you see `daemon_not_running`, start the daemon with `wr agent daemon start` and retry.
 
 2. **JSONL goes to stdout only, never stderr.** The root command sets `SilenceUsage` and `SilenceErrors` to prevent Cobra from writing non-JSONL text to stderr. All structured output (including errors) is JSONL on stdout.
 
@@ -1010,3 +1063,4 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 14. **Export Markdown without date filter defaults to today.** If you don't specify `--date`, `--from`, or `--to`, Markdown export uses today's date. JSON export without date filters returns all records.
 
 15. **Import file accepts two JSON shapes.** The file can be a bare JSON array `[{...}]` or an object with a `records` key `{"records":[{...}]}`. Both produce the same result.
+sult.
