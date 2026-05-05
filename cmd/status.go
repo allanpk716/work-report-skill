@@ -74,7 +74,7 @@ func localStatus() {
 	app.JSONL().Success(map[string]interface{}{
 		"daemon": map[string]interface{}{
 			"status":     "not_running",
-			"suggestion": "Run 'wr daemon start' to start the daemon.",
+			"suggestion": "Run 'wr agent daemon start' to start the daemon.",
 		},
 		"config": configInfo,
 	})

@@ -127,7 +127,7 @@ func TestDaemonNotRunningError(t *testing.T) {
 		t.Errorf("error_code = %v, want daemon_not_running", record["error_code"])
 	}
 	msg, _ := record["message"].(string)
-	if !strings.Contains(msg, "wr daemon start") {
+	if !strings.Contains(msg, "wr agent daemon start") {
 		t.Error("message should contain actionable suggestion, got:", msg)
 	}
 	validateJSONLOutput(t, buf)
@@ -163,7 +163,7 @@ func TestDaemonUnreachableError(t *testing.T) {
 		t.Errorf("error_code = %v, want daemon_not_running", record["error_code"])
 	}
 	msg, _ := record["message"].(string)
-	if !strings.Contains(msg, "wr daemon start") {
+	if !strings.Contains(msg, "wr agent daemon start") {
 		t.Error("message should contain actionable suggestion, got:", msg)
 	}
 	validateJSONLOutput(t, buf)
@@ -195,7 +195,7 @@ func TestDaemonCorruptStateNotRunning(t *testing.T) {
 		t.Errorf("error_code = %v, want daemon_not_running", record["error_code"])
 	}
 	msg, _ := record["message"].(string)
-	if !strings.Contains(msg, "wr daemon start") {
+	if !strings.Contains(msg, "wr agent daemon start") {
 		t.Error("message should contain actionable suggestion, got:", msg)
 	}
 	validateJSONLOutput(t, buf)

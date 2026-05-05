@@ -138,7 +138,7 @@ func writeExitErrorWithCode(exitCode int, errorCode string, msg string) error {
 // extended-timeout import path. This avoids exporting an internal helper.
 func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
-	msg += " Run 'wr daemon start' to start the daemon, then retry your command."
+	msg += " Run 'wr agent daemon start' to start the daemon, then retry your command."
 	env := agentsdk.NewErrorEnvelope("wr", "daemon_not_running", msg)
 	b, _ := json.Marshal(env)
 	fmt.Fprintf(w, "%s\n", b)

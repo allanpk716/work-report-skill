@@ -99,7 +99,7 @@ func CallDaemonPost(w io.Writer, path string, payload interface{}) error {
 
 func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
-	msg += " Run 'wr daemon start' to start the daemon, then retry your command."
+	msg += " Run 'wr agent daemon start' to start the daemon, then retry your command."
 	env := agentsdk.NewErrorEnvelope("wr", "daemon_not_running", msg)
 	b, _ := json.Marshal(env)
 	fmt.Fprintf(w, "%s\n", b)
