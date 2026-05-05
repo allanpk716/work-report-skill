@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // DaemonState represents the daemon's runtime state written to disk.
@@ -93,12 +94,25 @@ func RemoveState(dir string) error {
 }
 
 // IsPortInUse checks if a TCP port is already in use by attempting to bind.
+// On Windows, binding 0.0.0.0:port does not conflict with a listener on
+// 127.0.0.1:port (and vice-versa), so both addresses must be probed.
 func IsPortInUse(port int) bool {
+	// Try binding on 0.0.0.0
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return true // failed to bind — something is using it
 	}
 	ln.Close()
+
+	// On Windows, also try 127.0.0.1 to detect loopback-only listeners.
+	if runtime.GOOS == "windows" {
+		ln2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			return true
+		}
+		ln2.Close()
+	}
+
 	return false
 }
 

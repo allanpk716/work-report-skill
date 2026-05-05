@@ -901,6 +901,9 @@ func TestAgentDaemonStart_Detach_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping: exec.Command binary execution in temp directories fails on Windows (PE loader incompatibility)")
+	}
 
 	// Find a free port for the daemon
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
