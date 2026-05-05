@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -54,138 +55,230 @@ func registerAgentDaemonCommands() {
 }
 
 func newDaemonStartCmd() *cobra.Command {
-	return &cobra.Command{
+	var detach bool
+	var internalDaemonize bool
+
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the wr daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Load config
-			cfg, err := config.LoadDefault()
-			if err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config error: %v", err))
+			if internalDaemonize {
+				return runDaemon(true)
 			}
-
-			port := cfg.Daemon.Port
-			dataDir := cfg.DataDir
-
-			// Ensure work-records directory exists
-			if err := os.MkdirAll(dataDir, 0755); err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create data dir %s: %v", dataDir, err))
+			if detach {
+				return startDetached()
 			}
-
-			// Set up sandbox directories and daemon log file
-			if err := app.Sandbox().Ensure(); err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create sandbox dirs: %v", err))
-			}
-
-			logPath := filepath.Join(app.Sandbox().BaseDir(), "daemon.log")
-			logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot open daemon log: %v", err))
-			}
-			defer logFile.Close()
-
-			// Redirect all default log.Printf output to the daemon log file
-			log.SetOutput(logFile)
-
-			// Create storage layer
-			store := storage.New(dataDir, log.New(logFile, "[storage] ", log.LstdFlags))
-
-			srv := daemon.NewServer(port, store, cfg)
-
-			// Create and configure scheduler for pushover notifications
-			pushoverClient := pushover.NewClient()
-			statePath, err := scheduler.DefaultStatePath()
-			if err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot determine scheduler state path: %v", err))
-			}
-			sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, log.New(logFile, "[scheduler] ", log.LstdFlags))
-			srv.SetScheduler(sched)
-
-			dir, err := daemon.DefaultStateDir()
-			if err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create state dir: %v", err))
-			}
-
-			// Check for existing daemon state
-			existingState, stateErr := daemon.ReadState(dir)
-			if stateErr == nil {
-				// State file exists — check if daemon is actually running on that port
-				if daemon.IsPortInUse(existingState.Port) {
-					return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("daemon already running on port %d (pid=%d). Run 'wr agent daemon stop' first.", existingState.Port, existingState.PID))
-				}
-				// Stale state file — port not in use, clean up and proceed
-				_ = daemon.RemoveState(dir)
-			}
-
-			state := daemon.DaemonState{
-				Port: port,
-				PID:  os.Getpid(),
-			}
-			if err := daemon.WriteState(dir, state); err != nil {
-				return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot write state: %v", err))
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			// Start scheduler
-			if err := sched.Start(); err != nil {
-				log.Printf("[daemon] scheduler start warning: %v", err)
-			}
-			defer sched.Stop()
-
-			// Catch up missed reminders after restart
-			catchUpRecords, err := store.ListFullRecords(storage.ListOptions{
-				RecordType: models.TypeReminder,
-			})
-			if err != nil {
-				log.Printf("[daemon] catchup: failed to list reminders: %v", err)
-			} else {
-				// Also include tasks/meetings with remind_before
-				remindable, err := store.ListFullRecords(storage.ListOptions{})
-				if err != nil {
-					log.Printf("[daemon] catchup: failed to list all records: %v", err)
-				} else {
-					// Filter to only those with remind_before or type=reminder
-					var filtered []interface{}
-					for _, rec := range remindable {
-						cf := models.GetCommonFields(rec)
-						if cf != nil && (cf.Type == models.TypeReminder || cf.RemindBefore != "") {
-							if cf.Status != models.StatusCompleted && cf.Status != models.StatusCancelled {
-								filtered = append(filtered, rec)
-							}
-						}
-					}
-					catchUpRecords = filtered
-				}
-
-				result, err := sched.CatchUp(catchUpRecords)
-				if err != nil {
-					log.Printf("[daemon] catchup error: %v", err)
-				} else {
-					log.Printf("[daemon] catchup: scanned=%d fired=%d errors=%d",
-						result.Scanned, result.Fired, result.Errors)
-				}
-			}
-
-			// Handle signals
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				app.JSONL().Warning("daemon shutting down")
-				sched.Stop()
-				cancel()
-			}()
-
-			app.JSONL().Success(map[string]interface{}{
-				"status":   "starting",
-				"port":     port,
-				"pid":      os.Getpid(),
-				"data_dir": dataDir,
-			})
-			return srv.Start(ctx, nil)
+			return runDaemon(false)
 		},
+	}
+
+	cmd.Flags().BoolVar(&detach, "detach", false, "Start daemon in background and return immediately")
+	cmd.Flags().BoolVar(&internalDaemonize, "internal-daemonize", false, "Internal flag: run as background daemon child process")
+	_ = cmd.Flags().MarkHidden("internal-daemonize")
+
+	return cmd
+}
+
+// runDaemon contains the core daemon startup logic extracted from the RunE handler.
+// When suppressStartupMsg is true (internal-daemonize mode), the "starting" JSONL
+// message is suppressed so the parent process only sees the final detached response.
+func runDaemon(suppressStartupMsg bool) error {
+	// Load config
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config error: %v", err))
+	}
+
+	port := cfg.Daemon.Port
+	dataDir := cfg.DataDir
+
+	// Ensure work-records directory exists
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create data dir %s: %v", dataDir, err))
+	}
+
+	// Set up sandbox directories and daemon log file
+	if err := app.Sandbox().Ensure(); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create sandbox dirs: %v", err))
+	}
+
+	logPath := filepath.Join(app.Sandbox().BaseDir(), "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot open daemon log: %v", err))
+	}
+	defer logFile.Close()
+
+	// Redirect all default log.Printf output to the daemon log file
+	log.SetOutput(logFile)
+
+	// Create storage layer
+	store := storage.New(dataDir, log.New(logFile, "[storage] ", log.LstdFlags))
+
+	srv := daemon.NewServer(port, store, cfg)
+
+	// Create and configure scheduler for pushover notifications
+	pushoverClient := pushover.NewClient()
+	statePath, err := scheduler.DefaultStatePath()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot determine scheduler state path: %v", err))
+	}
+	sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, log.New(logFile, "[scheduler] ", log.LstdFlags))
+	srv.SetScheduler(sched)
+
+	dir, err := daemon.DefaultStateDir()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create state dir: %v", err))
+	}
+
+	// Check for existing daemon state
+	existingState, stateErr := daemon.ReadState(dir)
+	if stateErr == nil {
+		// State file exists — check if daemon is actually running on that port
+		if daemon.IsPortInUse(existingState.Port) {
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("daemon already running on port %d (pid=%d). Run 'wr agent daemon stop' first.", existingState.Port, existingState.PID))
+		}
+		// Stale state file — port not in use, clean up and proceed
+		_ = daemon.RemoveState(dir)
+	}
+
+	state := daemon.DaemonState{
+		Port: port,
+		PID:  os.Getpid(),
+	}
+	if err := daemon.WriteState(dir, state); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot write state: %v", err))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start scheduler
+	if err := sched.Start(); err != nil {
+		log.Printf("[daemon] scheduler start warning: %v", err)
+	}
+	defer sched.Stop()
+
+	// Catch up missed reminders after restart
+	catchUpRecords, err := store.ListFullRecords(storage.ListOptions{
+		RecordType: models.TypeReminder,
+	})
+	if err != nil {
+		log.Printf("[daemon] catchup: failed to list reminders: %v", err)
+	} else {
+		// Also include tasks/meetings with remind_before
+		remindable, err := store.ListFullRecords(storage.ListOptions{})
+		if err != nil {
+			log.Printf("[daemon] catchup: failed to list all records: %v", err)
+		} else {
+			// Filter to only those with remind_before or type=reminder
+			var filtered []interface{}
+			for _, rec := range remindable {
+				cf := models.GetCommonFields(rec)
+				if cf != nil && (cf.Type == models.TypeReminder || cf.RemindBefore != "") {
+					if cf.Status != models.StatusCompleted && cf.Status != models.StatusCancelled {
+						filtered = append(filtered, rec)
+					}
+				}
+			}
+			catchUpRecords = filtered
+		}
+
+		result, err := sched.CatchUp(catchUpRecords)
+		if err != nil {
+			log.Printf("[daemon] catchup error: %v", err)
+		} else {
+			log.Printf("[daemon] catchup: scanned=%d fired=%d errors=%d",
+				result.Scanned, result.Fired, result.Errors)
+		}
+	}
+
+	// Handle signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		app.JSONL().Warning("daemon shutting down")
+		sched.Stop()
+		cancel()
+	}()
+
+	if !suppressStartupMsg {
+		app.JSONL().Success(map[string]interface{}{
+			"status":   "starting",
+			"port":     port,
+			"pid":      os.Getpid(),
+			"data_dir": dataDir,
+		})
+	}
+	return srv.Start(ctx, nil)
+}
+
+// startDetached spawns the daemon as a background child process, polls until the
+// port is bound (up to 10s), then returns a JSONL success response with pid/port.
+func startDetached() error {
+	// Load config to determine port
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config error: %v", err))
+	}
+	port := cfg.Daemon.Port
+
+	dir, err := daemon.DefaultStateDir()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot determine state dir: %v", err))
+	}
+
+	// Check if daemon is already running
+	existingState, stateErr := daemon.ReadState(dir)
+	if stateErr == nil && daemon.IsPortInUse(existingState.Port) {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("daemon already running on port %d (pid=%d). Run 'wr agent daemon stop' first.", existingState.Port, existingState.PID))
+	}
+	// Clean up stale state if port not in use
+	if stateErr == nil {
+		_ = daemon.RemoveState(dir)
+	}
+
+	// Spawn child process with --internal-daemonize
+	child := exec.Command(os.Args[0], "agent", "daemon", "start", "--internal-daemonize")
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot open devnull: %v", err))
+	}
+	defer devNull.Close()
+	child.Stdout = devNull
+	child.Stderr = devNull
+
+	if err := child.Start(); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("failed to spawn daemon: %v", err))
+	}
+
+	// Poll until port is bound or timeout
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(10 * time.Second)
+
+	for {
+		select {
+		case <-ticker.C:
+			if daemon.IsPortInUse(port) {
+				// Daemon is ready — read state to get pid
+				state, readErr := daemon.ReadState(dir)
+				if readErr != nil {
+					// Port is bound but state file not yet written; retry on next tick
+					continue
+				}
+				return app.JSONL().Success(map[string]interface{}{
+					"status": "running",
+					"pid":    state.PID,
+					"port":   state.Port,
+				})
+			}
+		case <-timeout:
+			_ = child.Process.Kill()
+			return writeExitErrorWithCode(agentsdk.ExitFatalError, "daemon_start_timeout",
+				fmt.Sprintf("daemon failed to start within 10 seconds on port %d", port))
+		}
 	}
 }
 

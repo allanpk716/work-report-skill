@@ -40,4 +40,5 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("pushover_not_configured", fatal, "Pushover 未配置")
 	_ = app.RegisterErrorCode("marshal_error", fatal, "JSON 序列化失败")
 	_ = app.RegisterErrorCode("unknown", fatal, "未知错误")
+	_ = app.RegisterErrorCode("daemon_start_timeout", fatal, "daemon 启动超时")
 }
