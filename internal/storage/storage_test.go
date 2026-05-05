@@ -2009,6 +2009,215 @@ func TestConcurrentAddRecords(t *testing.T) {
 		numGoroutines, len(ids), jsonCount)
 }
 
+func TestStorageGetByIdempotencyKey_FindsMatch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add a meeting with an idempotency key (use meetings per MEM047)
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:           models.TypeMeeting,
+			Title:          "Standup",
+			Date:           "2026-05-05",
+			Status:         models.StatusActive,
+			IdempotencyKey: "standup-2026-05-05",
+		},
+	}
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	cf := models.GetCommonFields(result)
+	shortID := cf.ShortID
+
+	// Lookup by idempotency key should find the record
+	found, path, err := s.GetByIdempotencyKey("standup-2026-05-05")
+	if err != nil {
+		t.Fatalf("GetByIdempotencyKey: %v", err)
+	}
+	if found == nil {
+		t.Fatal("expected to find record by idempotency key, got nil")
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.ShortID != shortID {
+		t.Errorf("ShortID = %q, want %q", foundCF.ShortID, shortID)
+	}
+	if path == "" {
+		t.Error("expected non-empty path")
+	}
+}
+
+func TestStorageGetByIdempotencyKey_NoMatch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add a meeting without idempotency key
+	rec := newTestMeeting("No Key Meeting", "2026-05-05", "10:00")
+	_, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+
+	// Lookup for a non-existent key should return nil
+	found, _, err := s.GetByIdempotencyKey("nonexistent-key")
+	if err != nil {
+		t.Fatalf("GetByIdempotencyKey: %v", err)
+	}
+	if found != nil {
+		t.Error("expected nil for non-existent key")
+	}
+}
+
+func TestStorageGetByIdempotencyKey_EmptyKey(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	found, _, err := s.GetByIdempotencyKey("")
+	if err != nil {
+		t.Fatalf("GetByIdempotencyKey empty: %v", err)
+	}
+	if found != nil {
+		t.Error("expected nil for empty key")
+	}
+}
+
+func TestFindByContent_ExactMatch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add a meeting and a task on the same date
+	_, _ = s.AddRecord(newTestMeeting("Standup", "2026-05-05", "09:00"))
+	_, _ = s.AddRecord(newTestTask("代码审查", "2026-05-05"))
+
+	results, err := s.FindByContent("Standup", "2026-05-05")
+	if err != nil {
+		t.Fatalf("FindByContent: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Title != "Standup" {
+		t.Errorf("Title = %q, want Standup", results[0].Title)
+	}
+	if results[0].Type != models.TypeMeeting {
+		t.Errorf("Type = %q, want meeting", results[0].Type)
+	}
+}
+
+func TestFindByContent_NoMatch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	_, _ = s.AddRecord(newTestMeeting("Standup", "2026-05-05", "09:00"))
+
+	_, err := s.FindByContent("Daily Sync", "2026-05-05")
+	if err == nil {
+		t.Fatal("expected error for no match")
+	}
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Errorf("error = %v, want ErrRecordNotFound", err)
+	}
+}
+
+func TestFindByContent_MultipleMatches(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Two meetings with same title and date, different times
+	_, _ = s.AddRecord(newTestMeeting("Standup", "2026-05-05", "09:00"))
+	_, _ = s.AddRecord(newTestMeeting("Standup", "2026-05-05", "15:00"))
+
+	results, err := s.FindByContent("Standup", "2026-05-05")
+	if err != nil {
+		t.Fatalf("FindByContent: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Title != "Standup" {
+			t.Errorf("Title = %q, want Standup", r.Title)
+		}
+		if r.Date != "2026-05-05" {
+			t.Errorf("Date = %q, want 2026-05-05", r.Date)
+		}
+	}
+}
+
+func TestFindByContent_WithTypeFilter(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add a meeting and a task with the same title and date
+	_, _ = s.AddRecord(newTestMeeting("Review", "2026-05-05", "10:00"))
+	_, _ = s.AddRecord(newTestTask("Review", "2026-05-05"))
+
+	// Without type filter: both match
+	all, err := s.FindByContent("Review", "2026-05-05")
+	if err != nil {
+		t.Fatalf("FindByContent: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 results without type filter, got %d", len(all))
+	}
+
+	// With type filter: only meetings
+	meetings, err := s.FindByContent("Review", "2026-05-05", "meeting")
+	if err != nil {
+		t.Fatalf("FindByContent with type: %v", err)
+	}
+	if len(meetings) != 1 {
+		t.Fatalf("expected 1 meeting, got %d", len(meetings))
+	}
+	if meetings[0].Type != models.TypeMeeting {
+		t.Errorf("Type = %q, want meeting", meetings[0].Type)
+	}
+
+	// With type filter: only tasks
+	tasks, err := s.FindByContent("Review", "2026-05-05", "task")
+	if err != nil {
+		t.Fatalf("FindByContent task: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Type != models.TypeTask {
+		t.Errorf("Type = %q, want task", tasks[0].Type)
+	}
+}
+
+func TestFindByContent_PartialTitleNoMatch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	_, _ = s.AddRecord(newTestMeeting("Project Review Meeting", "2026-05-05", "10:00"))
+
+	// Substring "Review" should NOT match because FindByContent requires exact title
+	_, err := s.FindByContent("Review", "2026-05-05")
+	if err == nil {
+		t.Fatal("expected error for partial title match")
+	}
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Errorf("error = %v, want ErrRecordNotFound", err)
+	}
+
+	// Full exact title should match
+	results, err := s.FindByContent("Project Review Meeting", "2026-05-05")
+	if err != nil {
+		t.Fatalf("FindByContent exact: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for exact title, got %d", len(results))
+	}
+}
+
+func TestFindByContent_WrongDateNoMatch(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	_, _ = s.AddRecord(newTestMeeting("Standup", "2026-05-05", "09:00"))
+
+	// Right title, wrong date
+	_, err := s.FindByContent("Standup", "2026-05-06")
+	if err == nil {
+		t.Fatal("expected error for wrong date")
+	}
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Errorf("error = %v, want ErrRecordNotFound", err)
+	}
+}
+
 func BenchmarkAddRecord(b *testing.B) {
 	dir := b.TempDir()
 	s := New(dir, log.New(io.Discard, "", 0))

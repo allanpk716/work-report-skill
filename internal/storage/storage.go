@@ -939,6 +939,48 @@ func datePath(date string) string {
 	return filepath.Join(parts[0], parts[1], parts[2])
 }
 
+// GetByIdempotencyKey scans all active records for one with a matching
+// idempotency_key in the raw JSON. Returns the parsed record and its file path,
+// or nil/"" if no match is found. The lookup degrades gracefully on errors.
+func (s *Storage) GetByIdempotencyKey(key string) (interface{}, string, error) {
+	if key == "" {
+		return nil, "", nil
+	}
+
+	// Scan all types, all statuses (active + completed)
+	for _, rt := range models.ValidRecordTypes() {
+		recs, err := s.ListRecords(ListOptions{
+			RecordType:       models.RecordType(rt),
+			IncludeCompleted: true,
+		})
+		if err != nil {
+			continue // degrade gracefully
+		}
+		for _, lr := range recs {
+			// Read the raw JSON file to check idempotency_key
+			raw, err := os.ReadFile(lr.FilePath)
+			if err != nil {
+				continue
+			}
+			var probe struct {
+				IdempotencyKey string `json:"idempotency_key"`
+			}
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				continue
+			}
+			if probe.IdempotencyKey == key {
+				// Parse the full record
+				rec, err := s.readFile(lr.FilePath)
+				if err != nil {
+					continue
+				}
+				return rec, lr.FilePath, nil
+			}
+		}
+	}
+	return nil, "", nil
+}
+
 // ReadRecordFile is a convenience function that reads a record file from an
 // absolute path and returns the parsed record.
 func ReadRecordFile(path string) (interface{}, error) {
@@ -980,6 +1022,44 @@ func (s *Storage) ListFullRecords(opts ListOptions) ([]interface{}, error) {
 		results = append(results, rec)
 	}
 	return results, nil
+}
+
+// FindByContent looks up records by exact title and date, optionally filtered
+// by record type. It uses ListRecords with Query + Date filters to narrow the
+// candidate set (ListRecords uses case-insensitive substring matching on title
+// and description), then keeps only results whose title matches exactly
+// (case-sensitive).
+//
+// Returns the matching records. If no record matches, returns ErrRecordNotFound.
+// If multiple records share the same title and date (e.g., different times),
+// all matches are returned so the caller can decide how to handle ambiguity.
+func (s *Storage) FindByContent(title, date string, recordType ...string) ([]ListedRecord, error) {
+	opts := ListOptions{
+		Query: title,
+		Date:  date,
+	}
+	if len(recordType) > 0 && recordType[0] != "" {
+		opts.RecordType = models.RecordType(recordType[0])
+	}
+
+	candidates, err := s.ListRecords(opts)
+	if err != nil {
+		return nil, fmt.Errorf("storage: find-by-content: %w", err)
+	}
+
+	// Narrow to exact title match (case-sensitive).
+	var matches []ListedRecord
+	for _, lr := range candidates {
+		if lr.Title == title {
+			matches = append(matches, lr)
+		}
+	}
+
+	if len(matches) == 0 {
+		return nil, ErrRecordNotFound
+	}
+
+	return matches, nil
 }
 
 // MarshalToJSON is a convenience function that marshals a record to indented

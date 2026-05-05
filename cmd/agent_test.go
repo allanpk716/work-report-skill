@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1025,5 +1026,285 @@ func TestAgentDaemonStart_Detach_Integration(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// --- Ensure-running command tests ---
+
+func TestAgentDaemonEnsureRunning_AlreadyRunning(t *testing.T) {
+	_, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Start a fake HTTP server that mimics /api/status
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cannot bind port: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	// Fake daemon server returning a status response
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"type":"result","data":{"status":"running","record_count":5},"tool":"wr","version":"test"}`)
+	})
+	go func() { _ = http.Serve(ln, mux) }()
+
+	// Write daemon state file pointing to our fake server
+	stateDir := filepath.Join(os.Getenv("HOME"), ".work-report")
+	if err := daemon.WriteState(stateDir, daemon.DaemonState{
+		Port: port,
+		PID:  os.Getpid(),
+	}); err != nil {
+		t.Fatalf("cannot write state: %v", err)
+	}
+
+	output := captureAgentOutput(func() {
+		resetConfigFlags()
+		rootCmd.SetArgs([]string{"agent", "daemon", "ensure-running"})
+		_ = rootCmd.Execute()
+	})
+
+	env := parseSingleEnvelope(t, output)
+
+	// Should be a success envelope
+	if env.Type != agentsdk.TypeResult {
+		t.Fatalf("expected type=result, got %v; full output: %s", env.Type, output)
+	}
+
+	data, ok := env.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data to be a map, got %T", env.Data)
+	}
+
+	// Must include source=already_running
+	source, _ := data["source"].(string)
+	if source != "already_running" {
+		t.Errorf("expected source=already_running, got %v", source)
+	}
+
+	// Must include status from the daemon's /api/status
+	status, _ := data["status"].(string)
+	if status != "running" {
+		t.Errorf("expected status=running from daemon, got %v", status)
+	}
+
+	// Must include record_count from daemon
+	recordCount, _ := data["record_count"].(float64)
+	if recordCount != 5 {
+		t.Errorf("expected record_count=5, got %v", recordCount)
+	}
+
+	// Must include pid and port
+	pid, _ := data["pid"].(float64)
+	if pid <= 0 {
+		t.Errorf("expected positive pid, got %v", pid)
+	}
+	portVal, _ := data["port"].(float64)
+	if int(portVal) != port {
+		t.Errorf("expected port=%d, got %v", port, portVal)
+	}
+}
+
+func TestAgentDaemonEnsureRunning_StaleState(t *testing.T) {
+	tmpHome, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Write a state file pointing to a port that is NOT listening (stale state)
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Use a port that is very unlikely to be in use
+	if err := daemon.WriteState(stateDir, daemon.DaemonState{
+		Port: 59999,
+		PID:  12345,
+	}); err != nil {
+		t.Fatalf("cannot write state: %v", err)
+	}
+
+	// ensure-running should detect stale state, clean up, and attempt to start.
+	// Since we can't actually start the daemon in unit tests, we expect it to
+	// either timeout or succeed (if a real daemon is running on some port).
+	// For a clean unit test, we just verify the command doesn't crash and
+	// the stale state file was cleaned up.
+	resetConfigFlags()
+	rootCmd.SetArgs([]string{"agent", "daemon", "ensure-running"})
+	// This will attempt to start the daemon and likely timeout.
+	// We accept any result — the point is no panic.
+	_ = rootCmd.Execute()
+
+	// Verify the stale state file was cleaned up
+	_, err := os.Stat(filepath.Join(stateDir, ".daemon.json"))
+	if err == nil {
+		// State file still exists — it may have been re-created by a newly started daemon,
+		// or the cleanup didn't happen. Only fail if it still has the stale port.
+		st, readErr := daemon.ReadState(stateDir)
+		if readErr == nil && st.Port == 59999 && st.PID == 12345 {
+			t.Error("stale state file was not cleaned up")
+		}
+	}
+}
+
+func TestAgentDaemonEnsureRunning_EnvelopeValid(t *testing.T) {
+	_, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Set up a fake daemon to get a valid success envelope
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cannot bind port: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"type":"result","data":{"status":"running","record_count":0},"tool":"wr","version":"test"}`)
+	})
+	go func() { _ = http.Serve(ln, mux) }()
+
+	stateDir := filepath.Join(os.Getenv("HOME"), ".work-report")
+	if err := daemon.WriteState(stateDir, daemon.DaemonState{
+		Port: port,
+		PID:  os.Getpid(),
+	}); err != nil {
+		t.Fatalf("cannot write state: %v", err)
+	}
+
+	output := captureAgentOutput(func() {
+		resetConfigFlags()
+		rootCmd.SetArgs([]string{"agent", "daemon", "ensure-running"})
+		_ = rootCmd.Execute()
+	})
+
+	var envelope agentsdk.Envelope
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatalf("cannot unmarshal into Envelope struct: %v\noutput: %s", err, output)
+	}
+	if err := agentsdk.ValidateEnvelope(envelope); err != nil {
+		t.Errorf("ensure-running envelope validation failed: %v", err)
+	}
+}
+
+func TestAgentDaemonEnsureRunning_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping: exec.Command binary execution in temp directories fails on Windows (PE loader incompatibility)")
+	}
+
+	// Find a free port for the daemon
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cannot find free port: %v", err)
+	}
+	daemonPort := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Build binary
+	tmpDir := t.TempDir()
+	binaryName := "wr"
+	if runtime.GOOS == "windows" {
+		binaryName = "wr.exe"
+	}
+	binaryPath := filepath.Join(tmpDir, binaryName)
+
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, output)
+	}
+
+	// Create temp home with config
+	tmpHome := t.TempDir()
+	wrHome := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(wrHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Daemon:   config.DaemonConfig{Port: daemonPort},
+		Timezone: "UTC",
+	}
+	cfgPath := filepath.Join(wrHome, "config.json")
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatalf("cannot save config: %v", err)
+	}
+
+	envVars := append(os.Environ(),
+		"HOME="+tmpHome,
+		"USERPROFILE="+tmpHome,
+		"WR_HOME="+wrHome,
+	)
+
+	// Always clean up the daemon
+	defer func() {
+		stopCmd := exec.Command(binaryPath, "agent", "daemon", "stop")
+		stopCmd.Env = envVars
+		stopCmd.CombinedOutput()
+	}()
+
+	// First call: should start the daemon (source=started)
+	cmd := exec.Command(binaryPath, "agent", "daemon", "ensure-running")
+	cmd.Env = envVars
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("first ensure-running failed: %v\noutput: %s", err, output)
+	}
+
+	line := strings.TrimSpace(string(output))
+	var env agentsdk.Envelope
+	if err := json.Unmarshal([]byte(line), &env); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, line)
+	}
+	if err := agentsdk.ValidateEnvelope(env); err != nil {
+		t.Fatalf("envelope validation failed: %v", err)
+	}
+
+	if env.Type != agentsdk.TypeResult {
+		t.Errorf("expected type=result, got %v", env.Type)
+	}
+
+	data, ok := env.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data to be a map, got %T", env.Data)
+	}
+
+	source, _ := data["source"].(string)
+	if source != "started" {
+		t.Errorf("expected source=started on first call, got %v", source)
+	}
+
+	pid, _ := data["pid"].(float64)
+	if pid <= 0 {
+		t.Errorf("expected positive pid, got %v", pid)
+	}
+
+	// Second call: daemon is already running (source=already_running)
+	time.Sleep(500 * time.Millisecond)
+	cmd2 := exec.Command(binaryPath, "agent", "daemon", "ensure-running")
+	cmd2.Env = envVars
+	output2, err := cmd2.CombinedOutput()
+	if err != nil {
+		t.Fatalf("second ensure-running failed: %v\noutput: %s", err, output2)
+	}
+
+	line2 := strings.TrimSpace(string(output2))
+	var env2 agentsdk.Envelope
+	if err := json.Unmarshal([]byte(line2), &env2); err != nil {
+		t.Fatalf("second output is not valid JSON: %v\noutput: %s", err, line2)
+	}
+
+	data2, ok := env2.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data to be a map, got %T", env2.Data)
+	}
+
+	source2, _ := data2["source"].(string)
+	if source2 != "already_running" {
+		t.Errorf("expected source=already_running on second call, got %v", source2)
 	}
 }

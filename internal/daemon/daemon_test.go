@@ -673,6 +673,130 @@ func assertJSONLCode(t *testing.T, body []byte, wantCode string) {
 	}
 }
 
+// ── Idempotency tests ──
+
+func TestAddEndpointIdempotency(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	payload := `{"type":"meeting","title":"Standup","date":"2026-05-05","idempotency_key":"standup-2026-05-05"}`
+
+	// First add — should create a new record
+	req1 := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(payload))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	srv.router.ServeHTTP(w1, req1)
+
+	assertJSONLStatus(t, w1.Body.Bytes(), "success")
+
+	var resp1 map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w1.Body.Bytes()), &resp1)
+	data1 := resp1["data"].(map[string]interface{})
+	shortID1, _ := data1["short_id"].(string)
+	if shortID1 == "" {
+		t.Fatal("first add should return a short_id")
+	}
+
+	// Second add with same idempotency key — should return existing record
+	req2 := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(payload))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	srv.router.ServeHTTP(w2, req2)
+
+	assertJSONLStatus(t, w2.Body.Bytes(), "success")
+
+	var resp2 map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w2.Body.Bytes()), &resp2)
+	data2 := resp2["data"].(map[string]interface{})
+	shortID2, _ := data2["short_id"].(string)
+
+	if shortID1 != shortID2 {
+		t.Errorf("idempotent add returned different short_id: first=%s second=%s", shortID1, shortID2)
+	}
+
+	// Verify only one file on disk
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "05")
+	files, err := os.ReadDir(meetingsDir)
+	if err != nil {
+		t.Fatalf("meetings dir should exist: %v", err)
+	}
+	jsonFiles := 0
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".json") {
+			jsonFiles++
+		}
+	}
+	if jsonFiles != 1 {
+		t.Errorf("expected exactly 1 meeting file on disk, got %d", jsonFiles)
+	}
+}
+
+func TestAddEndpointIdempotency_NoKey(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	// Normal add without idempotency key should still work
+	payload := `{"type":"meeting","title":"Normal Add","date":"2026-05-05"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+	if data["type"] != "meeting" {
+		t.Errorf("type = %v, want meeting", data["type"])
+	}
+
+	// Verify file was written
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "05")
+	files, err := os.ReadDir(meetingsDir)
+	if err != nil {
+		t.Fatalf("meetings dir should exist: %v", err)
+	}
+	if len(files) == 0 {
+		t.Error("expected at least one meeting file")
+	}
+}
+
+func TestAddEndpointIdempotency_DifferentKeys(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	// Two adds with different idempotency keys should create two records
+	payload1 := `{"type":"meeting","title":"Standup A","date":"2026-05-05","idempotency_key":"key-a"}`
+	payload2 := `{"type":"meeting","title":"Standup B","date":"2026-05-05","idempotency_key":"key-b"}`
+
+	req1 := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(payload1))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	srv.router.ServeHTTP(w1, req1)
+	assertJSONLStatus(t, w1.Body.Bytes(), "success")
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(payload2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	srv.router.ServeHTTP(w2, req2)
+	assertJSONLStatus(t, w2.Body.Bytes(), "success")
+
+	// Verify two files on disk
+	meetingsDir := filepath.Join(dir, "meetings", "2026", "05", "05")
+	files, err := os.ReadDir(meetingsDir)
+	if err != nil {
+		t.Fatalf("meetings dir: %v", err)
+	}
+	jsonFiles := 0
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".json") {
+			jsonFiles++
+		}
+	}
+	if jsonFiles != 2 {
+		t.Errorf("expected 2 meeting files on disk, got %d", jsonFiles)
+	}
+}
+
 // ── LLM text classification tests ──
 
 // mockLLMServer creates an httptest.Server that simulates the OpenAI chat completions API.
@@ -1918,6 +2042,242 @@ func TestHandleStatusEmptyConfig(t *testing.T) {
 	textInfo := llmInfo["text"].(map[string]interface{})
 	if textInfo["configured"] != false {
 		t.Errorf("expected llm.text configured=false for empty config")
+	}
+}
+
+// ── Date/time and record count tests ──
+
+func TestHandleStatus_DateTimeFields(t *testing.T) {
+	cfg := &config.Config{
+		Timezone: "Asia/Shanghai",
+	}
+	srv, _ := newTestServer(t, cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	dt, ok := data["datetime"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected datetime section in status response")
+	}
+
+	// Verify current_date format: YYYY-MM-DD
+	currentDate, _ := dt["current_date"].(string)
+	if len(currentDate) != 10 || currentDate[4] != '-' || currentDate[7] != '-' {
+		t.Errorf("current_date format invalid: %q (want YYYY-MM-DD)", currentDate)
+	}
+
+	// Verify current_time format: HH:MM:SS
+	currentTime, _ := dt["current_time"].(string)
+	if len(currentTime) != 8 || currentTime[2] != ':' || currentTime[5] != ':' {
+		t.Errorf("current_time format invalid: %q (want HH:MM:SS)", currentTime)
+	}
+
+	// Verify current_datetime is valid ISO 8601 with timezone offset
+	currentDatetime, _ := dt["current_datetime"].(string)
+	if _, err := time.Parse(time.RFC3339, currentDatetime); err != nil {
+		t.Errorf("current_datetime is not valid RFC3339: %q, err=%v", currentDatetime, err)
+	}
+
+	// Verify timezone is Asia/Shanghai
+	if dt["timezone"] != "Asia/Shanghai" {
+		t.Errorf("timezone = %v, want Asia/Shanghai", dt["timezone"])
+	}
+
+	// Verify weekday is a valid English weekday name
+	weekday, _ := dt["weekday"].(string)
+	validWeekdays := map[string]bool{
+		"Monday": true, "Tuesday": true, "Wednesday": true, "Thursday": true,
+		"Friday": true, "Saturday": true, "Sunday": true,
+	}
+	if !validWeekdays[weekday] {
+		t.Errorf("weekday = %q, expected a valid English weekday name", weekday)
+	}
+
+	// Cross-check: current_date should match today in Asia/Shanghai timezone
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	expectedDate := time.Now().In(loc).Format("2006-01-02")
+	if currentDate != expectedDate {
+		t.Errorf("current_date = %q, want %q (today in Asia/Shanghai)", currentDate, expectedDate)
+	}
+}
+
+func TestHandleStatus_DateTimeFields_UTCTimezone(t *testing.T) {
+	cfg := &config.Config{
+		Timezone: "UTC",
+	}
+	srv, _ := newTestServer(t, cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	dt := data["datetime"].(map[string]interface{})
+	if dt["timezone"] != "UTC" {
+		t.Errorf("timezone = %v, want UTC", dt["timezone"])
+	}
+
+	// current_datetime should end with +00:00 or Z for UTC
+	currentDatetime, _ := dt["current_datetime"].(string)
+	parsed, err := time.Parse(time.RFC3339, currentDatetime)
+	if err != nil {
+		t.Fatalf("current_datetime parse error: %v", err)
+	}
+	_, offset := parsed.Zone()
+	if offset != 0 {
+		t.Errorf("UTC datetime should have zero offset, got %d seconds", offset)
+	}
+}
+
+func TestHandleStatus_DateTimeFields_DefaultConfig(t *testing.T) {
+	// Empty config should use default timezone (Asia/Shanghai)
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	dt := data["datetime"].(map[string]interface{})
+	// Default config has empty timezone which appliesDefaults sets to Asia/Shanghai,
+	// but newTestServer uses cfg directly without applyDefaults. Empty timezone
+	// falls back to UTC in Location(). Just verify the field exists and is non-empty.
+	timezone, _ := dt["timezone"].(string)
+	if timezone == "" {
+		t.Error("timezone should not be empty")
+	}
+}
+
+func TestHandleStatus_RecordCounts(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Seed: 2 meetings, 1 task, 3 reminders, 1 log
+	addRecord(t, srv, "meeting", "m1", "", "2026-06-01")
+	addRecord(t, srv, "meeting", "m2", "", "2026-06-01")
+	addRecord(t, srv, "task", "t1", "", "2026-06-01")
+	addRecord(t, srv, "reminder", "r1", "", "2026-06-01")
+	addRecord(t,srv, "reminder", "r2", "", "2026-06-01")
+	addRecord(t, srv, "reminder", "r3", "", "2026-06-01")
+	addRecord(t, srv, "log", "l1", "", "2026-06-01")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	records, ok := data["records"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected records section in status response")
+	}
+
+	// Verify counts match seeded data
+	if records["active_meetings"].(float64) != 2 {
+		t.Errorf("active_meetings = %v, want 2", records["active_meetings"])
+	}
+	if records["active_tasks"].(float64) != 1 {
+		t.Errorf("active_tasks = %v, want 1", records["active_tasks"])
+	}
+	if records["active_reminders"].(float64) != 3 {
+		t.Errorf("active_reminders = %v, want 3", records["active_reminders"])
+	}
+	if records["active_logs"].(float64) != 1 {
+		t.Errorf("active_logs = %v, want 1", records["active_logs"])
+	}
+	if records["total_active"].(float64) != 7 {
+		t.Errorf("total_active = %v, want 7", records["total_active"])
+	}
+}
+
+func TestHandleStatus_RecordCounts_Empty(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+
+	records, ok := data["records"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected records section in status response even when empty")
+	}
+
+	// All counts should be zero
+	if records["active_meetings"].(float64) != 0 {
+		t.Errorf("active_meetings = %v, want 0", records["active_meetings"])
+	}
+	if records["active_tasks"].(float64) != 0 {
+		t.Errorf("active_tasks = %v, want 0", records["active_tasks"])
+	}
+	if records["active_reminders"].(float64) != 0 {
+		t.Errorf("active_reminders = %v, want 0", records["active_reminders"])
+	}
+	if records["active_logs"].(float64) != 0 {
+		t.Errorf("active_logs = %v, want 0", records["active_logs"])
+	}
+	if records["total_active"].(float64) != 0 {
+		t.Errorf("total_active = %v, want 0", records["total_active"])
+	}
+}
+
+func TestHandleStatus_RecordCounts_ExcludesCompleted(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add 2 meetings, then complete 1
+	addRecord(t, srv, "meeting", "m1", "", "2026-06-01")
+	addRecord(t, srv, "meeting", "m2", "", "2026-06-01")
+
+	// Get the short IDs and complete the first one
+	listReq := httptest.NewRequest(http.MethodGet, "/api/list?type=meeting&date=2026-06-01", nil)
+	listW := httptest.NewRecorder()
+	srv.router.ServeHTTP(listW, listReq)
+	entries := parseListEntries(t, listW.Body.Bytes())
+	if len(entries) < 2 {
+		t.Fatalf("expected at least 2 entries, got %d", len(entries))
+	}
+	firstID := entries[0]["short_id"].(string)
+
+	compReq := httptest.NewRequest(http.MethodPost, "/api/complete/"+firstID, nil)
+	compW := httptest.NewRecorder()
+	srv.router.ServeHTTP(compW, compReq)
+	assertJSONLStatus(t, compW.Body.Bytes(), "success")
+
+	// Now check status counts
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].(map[string]interface{})
+
+	if records["active_meetings"].(float64) != 1 {
+		t.Errorf("active_meetings = %v, want 1 (after completing 1 of 2)", records["active_meetings"])
 	}
 }
 
@@ -3898,4 +4258,391 @@ func TestHandleExport_MarkdownNoDateFilter(t *testing.T) {
 	if data["count"].(float64) != 1 {
 		t.Errorf("expected count=1 for today's record, got %v", data["count"])
 	}
+}
+
+func TestHandleExport_DefaultCompleted(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	date := "2026-06-01"
+
+	// Add an active record
+	addRecord(t, srv, "task", "active task", "", date)
+
+	// Add and complete a second record
+	body := strings.NewReader(`{"type":"task","title":"completed task","date":"` + date + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	shortID := addResp["data"].(map[string]interface{})["short_id"].(string)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Export without --status: should only include active records (IncludeCompleted=false)
+	req = httptest.NewRequest(http.MethodGet, "/api/export?format=json&date="+date, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	records := data["records"].([]interface{})
+	if len(records) != 1 {
+		t.Fatalf("default export: expected 1 active record, got %d", len(records))
+	}
+	rec := records[0].(map[string]interface{})
+	if rec["title"] != "active task" {
+		t.Errorf("default export: expected title='active task', got %v", rec["title"])
+	}
+
+	// Export with --status=all: should include both active and completed
+	req = httptest.NewRequest(http.MethodGet, "/api/export?format=json&date="+date+"&status=all", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data = record["data"].(map[string]interface{})
+	records = data["records"].([]interface{})
+	if len(records) != 2 {
+		t.Fatalf("status=all export: expected 2 records, got %d", len(records))
+	}
+}
+
+// ── Lookup-based update/complete/cancel tests (S03) ──
+
+// addRecordWithTime adds a record with a time field and returns the parsed response data.
+func addRecordWithTime(t *testing.T, srv *Server, typ, title, desc, date, timeVal string) map[string]interface{} {
+	t.Helper()
+	body := fmt.Sprintf(`{"type":"%s","title":"%s","description":"%s","date":"%s","time":"%s"}`, typ, title, desc, date, timeVal)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	return resp["data"].(map[string]interface{})
+}
+
+func TestHandleUpdate_LookupByTitleDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting with a specific title and date
+	addData := addRecordWithTime(t, srv, "meeting", "Standup", "daily sync", "2026-05-05", "09:00")
+	origShortID := addData["short_id"].(string)
+
+	// Update via lookup (no short_id in path, title+date in query params)
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/?title=Standup&date=2026-05-05", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	// Should have resolved to the same record
+	if data["short_id"] != origShortID {
+		t.Errorf("expected short_id=%s, got %v", origShortID, data["short_id"])
+	}
+	// Time should be updated
+	if data["time"] != "15:00" {
+		t.Errorf("expected time=15:00, got %v", data["time"])
+	}
+}
+
+func TestHandleUpdate_LookupMultipleMatches(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add two meetings with same title and date but different times
+	addRecordWithTime(t, srv, "meeting", "Standup", "sync 1", "2026-05-05", "09:00")
+	addRecordWithTime(t, srv, "meeting", "Standup", "sync 2", "2026-05-05", "10:00")
+
+	// Try to update via lookup — should get multiple_matches error
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/?title=Standup&date=2026-05-05", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "multiple_matches")
+
+	// Verify the error message contains context about the matches
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	msg, _ := resp["message"].(string)
+	if !strings.Contains(msg, "Standup") || !strings.Contains(msg, "2026-05-05") {
+		t.Errorf("expected error message to contain lookup criteria, got: %s", msg)
+	}
+}
+
+func TestHandleUpdate_LookupNoMatch(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// No records added — lookup should fail with record_not_found
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/?title=Nonexistent&date=2026-05-05", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
+}
+
+func TestHandleUpdate_LookupMissingParams(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Path has no ID, and query params are incomplete — title only, no date
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/?title=Standup", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
+
+	// Neither title nor date
+	req2 := httptest.NewRequest(http.MethodPost, "/api/update/", strings.NewReader(`{"time":"15:00"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	srv.router.ServeHTTP(w2, req2)
+
+	assertJSONLStatus(t, w2.Body.Bytes(), "error")
+	assertJSONLCode(t, w2.Body.Bytes(), "record_not_found")
+}
+
+func TestHandleComplete_LookupByTitleDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting
+	addData := addRecordWithTime(t, srv, "meeting", "Team Sync", "weekly", "2026-05-06", "10:00")
+	origShortID := addData["short_id"].(string)
+
+	// Complete via lookup
+	req := httptest.NewRequest(http.MethodPost, "/api/complete/?title=Team+Sync&date=2026-05-06", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["short_id"] != origShortID {
+		t.Errorf("expected short_id=%s, got %v", origShortID, data["short_id"])
+	}
+	if data["status"] != "completed" {
+		t.Errorf("expected status=completed, got %v", data["status"])
+	}
+}
+
+func TestHandleComplete_LookupNoMatch(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/complete/?title=Ghost&date=2026-05-06", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
+}
+
+func TestHandleComplete_LookupMultipleMatches(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecordWithTime(t, srv, "meeting", "Standup", "a", "2026-05-07", "09:00")
+	addRecordWithTime(t, srv, "meeting", "Standup", "b", "2026-05-07", "10:00")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/complete/?title=Standup&date=2026-05-07", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "multiple_matches")
+}
+
+func TestHandleCancel_LookupByTitleDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting
+	addData := addRecordWithTime(t, srv, "meeting", "Cancel Me", "to cancel", "2026-05-08", "11:00")
+	origShortID := addData["short_id"].(string)
+
+	// Cancel via lookup
+	req := httptest.NewRequest(http.MethodPost, "/api/cancel/?title=Cancel+Me&date=2026-05-08", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["short_id"] != origShortID {
+		t.Errorf("expected short_id=%s, got %v", origShortID, data["short_id"])
+	}
+	if data["status"] != "cancelled" {
+		t.Errorf("expected status=cancelled, got %v", data["status"])
+	}
+}
+
+func TestHandleCancel_LookupNoMatch(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cancel/?title=Ghost&date=2026-05-08", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "record_not_found")
+}
+
+func TestHandleCancel_LookupMultipleMatches(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addRecordWithTime(t, srv, "meeting", "Standup", "a", "2026-05-09", "09:00")
+	addRecordWithTime(t, srv, "meeting", "Standup", "b", "2026-05-09", "10:00")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cancel/?title=Standup&date=2026-05-09", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "multiple_matches")
+}
+
+func TestHandleUpdate_ShortIDStillWorks(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a meeting
+	addData := addRecordWithTime(t, srv, "meeting", "Regression", "test", "2026-05-10", "09:00")
+	shortID := addData["short_id"].(string)
+
+	// Update via short_id (existing path)
+	updateBody := strings.NewReader(`{"time":"16:00","description":"updated"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/"+shortID, updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["short_id"] != shortID {
+		t.Errorf("expected short_id=%s, got %v", shortID, data["short_id"])
+	}
+	if data["time"] != "16:00" {
+		t.Errorf("expected time=16:00, got %v", data["time"])
+	}
+	if data["description"] != "updated" {
+		t.Errorf("expected description=updated, got %v", data["description"])
+	}
+}
+
+func TestHandleComplete_ShortIDStillWorks(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addData := addRecordWithTime(t, srv, "meeting", "Regression", "test", "2026-05-10", "09:00")
+	shortID := addData["short_id"].(string)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/complete/"+shortID, nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+	if data["status"] != "completed" {
+		t.Errorf("expected status=completed, got %v", data["status"])
+	}
+}
+
+func TestHandleCancel_ShortIDStillWorks(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	addData := addRecordWithTime(t, srv, "meeting", "Regression", "test", "2026-05-10", "09:00")
+	shortID := addData["short_id"].(string)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cancel/"+shortID, nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+	if data["status"] != "cancelled" {
+		t.Errorf("expected status=cancelled, got %v", data["status"])
+	}
+}
+
+func TestHandleUpdate_LookupSpecialChars(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Title with special characters (URL-encoded in query params)
+	addData := addRecordWithTime(t, srv, "meeting", "Project Review (Q2)", "quarterly", "2026-06-15", "14:00")
+	origShortID := addData["short_id"].(string)
+
+	updateBody := strings.NewReader(`{"time":"16:00"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/update/?title=Project+Review+(Q2)&date=2026-06-15", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["short_id"] != origShortID {
+		t.Errorf("expected short_id=%s, got %v", origShortID, data["short_id"])
+	}
+	if data["time"] != "16:00" {
+		t.Errorf("expected time=16:00, got %v", data["time"])
+	}
+}
+
+func TestHandleUpdate_LookupAlreadyCompleted(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add and complete a meeting
+	addRecordWithTime(t, srv, "meeting", "Done Meeting", "done", "2026-05-11", "09:00")
+
+	// Complete it first via lookup
+	req := httptest.NewRequest(http.MethodPost, "/api/complete/?title=Done+Meeting&date=2026-05-11", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Now try to update via lookup — should fail because it's completed
+	updateBody := strings.NewReader(`{"time":"15:00"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/update/?title=Done+Meeting&date=2026-05-11", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "already_completed")
 }

@@ -30,23 +30,17 @@ var (
 )
 
 var updateCmd = &cobra.Command{
-	Use:   "update <id>",
+	Use:   "update [<id>]",
 	Short: "Update fields of an existing work report entry",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fields := make(map[string]interface{})
 
-		if cmd.Flags().Changed("title") {
-			fields["title"] = updateTitle
+		if cmd.Flags().Changed("time") {
+			fields["time"] = updateTime
 		}
 		if cmd.Flags().Changed("description") {
 			fields["description"] = updateDescription
-		}
-		if cmd.Flags().Changed("date") {
-			fields["date"] = updateDate
-		}
-		if cmd.Flags().Changed("time") {
-			fields["time"] = updateTime
 		}
 		if cmd.Flags().Changed("location") {
 			fields["location"] = updateLocation
@@ -82,11 +76,32 @@ var updateCmd = &cobra.Command{
 			fields["progress"] = updateProgress
 		}
 
-		if len(fields) == 0 {
-			return writeExitError(agentsdk.ExitInvalidParams, "no fields specified for update")
+		var path string
+		var err error
+
+		if len(args) > 0 && args[0] != "" {
+			// Existing behavior: <id> provided — title/date flags update fields
+			if cmd.Flags().Changed("title") {
+				fields["title"] = updateTitle
+			}
+			if cmd.Flags().Changed("date") {
+				fields["date"] = updateDate
+			}
+			if len(fields) == 0 {
+				return writeExitError(agentsdk.ExitInvalidParams, "no fields specified for update")
+			}
+			path = fmt.Sprintf("/api/update/%s", args[0])
+		} else {
+			// Lookup mode: --title and --date are query params for lookup
+			path, err = buildActionPath("update", args)
+			if err != nil {
+				return err
+			}
+			if len(fields) == 0 {
+				return writeExitError(agentsdk.ExitInvalidParams, "no fields specified for update")
+			}
 		}
 
-		path := fmt.Sprintf("/api/update/%s", args[0])
 		return client.CallDaemonPost(os.Stdout, path, fields)
 	},
 }
@@ -94,9 +109,9 @@ var updateCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(updateCmd)
 
-	updateCmd.Flags().StringVar(&updateTitle, "title", "", "Update title")
+	updateCmd.Flags().StringVar(&updateTitle, "title", "", "When <id> provided: update title. Otherwise: lookup title")
 	updateCmd.Flags().StringVar(&updateDescription, "description", "", "Update description")
-	updateCmd.Flags().StringVar(&updateDate, "date", "", "Update date (YYYY-MM-DD)")
+	updateCmd.Flags().StringVar(&updateDate, "date", "", "When <id> provided: update date. Otherwise: lookup date (YYYY-MM-DD)")
 	updateCmd.Flags().StringVar(&updateTime, "time", "", "Update time (HH:MM)")
 	updateCmd.Flags().StringVar(&updateLocation, "location", "", "Update location")
 	updateCmd.Flags().StringSliceVar(&updateTags, "tags", nil, "Update tags (comma-separated)")

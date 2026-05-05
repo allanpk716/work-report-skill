@@ -27,26 +27,19 @@ If you have scripts or workflows using the old paths, update them to include the
 ## Quick Start
 
 ```
-# 1. Create config with defaults
-wr config init
+# 1. One-step init: create config with LLM key in a single call
+wr config init --llm-text-key sk-xxx --llm-text-model gpt-4o-mini
 
-# 2. (Optional) Set LLM keys for natural-language add
-wr config set llm.text.api_key sk-xxx
-wr config set llm.text.model gpt-4o-mini
+# 2. Ensure daemon is running (idempotent — starts if needed, succeeds if already running)
+wr agent daemon ensure-running
 
-# 3. Start the daemon (blocks until stopped)
-wr agent daemon start > /dev/null 2>&1 &
-
-# 4. Wait for daemon readiness
-while ! wr status 2>/dev/null | grep -q '"running"'; do sleep 1; done
-
-# 5. Add a record
+# 3. Add a record
 wr add --type meeting --title "Standup" --date 2026-05-03 --time 10:00
 
-# 5. List records
+# 4. List records
 wr list --date 2026-05-03
 
-# 6. Generate a report
+# 5. Generate a report
 wr report today
 ```
 
@@ -148,6 +141,7 @@ wr add [flags]
 | `--recurring` | string | `""` | Recurring pattern (e.g. `daily`, `weekly`) |
 | `--text` | string | `""` | Natural language text for LLM classification. When provided, `--type`, `--title`, `--date` become optional. |
 | `--image` | string | `""` | Image file path for LLM vision classification. When provided, `--type`, `--title`, `--date` become optional. |
+| `--idempotency-key` | string | `""` | Idempotency key for deduplication. Retrying with the same key returns the existing record instead of creating a duplicate. |
 
 **Notes:**
 - If both `--text` (or `--image`) and `--type` are provided, the explicit flags take precedence over LLM classification.
@@ -180,6 +174,14 @@ wr add --image /tmp/screenshot.png --text "see attached"
 ```
 
 The daemon classifies via the LLM vision provider.
+
+**Idempotency key example:**
+
+```bash
+wr add --type task --title "Daily standup" --date 2026-05-03 --idempotency-key "standup-2026-05-03"
+```
+
+If called again with the same `--idempotency-key`, the existing record is returned — no duplicate is created. Use this in retry loops or scheduled workflows to avoid double-entry.
 
 **Error codes:** `invalid_type`, `invalid_body`, `llm_not_configured`, `llm_error`, `storage_error`, `daemon_not_running`
 
@@ -233,18 +235,18 @@ Update fields of an existing work report entry. Only explicitly provided flags a
 **Usage:**
 
 ```
-wr update <short_id> [flags]
+wr update [<short_id>] [flags]
 ```
 
-**Arguments:** Exactly one positional argument — the record's `short_id`.
+**Arguments:** Optional positional `<short_id>`. When omitted, `--title` and `--date` become required for content-based lookup.
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--title` | string | `""` | Update title |
+| `--title` | string | `""` | When `<short_id>` provided: update title. Otherwise: lookup by exact title (required for lookup). |
 | `--description` | string | `""` | Update description |
-| `--date` | string | `""` | Update date (`YYYY-MM-DD`) |
+| `--date` | string | `""` | When `<short_id>` provided: update date (`YYYY-MM-DD`). Otherwise: lookup by date (required for lookup). |
 | `--time` | string | `""` | Update time (`HH:MM`) |
 | `--location` | string | `""` | Update location |
 | `--tags` | stringSlice | `nil` | Update tags (comma-separated, replaces entire list) |
@@ -262,11 +264,18 @@ wr update <short_id> [flags]
 - Updating time-related fields (`time`, `date`, `remind_before`, `recurring`) triggers scheduler re-registration for reminder notifications.
 - Completed or cancelled records cannot be updated — returns `already_completed` or `already_cancelled`.
 - At least one field flag must be explicitly set, otherwise the command prints help text to stderr.
+- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required as lookup criteria. The `--title` and `--date` flags serve as query params (not field updates). If multiple active records match, returns `multiple_matches` error. If no match, returns `record_not_found`.
 
-**Example:**
+**By short_id example:**
 
 ```bash
 wr update a1b2c3d4e5f67890 --time 15:00 --location "Room 5B"
+```
+
+**Content-based lookup example:**
+
+```bash
+wr update --title "Project sync" --date 2026-05-03 --time 15:00 --location "Room 5B"
 ```
 
 **Output:**
@@ -275,32 +284,43 @@ wr update a1b2c3d4e5f67890 --time 15:00 --location "Room 5B"
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:30:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T14:30:00+08:00"}}
 ```
 
-**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_body`, `invalid_field`, `storage_error`, `daemon_not_running`
+**Error codes:** `record_not_found`, `multiple_matches`, `already_completed`, `already_cancelled`, `invalid_body`, `invalid_field`, `invalid_params`, `storage_error`, `daemon_not_running`
 
 ---
-
-### wr complete
 
 Mark an active work report entry as completed.
 
 **Usage:**
 
 ```
-wr complete <short_id>
+wr complete [<short_id>]
+wr complete --title <title> --date <YYYY-MM-DD>
 ```
 
-**Arguments:** Exactly one positional argument — the record's `short_id`.
+**Arguments:** Optional positional `<short_id>`. When omitted, `--title` and `--date` become required for content-based lookup.
 
-**Flags:** None.
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--title` | string | `""` | Lookup by exact title (required when no `<short_id>`) |
+| `--date` | string | `""` | Lookup by date `YYYY-MM-DD` (required when no `<short_id>`) |
 
 **Notes:**
 - Only active records can be completed. Attempting to complete an already-completed or already-cancelled record returns `storage_error`.
 - Completing a record unregisters it from the scheduler (reminders stop).
+- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `multiple_matches` error.
 
-**Example:**
+**By short_id example:**
 
 ```bash
 wr complete a1b2c3d4e5f67890
+```
+
+**Content-based lookup example:**
+
+```bash
+wr complete --title "Review PR #42" --date 2026-05-03
 ```
 
 **Output:**
@@ -309,7 +329,7 @@ wr complete a1b2c3d4e5f67890
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T16:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","status":"completed","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00"}}
 ```
 
-**Error codes:** `record_not_found`, `storage_error`, `daemon_not_running`
+**Error codes:** `record_not_found`, `multiple_matches`, `storage_error`, `daemon_not_running`
 
 ---
 
@@ -320,21 +340,34 @@ Cancel an active work report entry.
 **Usage:**
 
 ```
-wr cancel <short_id>
+wr cancel [<short_id>]
+wr cancel --title <title> --date <YYYY-MM-DD>
 ```
 
-**Arguments:** Exactly one positional argument — the record's `short_id`.
+**Arguments:** Optional positional `<short_id>`. When omitted, `--title` and `--date` become required for content-based lookup.
 
-**Flags:** None.
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--title` | string | `""` | Lookup by exact title (required when no `<short_id>`) |
+| `--date` | string | `""` | Lookup by date `YYYY-MM-DD` (required when no `<short_id>`) |
 
 **Notes:**
 - Only active records can be cancelled. Attempting to cancel an already-cancelled or already-completed record returns `storage_error`.
 - Cancelling a record unregisters it from the scheduler.
+- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `multiple_matches` error.
 
-**Example:**
+**By short_id example:**
 
 ```bash
 wr cancel f0e1d2c3b4a56789
+```
+
+**Content-based lookup example:**
+
+```bash
+wr cancel --title "Standup" --date 2026-05-03
 ```
 
 **Output:**
@@ -343,7 +376,7 @@ wr cancel f0e1d2c3b4a56789
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T12:00:00Z","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00"}}
 ```
 
-**Error codes:** `record_not_found`, `storage_error`, `daemon_not_running`
+**Error codes:** `record_not_found`, `multiple_matches`, `storage_error`, `daemon_not_running`
 
 ---
 
@@ -525,7 +558,7 @@ wr export --format <json|markdown> [flags]
 **Notes:**
 - `--format` is required. `--format csv` (or any value other than `json`/`markdown`) returns `invalid_params` error.
 - Multiple filter flags are combined (AND logic), same as `wr list`.
-- Unlike `wr list`, export includes completed records by default (`IncludeCompleted` is always true).
+- Both `wr list` and `wr export` default to active-only records. Use `--status all` to include completed/cancelled records, or `--status completed` for completed only.
 - For Markdown format without a date filter, today's date is used (consistent with `wr report today`).
 - Use `--file` to write output to disk instead of stdout. When `--file` is specified, nothing is written to stdout on success.
 
@@ -599,6 +632,38 @@ wr agent daemon start > /dev/null 2>&1 &
 - The daemon listens on `127.0.0.1:<port>` (default port `18080`).
 - All daemon log messages go to stderr, not stdout.
 - The daemon version is `0.1.0`.
+
+#### wr agent daemon ensure-running
+
+Ensure the daemon is running — start it if needed, or return success if already running. This is the recommended way for agents to guarantee daemon availability before issuing commands.
+
+```bash
+wr agent daemon ensure-running
+```
+
+**Flags:** None.
+
+**Behavior:**
+1. Checks if the daemon is already running (state file + port check).
+2. If running: calls `/api/status`, wraps response with `source: "already_running"`, returns success.
+3. If not running: cleans stale state, starts the daemon in detached mode, polls until the port is bound (up to 10s), then returns success with `source: "started"`.
+4. On timeout: returns `daemon_start_timeout` error.
+
+**Key difference from `start --detach`:** `start --detach` errors when the daemon is already running. `ensure-running` is idempotent — it always succeeds if the daemon is available, regardless of whether it was just started or already running.
+
+**Success output (daemon already running):**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"source":"already_running","pid":12345,"port":18080,"daemon":{"version":"0.1.0","status":"running"}}}
+```
+
+**Success output (daemon just started):**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"source":"started","pid":12345,"port":18080,"daemon":{"version":"0.1.0","status":"running"}}}
+```
+
+**Error codes:** `daemon_start_timeout`, `daemon_not_running`, `invalid_body`
 
 ---
 
@@ -758,6 +823,8 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `push_error` | Pushover notification delivery failed | Check Pushover credentials and network. |
 | `import_record` | Per-record validation failure during import | Check the record at the specified index for missing or invalid fields (type, title, or date). Fix the record in the import file and retry. |
 | `invalid_params` | Missing or unsupported command parameter (e.g., `--format`) | Check the command's required flags. For export, `--format` must be `json` or `markdown`. |
+| `multiple_matches` | Content-based lookup (`--title` + `--date`) matched more than one active record | Narrow the query with a more specific title, or use `wr list` to find the exact `short_id` and use that instead. |
+| `daemon_start_timeout` | Daemon failed to start within 10 seconds | Check for port conflicts, filesystem permissions on `~/.work-report/`, or zombie daemon processes. Kill stale processes and retry. |
 
 ---
 
@@ -827,40 +894,39 @@ ShortIDs are deterministic from the filename but are not reversible. To find a r
 ### First-Time Setup
 
 ```bash
-# 1. Initialize config
-wr config init
+# 1. One-step init: create config with all keys in a single call
+wr config init --llm-text-key sk-your-key --llm-text-model gpt-4o-mini
 
-# 2. (Optional) Configure LLM for natural language input
-wr config set llm.text.api_key sk-your-key
-wr config set llm.text.model gpt-4o-mini
-
-# 3. (Optional) Configure Pushover for push notifications
+# 2. (Optional) Add Pushover for push notifications
 wr config set pushover.api_token your-token
 wr config set pushover.user_key your-key
 
-# 4. Start the daemon
-wr agent daemon start > /dev/null 2>&1 &
+# 3. Ensure daemon is running (idempotent)
+wr agent daemon ensure-running
 
-# 5. Wait for daemon readiness
-while ! wr status 2>/dev/null | grep -q '"running"'; do sleep 1; done
-
-# 6. Verify it's running
+# 4. Verify it's running
 wr status
 ```
 
 ### Daily Usage
 
 ```bash
+# Ensure daemon is running (safe to call repeatedly)
+wr agent daemon ensure-running
+
 # Add entries throughout the day
 wr add --type meeting --title "Sprint planning" --date 2026-05-03 --time 09:00 --participants "Alice,Bob"
 wr add --type task --title "Review PR #42" --date 2026-05-03 --priority high
 wr add --type log --title "Deployed v2.1 to staging" --date 2026-05-03
 
+# Add with idempotency key (safe in retry loops — no duplicates)
+wr add --type task --title "Daily standup" --date 2026-05-03 --idempotency-key "standup-2026-05-03"
+
 # Check today's entries
 wr list --date 2026-05-03
 
-# Complete a task
-wr complete a1b2c3d4e5f67890
+# Complete a task by title instead of short_id
+wr complete --title "Review PR #42" --date 2026-05-03
 
 # Generate end-of-day report
 wr report today
@@ -1034,7 +1100,7 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 ## Tips & Gotchas
 
-1. **Daemon must be running.** Almost every command (add, list, update, complete, cancel, report, status) requires the daemon. The only commands that work without it are `wr config init`, `wr config set`, and `wr config show`. If you see `daemon_not_running`, start the daemon with `wr agent daemon start` and retry.
+1. **Daemon must be running.** Almost every command (add, list, update, complete, cancel, report, status) requires the daemon. The only commands that work without it are `wr config init`, `wr config set`, and `wr config show`. Use `wr agent daemon ensure-running` — it's idempotent and starts the daemon if needed. If you see `daemon_not_running`, run `ensure-running` and retry.
 
 2. **JSONL goes to stdout only, never stderr.** The root command sets `SilenceUsage` and `SilenceErrors` to prevent Cobra from writing non-JSONL text to stderr. All structured output (including errors) is JSONL on stdout.
 
@@ -1058,9 +1124,14 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 12. **Imported records get fresh ShortIDs.** The original ShortIDs from the source are not preserved. Use `wr list` to find the new ShortIDs after import.
 
-13. **Export includes completed records by default.** Unlike `wr list` which excludes completed records, `wr export` includes them. This is intentional — export is for data migration/backup, where you want all records.
+13. **Both list and export default to active-only.** `wr list` and `wr export` both exclude completed/cancelled records by default. Use `--status all` on either command to include all records, or `--status completed` for completed only.
 
 14. **Export Markdown without date filter defaults to today.** If you don't specify `--date`, `--from`, or `--to`, Markdown export uses today's date. JSON export without date filters returns all records.
 
 15. **Import file accepts two JSON shapes.** The file can be a bare JSON array `[{...}]` or an object with a `records` key `{"records":[{...}]}`. Both produce the same result.
-sult.
+
+16. **Content-based lookup for update/complete/cancel.** When you don't know the `short_id`, use `--title` and `--date` flags instead of a positional argument. Both are required for lookup. Example: `wr complete --title "Standup" --date 2026-05-03`. If multiple records match, you'll get a `multiple_matches` error — use `wr list` to find the specific `short_id`.
+
+17. **Use idempotency keys for retry-safe adds.** Pass `--idempotency-key <unique-key>` on `wr add` to deduplicate. If the same key is used again, the existing record is returned without creating a duplicate. Ideal for cron jobs, retry loops, or any workflow where the same add might execute twice.
+
+18. **`ensure-running` is preferred over `start` for agent workflows.** Unlike `wr agent daemon start` (which errors if already running) or `start --detach`, `ensure-running` is idempotent. It returns success whether the daemon was just started or already running, with a `source` field ("started" or "already_running") to disambiguate.

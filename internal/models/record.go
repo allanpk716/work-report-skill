@@ -68,9 +68,10 @@ type CommonFields struct {
 	Priority      string     `json:"priority,omitempty"`      // normal, high, medium, 低, 高
 	Status        string     `json:"status,omitempty"`
 	Tags          []string   `json:"tags,omitempty"`
-	SavedAt       string     `json:"saved_at"`          // ISO-8601 timestamp
+	SavedAt       string     `json:"saved_at"`                // ISO-8601 timestamp
 	UpdatedAt     string     `json:"updated_at,omitempty"`
 	ShortID       string     `json:"short_id,omitempty"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
 }
 
 // MeetingRecord maps to the meeting JSON format stored in

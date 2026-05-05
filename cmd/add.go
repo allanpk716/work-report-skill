@@ -22,6 +22,7 @@ var (
 	addPriority      string
 	addRemindBefore  string
 	addRecurring     string
+	addIdempotencyKey string
 )
 
 var addCmd = &cobra.Command{
@@ -62,6 +63,9 @@ var addCmd = &cobra.Command{
 		}
 		if addRecurring != "" {
 			payload["recurring"] = addRecurring
+		}
+		if addIdempotencyKey != "" {
+			payload["idempotency_key"] = addIdempotencyKey
 		}
 		return client.CallDaemonPost(os.Stdout, "/api/add", payload)
 	},
@@ -109,6 +113,7 @@ func init() {
 	addCmd.Flags().StringVar(&addPriority, "priority", "", "Priority (normal, high, medium)")
 	addCmd.Flags().StringVar(&addRemindBefore, "remind-before", "", "Remind before (e.g. 15m, 30m)")
 	addCmd.Flags().StringVar(&addRecurring, "recurring", "", "Recurring pattern (e.g. daily, weekly)")
+	addCmd.Flags().StringVar(&addIdempotencyKey, "idempotency-key", "", "Idempotency key: retry with same key returns existing record")
 
 	rootCmd.AddCommand(addCmd)
 }

@@ -146,6 +146,10 @@ func registerCommandMeta() {
 			Description:  "Show daemon status",
 			IsIdempotent: true,
 		},
+		"agent daemon ensure-running": {
+			Description:  "Ensure the daemon is running (start if needed) and return status",
+			IsIdempotent: true,
+		},
 	}
 
 	for cmdPath, m := range meta {

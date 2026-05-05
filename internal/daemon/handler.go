@@ -77,10 +77,26 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// Config completeness
 	configInfo := s.buildConfigDiagnostics()
 
+	// Date/time fields using configured timezone
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+	now := time.Now().In(loc)
+
+	dateTimeInfo := map[string]interface{}{
+		"current_date":     now.Format("2006-01-02"),
+		"current_time":     now.Format("15:04:05"),
+		"current_datetime": now.Format(time.RFC3339),
+		"timezone":         loc.String(),
+		"weekday":          now.Weekday().String(),
+	}
+
 	// Scheduler info
 	response := map[string]interface{}{
-		"daemon": daemonInfo,
-		"config": configInfo,
+		"daemon":    daemonInfo,
+		"config":    configInfo,
+		"datetime":  dateTimeInfo,
 	}
 
 	if s.scheduler != nil {
@@ -88,6 +104,28 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		response["scheduler"] = map[string]interface{}{
 			"running":       true,
 			"entries_count": len(state.Entries),
+		}
+	}
+
+	// Record counts — omit section on storage failure rather than failing the entire request
+	if s.storage != nil {
+		activeReminders, _ := s.storage.ListRecords(storage.ListOptions{RecordType: models.TypeReminder, Status: models.StatusActive})
+		activeTasks, _ := s.storage.ListRecords(storage.ListOptions{RecordType: models.TypeTask, Status: models.StatusActive})
+		activeMeetings, _ := s.storage.ListRecords(storage.ListOptions{RecordType: models.TypeMeeting, Status: models.StatusActive})
+		// Note: logs have no active/completed status, but we count them as active by default
+		activeLogs, _ := s.storage.ListRecords(storage.ListOptions{RecordType: models.TypeLog})
+
+		rCount := len(activeReminders)
+		tCount := len(activeTasks)
+		mCount := len(activeMeetings)
+		lCount := len(activeLogs)
+
+		response["records"] = map[string]interface{}{
+			"active_reminders": rCount,
+			"active_tasks":     tCount,
+			"active_meetings":  mCount,
+			"active_logs":      lCount,
+			"total_active":     rCount + tCount + mCount + lCount,
 		}
 	}
 
@@ -158,6 +196,7 @@ type addRequest struct {
 	Recurring     string   `json:"recurring,omitempty"`
 	Text          string   `json:"text,omitempty"`
 	Image         string   `json:"image,omitempty"`
+	IdempotencyKey string  `json:"idempotency_key,omitempty"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +326,20 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Date == "" {
 		daemonWriter(w).ErrorWithCode("invalid_body", "missing required field: date")
 		return
+	}
+
+	// Idempotency check: if key provided, look up existing record
+	if req.IdempotencyKey != "" {
+		existing, _, err := s.storage.GetByIdempotencyKey(req.IdempotencyKey)
+		if err != nil {
+			log.Printf("[daemon] add: idempotency lookup error (degrading to normal add): key=%s err=%v", req.IdempotencyKey, err)
+		}
+		if existing != nil {
+			cf := models.GetCommonFields(existing)
+			log.Printf("[daemon] add: short_id=%s source=idempotent_hit key=%s", cf.ShortID, req.IdempotencyKey)
+			daemonWriter(w).Success(existing)
+			return
+		}
 	}
 
 	// Build the typed record
@@ -442,17 +495,18 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 // buildRecord creates the correct typed record struct from an addRequest.
 func buildRecord(req addRequest) interface{} {
 	cf := models.CommonFields{
-		Type:          models.RecordType(req.Type),
-		Title:         req.Title,
-		Date:          req.Date,
-		Time:          req.Time,
-		Description:   req.Description,
-		Tags:          req.Tags,
-		Location:      req.Location,
-		RelatedPerson: req.RelatedPerson,
-		Priority:      req.Priority,
-		RemindBefore:  req.RemindBefore,
-		Status:        models.StatusActive,
+		Type:           models.RecordType(req.Type),
+		Title:          req.Title,
+		Date:           req.Date,
+		Time:           req.Time,
+		Description:    req.Description,
+		Tags:           req.Tags,
+		Location:       req.Location,
+		RelatedPerson:  req.RelatedPerson,
+		Priority:       req.Priority,
+		RemindBefore:   req.RemindBefore,
+		Status:         models.StatusActive,
+		IdempotencyKey: req.IdempotencyKey,
 	}
 
 	switch models.RecordType(req.Type) {
@@ -529,9 +583,8 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/complete/")
-	if id == "" {
-		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id")
+	id, ok := s.resolveRecordID(w, r, "/api/complete/")
+	if !ok {
 		return
 	}
 
@@ -572,9 +625,8 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/update/")
-	if id == "" {
-		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id")
+	id, ok := s.resolveRecordID(w, r, "/api/update/")
+	if !ok {
 		return
 	}
 
@@ -631,6 +683,54 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	daemonWriter(w).Success(updated)
 }
 
+// resolveRecordID resolves the record short_id from either a path parameter or
+// query-parameter-based lookup. If the path contains a non-empty ID after the
+// prefix (e.g. /api/update/abc123), it is returned directly. Otherwise, it
+// reads "title" and "date" from query params and calls FindByContent.
+//
+// Returns the resolved short_id, or an empty string with an error written to w
+// on failure (multiple_matches, record_not_found, or missing params).
+func (s *Server) resolveRecordID(w http.ResponseWriter, r *http.Request, pathPrefix string) (string, bool) {
+	id := strings.TrimPrefix(r.URL.Path, pathPrefix)
+	if id != "" {
+		return id, true
+	}
+
+	// Path ID missing — try query-param lookup
+	title := r.URL.Query().Get("title")
+	date := r.URL.Query().Get("date")
+
+	if title == "" || date == "" {
+		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id or lookup params (title + date required)")
+		return "", false
+	}
+
+	matches, err := s.storage.FindByContent(title, date)
+	if err != nil {
+		if errors.Is(err, storage.ErrRecordNotFound) {
+			daemonWriter(w).ErrorWithCode("record_not_found", fmt.Sprintf("no active record found with title=%q date=%q", title, date))
+			return "", false
+		}
+		log.Printf("[daemon] lookup error: title=%q date=%q err=%v", title, date, err)
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("lookup failed: %v", err))
+		return "", false
+	}
+
+	if len(matches) > 1 {
+		ids := make([]string, len(matches))
+		for i, m := range matches {
+			ids[i] = m.ShortID
+		}
+		log.Printf("[daemon] lookup: multiple_matches title=%q date=%q count=%d ids=%v", title, date, len(matches), ids)
+		daemonWriter(w).ErrorWithCode("multiple_matches", fmt.Sprintf("found %d records matching title=%q date=%q: %s", len(matches), title, date, strings.Join(ids, ", ")))
+		return "", false
+	}
+
+	resolved := matches[0].ShortID
+	log.Printf("[daemon] lookup: source=lookup title=%q date=%q resolved=%s", title, date, resolved)
+	return resolved, true
+}
+
 // fieldKeys returns the keys of a map for logging.
 func fieldKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
@@ -645,9 +745,8 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/cancel/")
-	if id == "" {
-		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id")
+	id, ok := s.resolveRecordID(w, r, "/api/cancel/")
+	if !ok {
 		return
 	}
 
@@ -712,7 +811,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		DateTo:           to,
 		Status:           status,
 		Query:            q,
-		IncludeCompleted: true, // export should include completed records
+		IncludeCompleted: false, // default to active-only for consistency with list
 	}
 
 	if format == "json" {

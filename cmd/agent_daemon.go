@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -50,6 +53,7 @@ func registerAgentDaemonCommands() {
 	daemonGroupCmd.AddCommand(newDaemonStartCmd())
 	daemonGroupCmd.AddCommand(newDaemonStopCmd())
 	daemonGroupCmd.AddCommand(newDaemonStatusCmd())
+	daemonGroupCmd.AddCommand(newDaemonEnsureRunningCmd())
 
 	agentCmd.AddCommand(daemonGroupCmd)
 }
@@ -343,5 +347,148 @@ func newDaemonStatusCmd() *cobra.Command {
 			return writeExitErrorWithCode(agentsdk.ExitNetworkError, "daemon_not_running",
 				fmt.Sprintf("daemon is not running: %v. Run 'wr agent daemon start' to start the daemon.", err))
 		},
+	}
+}
+
+// newDaemonEnsureRunningCmd creates the "agent daemon ensure-running" command.
+// Unlike "start --detach" (which errors when already running), this is idempotent:
+// it returns success whether the daemon was already running or just started.
+// The response includes a "source" field ("already_running" or "started") so the
+// agent knows what happened.
+func newDaemonEnsureRunningCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ensure-running",
+		Short: "Ensure the daemon is running (start if needed) and return status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runEnsureRunning()
+		},
+	}
+}
+
+// runEnsureRunning implements the ensure-running logic:
+// 1. Check if daemon is already running (state file + port check).
+// 2. If running: call /api/status, wrap with source=already_running, return success.
+// 3. If not running: clean stale state, start daemon detached, wait for ready,
+//    call /api/status, wrap with source=started, return success.
+// 4. On start timeout: return daemon_start_timeout error.
+func runEnsureRunning() error {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config error: %v", err))
+	}
+	port := cfg.Daemon.Port
+
+	dir, err := daemon.DefaultStateDir()
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot determine state dir: %v", err))
+	}
+
+	// Check if daemon is already running.
+	existingState, stateErr := daemon.ReadState(dir)
+	if stateErr == nil && daemon.IsPortInUse(existingState.Port) {
+		// Daemon is running — proxy to /api/status.
+		return proxyStatusWithSource("already_running", existingState)
+	}
+
+	// Not running — clean up stale state and start.
+	if stateErr == nil {
+		_ = daemon.RemoveState(dir)
+	}
+
+	// Spawn child process with --internal-daemonize.
+	child := exec.Command(os.Args[0], "agent", "daemon", "start", "--internal-daemonize")
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot open devnull: %v", err))
+	}
+	defer devNull.Close()
+	child.Stdout = devNull
+	child.Stderr = devNull
+
+	if err := child.Start(); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("failed to spawn daemon: %v", err))
+	}
+
+	// Poll until port is bound or timeout.
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(10 * time.Second)
+
+	for {
+		select {
+		case <-ticker.C:
+			if daemon.IsPortInUse(port) {
+				state, readErr := daemon.ReadState(dir)
+				if readErr != nil {
+					// Port bound but state file not yet written; retry next tick.
+					continue
+				}
+				return proxyStatusWithSource("started", state)
+			}
+		case <-timeout:
+			_ = child.Process.Kill()
+			return writeExitErrorWithCode(agentsdk.ExitFatalError, "daemon_start_timeout",
+				fmt.Sprintf("daemon failed to start within 10 seconds on port %d", port))
+		}
+	}
+}
+
+// proxyStatusWithSource calls the daemon's /api/status endpoint and wraps the
+// response with a "source" field indicating whether the daemon was already
+// running or just started. Output goes through app.JSONL() for consistent capture.
+func proxyStatusWithSource(source string, state daemon.DaemonState) error {
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/status", state.Port)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return writeExitErrorWithCode(agentsdk.ExitNetworkError, "daemon_not_running",
+			fmt.Sprintf("daemon status check failed: %v", err))
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("failed to read daemon response: %v", err))
+	}
+
+	// Parse the JSONL envelope from the daemon.
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, "malformed daemon response")
+	}
+
+	// If the daemon returned an error, forward it.
+	if record["type"] == "error" {
+		errorCode, _ := record["error_code"].(string)
+		msg, _ := record["message"].(string)
+		return writeExitErrorWithCode(errorToExitCodeLocal(errorCode), errorCode, msg)
+	}
+
+	// Extract data from daemon response and inject source/pid/port.
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		data = make(map[string]interface{})
+	}
+	data["source"] = source
+	data["pid"] = state.PID
+	data["port"] = state.Port
+
+	return app.JSONL().Success(data)
+}
+
+// errorToExitCodeLocal maps daemon error_code strings to OS exit codes.
+// Duplicated from client package to avoid circular import.
+func errorToExitCodeLocal(code string) int {
+	switch code {
+	case "invalid_type", "invalid_body", "invalid_field", "method_not_allowed", "import_record":
+		return agentsdk.ExitInvalidParams
+	case "daemon_not_running", "llm_error", "llm_not_configured":
+		return agentsdk.ExitNetworkError
+	case "lock_conflict":
+		return agentsdk.ExitLockConflict
+	case "FATAL_CRASH":
+		return agentsdk.ExitFatalError
+	default:
+		return agentsdk.ExitFatalError
 	}
 }
