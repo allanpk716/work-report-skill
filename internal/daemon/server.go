@@ -10,8 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
+
 	"wr/internal/config"
-	"wr/internal/jsonl"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
 )
@@ -125,8 +126,9 @@ func (s *Server) panicRecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				env := jsonl.ErrorEnvelope("FATAL_CRASH", fmt.Sprintf("panic: %v", err))
-				writeEnvelope(w, env)
+				w.Header().Set("Content-Type", "application/jsonl")
+				w.WriteHeader(http.StatusOK)
+				agentsdk.NewWriter(w, "wr").ErrorWithCode("FATAL_CRASH", fmt.Sprintf("panic: %v", err))
 			}
 		}()
 		next.ServeHTTP(w, r)

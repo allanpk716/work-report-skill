@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"wr/internal/config"
-	"wr/internal/jsonl"
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 	"wr/internal/llm"
 	"wr/internal/pushover"
 	"wr/internal/scheduler"
@@ -630,18 +630,18 @@ func TestEndToEndAddListCompleteCancel(t *testing.T) {
 // jsonl.Envelope, validates the envelope structure via ValidateEnvelope, and
 // returns both. Every daemon test that checks JSONL output routes through this
 // helper via assertJSONLStatus / assertJSONLCode.
-func parseAndValidateEnvelope(t *testing.T, body []byte) (map[string]interface{}, jsonl.Envelope) {
+func parseAndValidateEnvelope(t *testing.T, body []byte) (map[string]interface{}, agentsdk.Envelope) {
 	t.Helper()
 	trimmed := bytes.TrimSpace(body)
 	var record map[string]interface{}
 	if err := json.Unmarshal(trimmed, &record); err != nil {
 		t.Fatalf("invalid JSONL: %s\nerr: %v", body, err)
 	}
-	var env jsonl.Envelope
+	var env agentsdk.Envelope
 	if err := json.Unmarshal(trimmed, &env); err != nil {
 		t.Fatalf("invalid JSONL envelope struct: %s\nerr: %v", body, err)
 	}
-	if err := jsonl.ValidateEnvelope(env); err != nil {
+	if err := agentsdk.ValidateEnvelope(env); err != nil {
 		t.Errorf("envelope validation failed: %v; body=%s", err, body)
 	}
 	return record, env

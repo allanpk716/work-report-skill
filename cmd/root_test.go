@@ -9,13 +9,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 )
 
 // TestPanicRecovery verifies that a panic inside a command handler is caught
 // by Execute()'s recover() and emitted as a FATAL_CRASH JSONL error envelope.
 func TestPanicRecovery(t *testing.T) {
+	if app == nil { InitApp() }
 	// Save and restore original state
 	origRootCmd := rootCmd
 	defer func() { rootCmd = origRootCmd }()
@@ -39,16 +39,16 @@ func TestPanicRecovery(t *testing.T) {
 
 	// Capture JSONL output
 	var buf strings.Builder
-	origWriter := jsonl.DefaultWriter
-	jsonl.DefaultWriter = jsonl.NewWriter(&buf)
-	defer func() { jsonl.DefaultWriter = origWriter }()
+	origWriter := app.JSONL()
+	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
+	defer func() { app.SetWriter(origWriter) }()
 
 	// Execute and capture exit code
 	code := Execute()
 
 	// Verify exit code is 1 (ExitFatalError)
-	if code != exitcode.ExitFatalError {
-		t.Errorf("expected exit code %d (ExitFatalError), got %d", exitcode.ExitFatalError, code)
+	if code != agentsdk.ExitFatalError {
+		t.Errorf("expected exit code %d (ExitFatalError), got %d", agentsdk.ExitFatalError, code)
 	}
 
 	// Verify JSONL output contains FATAL_CRASH error envelope
@@ -74,11 +74,11 @@ func TestPanicRecovery(t *testing.T) {
 	}
 
 	// Validate full envelope structure
-	var envelope jsonl.Envelope
+	var envelope agentsdk.Envelope
 	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
 		t.Fatalf("cannot unmarshal into Envelope struct: %v", err)
 	}
-	if err := jsonl.ValidateEnvelope(envelope); err != nil {
+	if err := agentsdk.ValidateEnvelope(envelope); err != nil {
 		t.Errorf("FATAL_CRASH envelope validation failed: %v", err)
 	}
 }
@@ -86,6 +86,7 @@ func TestPanicRecovery(t *testing.T) {
 // TestPanicRecoveryNilPanic verifies that a panic(nil) is also caught and
 // reported as FATAL_CRASH.
 func TestPanicRecoveryNilPanic(t *testing.T) {
+	if app == nil { InitApp() }
 	origRootCmd := rootCmd
 	defer func() { rootCmd = origRootCmd }()
 
@@ -105,14 +106,14 @@ func TestPanicRecoveryNilPanic(t *testing.T) {
 	rootCmd.SetArgs([]string{"panic-nil"})
 
 	var buf strings.Builder
-	origWriter := jsonl.DefaultWriter
-	jsonl.DefaultWriter = jsonl.NewWriter(&buf)
-	defer func() { jsonl.DefaultWriter = origWriter }()
+	origWriter := app.JSONL()
+	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
+	defer func() { app.SetWriter(origWriter) }()
 
 	code := Execute()
 
-	if code != exitcode.ExitFatalError {
-		t.Errorf("expected exit code %d, got %d", exitcode.ExitFatalError, code)
+	if code != agentsdk.ExitFatalError {
+		t.Errorf("expected exit code %d, got %d", agentsdk.ExitFatalError, code)
 	}
 
 	var env map[string]interface{}
@@ -125,11 +126,11 @@ func TestPanicRecoveryNilPanic(t *testing.T) {
 	}
 
 	// Validate full envelope structure for nil panic
-	var envelope jsonl.Envelope
+	var envelope agentsdk.Envelope
 	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
 		t.Fatalf("cannot unmarshal into Envelope struct: %v", err)
 	}
-	if err := jsonl.ValidateEnvelope(envelope); err != nil {
+	if err := agentsdk.ValidateEnvelope(envelope); err != nil {
 		t.Errorf("nil-panic FATAL_CRASH envelope validation failed: %v", err)
 	}
 }
@@ -137,6 +138,7 @@ func TestPanicRecoveryNilPanic(t *testing.T) {
 // TestStderrZero verifies that normal CLI command execution produces no output
 // on stderr — all output should be JSONL on stdout only.
 func TestStderrZero(t *testing.T) {
+	if app == nil { InitApp() }
 	tmpHome, cleanup := setupTempHome(t)
 	defer cleanup()
 
@@ -156,9 +158,9 @@ func TestStderrZero(t *testing.T) {
 
 	// Capture JSONL output (executeCmd does this but also captures stdout)
 	var buf strings.Builder
-	origWriter := jsonl.DefaultWriter
-	jsonl.DefaultWriter = jsonl.NewWriter(&buf)
-	defer func() { jsonl.DefaultWriter = origWriter }()
+	origWriter := app.JSONL()
+	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
+	defer func() { app.SetWriter(origWriter) }()
 
 	execErr := rootCmd.Execute()
 
@@ -180,11 +182,11 @@ func TestStderrZero(t *testing.T) {
 	// Validate the JSONL envelope structure
 	output := strings.TrimSpace(buf.String())
 	if output != "" {
-		var envelope jsonl.Envelope
+		var envelope agentsdk.Envelope
 		if err := json.Unmarshal([]byte(output), &envelope); err != nil {
 			t.Fatalf("cannot unmarshal JSONL output into Envelope: %v", err)
 		}
-		if err := jsonl.ValidateEnvelope(envelope); err != nil {
+		if err := agentsdk.ValidateEnvelope(envelope); err != nil {
 			t.Errorf("normal output envelope validation failed: %v", err)
 		}
 	}
@@ -194,7 +196,7 @@ func TestStderrZero(t *testing.T) {
 // list result envelope, suitable for TestStderrZero.
 func fakeDaemonListHandler() func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		env := jsonl.SuccessEnvelope(map[string]interface{}{"records": []interface{}{}})
+		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{"records": []interface{}{}})
 		b, _ := json.Marshal(env)
 		w.Header().Set("Content-Type", "application/jsonl")
 		w.Write(append(b, '\n'))

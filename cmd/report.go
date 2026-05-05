@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
+
 	"wr/internal/client"
-	"wr/internal/exitcode"
 
 	"github.com/spf13/cobra"
 )
@@ -74,7 +75,7 @@ var reportRangeCmd = &cobra.Command{
 	Short: "Generate report for a date range",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if reportRangeFrom == "" || reportRangeTo == "" {
-			return writeExitError(exitcode.ExitInvalidParams, "both --from and --to are required")
+			return writeExitError(agentsdk.ExitInvalidParams, "both --from and --to are required")
 		}
 		path := fmt.Sprintf("/api/report/range?from=%s&to=%s", reportRangeFrom, reportRangeTo)
 		return client.CallDaemonGet(os.Stdout, path)
@@ -97,7 +98,7 @@ var reportPushRangeCmd = &cobra.Command{
 	Short: "Push a date range report via Pushover",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if reportPushRangeFrom == "" || reportPushRangeTo == "" {
-			return writeExitError(exitcode.ExitInvalidParams, "both --from and --to are required")
+			return writeExitError(agentsdk.ExitInvalidParams, "both --from and --to are required")
 		}
 		path := fmt.Sprintf("/api/report/push/range?from=%s&to=%s", reportPushRangeFrom, reportPushRangeTo)
 		return client.CallDaemonPost(os.Stdout, path, nil)

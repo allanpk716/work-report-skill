@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
+
 	"wr/internal/config"
 	"wr/internal/daemon"
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
 	"wr/internal/storage"
 )
 
@@ -23,10 +23,14 @@ import (
 // extracted from the returned error via errors.As.
 // It captures JSONL output from both jsonl.DefaultWriter and os.Stdout.
 func executeCmd(args ...string) (int, []byte) {
+	// Ensure app is initialized (tests run without main.go calling InitApp)
+	if app == nil {
+		InitApp()
+	}
 	var buf strings.Builder
-	orig := jsonl.DefaultWriter
-	jsonl.DefaultWriter = jsonl.NewWriter(&buf)
-	defer func() { jsonl.DefaultWriter = orig }()
+	origWriter := app.JSONL()
+	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
+	defer func() { app.SetWriter(origWriter) }()
 
 	// Also capture os.Stdout since client.CallDaemon writes responses there
 	r, w, _ := os.Pipe()
@@ -47,14 +51,14 @@ func executeCmd(args ...string) (int, []byte) {
 	allOutput := append([]byte(buf.String()), stdoutData...)
 
 	if err == nil {
-		return exitcode.ExitSuccess, allOutput
+		return agentsdk.ExitSuccess, allOutput
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if errors.As(err, &exitErr) {
 		return exitErr.Code, allOutput
 	}
-	return exitcode.ExitFatalError, allOutput
+	return agentsdk.ExitFatalError, allOutput
 }
 
 // parseJSONLMaps parses JSONL output into a slice of maps.
@@ -74,18 +78,18 @@ func parseJSONLMaps(data []byte) []map[string]interface{} {
 }
 
 // validateAllEnvelopes iterates over JSONL output, unmarshals each line into
-// jsonl.Envelope, and validates the envelope structure.
+// agentsdk.Envelope, and validates the envelope structure.
 func validateAllEnvelopes(t *testing.T, data []byte) {
 	t.Helper()
 	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
 		if line == "" {
 			continue
 		}
-		var env jsonl.Envelope
+		var env agentsdk.Envelope
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			continue // skip non-JSON lines (shouldn't happen in normal output)
 		}
-		if err := jsonl.ValidateEnvelope(env); err != nil {
+		if err := agentsdk.ValidateEnvelope(env); err != nil {
 			t.Errorf("envelope validation failed: %v; line=%s", err, line)
 		}
 	}
@@ -147,7 +151,7 @@ func TestSuccessExit0(t *testing.T) {
 	defer cleanup()
 
 	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := jsonl.SuccessEnvelope(map[string]interface{}{"message": "ok"})
+		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{"message": "ok"})
 		b, _ := json.Marshal(env)
 		w.Header().Set("Content-Type", "application/jsonl")
 		fmt.Fprintf(w, "%s\n", b)
@@ -155,7 +159,7 @@ func TestSuccessExit0(t *testing.T) {
 	defer srv.Close()
 
 	code, out := executeCmd("list")
-	if code != exitcode.ExitSuccess {
+	if code != agentsdk.ExitSuccess {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
 	validateAllEnvelopes(t, out)
@@ -168,7 +172,7 @@ func TestInvalidParamsExit2(t *testing.T) {
 	defer cleanup()
 
 	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := jsonl.ErrorEnvelope("invalid_type", "missing required field: type")
+		env := agentsdk.NewErrorEnvelope("wr", "invalid_type", "missing required field: type")
 		b, _ := json.Marshal(env)
 		w.Header().Set("Content-Type", "application/jsonl")
 		fmt.Fprintf(w, "%s\n", b)
@@ -176,7 +180,7 @@ func TestInvalidParamsExit2(t *testing.T) {
 	defer srv.Close()
 
 	code, out := executeCmd("add", "--type", "task", "--title", "test", "--date", "2024-01-01")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -196,9 +200,9 @@ func TestInvalidParamsExit2(t *testing.T) {
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Daemon Unreachable (exit 3) ---
+// --- Test Daemon Unreachable (exit 4) ---
 
-func TestDaemonUnreachableExit3(t *testing.T) {
+func TestDaemonUnreachableExit4(t *testing.T) {
 	tmpHome, cleanup := setupTempHome(t)
 	defer cleanup()
 
@@ -213,8 +217,8 @@ func TestDaemonUnreachableExit3(t *testing.T) {
 	cfg.Save(cfgPath)
 
 	code, out := executeCmd("list")
-	if code != exitcode.ExitDaemonUnreachable {
-		t.Errorf("expected exit code 3, got %d", code)
+	if code != agentsdk.ExitNetworkError {
+		t.Errorf("expected exit code %d (ExitNetworkError), got %d", agentsdk.ExitNetworkError, code)
 	}
 	lines := parseJSONLMaps(out)
 	if len(lines) == 0 {
@@ -233,7 +237,7 @@ func TestLLMErrorExit4(t *testing.T) {
 	defer cleanup()
 
 	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := jsonl.ErrorEnvelope("llm_error", "LLM classification failed: timeout")
+		env := agentsdk.NewErrorEnvelope("wr", "llm_error", "LLM classification failed: timeout")
 		b, _ := json.Marshal(env)
 		w.Header().Set("Content-Type", "application/jsonl")
 		fmt.Fprintf(w, "%s\n", b)
@@ -241,7 +245,7 @@ func TestLLMErrorExit4(t *testing.T) {
 	defer srv.Close()
 
 	code, out := executeCmd("add", "--type", "task", "--title", "test", "--date", "2024-01-01")
-	if code != exitcode.ExitNetworkError {
+	if code != agentsdk.ExitNetworkError {
 		t.Errorf("expected exit code 4, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -268,7 +272,7 @@ func TestFatalErrorExit1(t *testing.T) {
 	defer cleanup()
 
 	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := jsonl.ErrorEnvelope("storage_error", "failed to read records")
+		env := agentsdk.NewErrorEnvelope("wr", "storage_error", "failed to read records")
 		b, _ := json.Marshal(env)
 		w.Header().Set("Content-Type", "application/jsonl")
 		fmt.Fprintf(w, "%s\n", b)
@@ -276,7 +280,7 @@ func TestFatalErrorExit1(t *testing.T) {
 	defer srv.Close()
 
 	code, out := executeCmd("list")
-	if code != exitcode.ExitFatalError {
+	if code != agentsdk.ExitFatalError {
 		t.Errorf("expected exit code 1, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -303,7 +307,7 @@ func TestLockConflictExit5(t *testing.T) {
 	defer cleanup()
 
 	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := jsonl.ErrorEnvelope("lock_conflict", "concurrent modification conflict")
+		env := agentsdk.NewErrorEnvelope("wr", "lock_conflict", "concurrent modification conflict")
 		b, _ := json.Marshal(env)
 		w.Header().Set("Content-Type", "application/jsonl")
 		fmt.Fprintf(w, "%s\n", b)
@@ -311,7 +315,7 @@ func TestLockConflictExit5(t *testing.T) {
 	defer srv.Close()
 
 	code, out := executeCmd("add", "--type", "task", "--title", "test", "--date", "2024-01-01")
-	if code != exitcode.ExitLockConflict {
+	if code != agentsdk.ExitLockConflict {
 		t.Errorf("expected exit code 5, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -339,7 +343,7 @@ func TestConfigValidationExit2(t *testing.T) {
 
 	// Invalid port should trigger validation error → exit 2
 	code, out := executeCmd("config", "init", "--daemon-port", "99999")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for invalid port, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -356,7 +360,7 @@ func TestConfigValidationExit2(t *testing.T) {
 
 func TestReportRangeMissingFlagsExit2(t *testing.T) {
 	code, out := executeCmd("report", "range")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for missing range flags, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -373,7 +377,7 @@ func TestReportRangeMissingFlagsExit2(t *testing.T) {
 
 func TestUpdateNoFieldsExit2(t *testing.T) {
 	code, out := executeCmd("update", "test-id")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for no fields, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -397,7 +401,7 @@ func TestConfigSetUnknownPathExit2(t *testing.T) {
 
 	// Set unknown path → exit 2
 	code, out := executeCmd("config", "set", "nonexistent.path", "value")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for unknown config path, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -410,16 +414,16 @@ func TestConfigSetUnknownPathExit2(t *testing.T) {
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Daemon Not Running No State File (exit 3) ---
+// --- Test Daemon Not Running No State File (exit 4) ---
 
-func TestDaemonNotRunningNoStateExit3(t *testing.T) {
+func TestDaemonNotRunningNoStateExit4(t *testing.T) {
 	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
 	// No state file at all — daemon not running
 	code, out := executeCmd("list")
-	if code != exitcode.ExitDaemonUnreachable {
-		t.Errorf("expected exit code 3, got %d", code)
+	if code != agentsdk.ExitNetworkError {
+		t.Errorf("expected exit code %d (ExitNetworkError), got %d", agentsdk.ExitNetworkError, code)
 	}
 	validateAllEnvelopes(t, out)
 }
@@ -459,14 +463,14 @@ func TestExitCodeWithDaemonRouter(t *testing.T) {
 
 	// Test: list with real daemon (empty) → should succeed (exit 0)
 	code, out := executeCmd("list")
-	if code != exitcode.ExitSuccess {
+	if code != agentsdk.ExitSuccess {
 		t.Errorf("expected exit code 0 for list, got %d", code)
 	}
 	validateAllEnvelopes(t, out)
 
 	// Test: add with invalid type → should be exit 2
 	code, out = executeCmd("add", "--type", "invalid", "--title", "test", "--date", "2024-01-01")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for invalid type, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -491,7 +495,7 @@ func TestExportWithoutFormatExit2(t *testing.T) {
 
 	resetExportFlags()
 	code, out := executeCmd("export")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for export without --format, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -510,7 +514,7 @@ func TestExportInvalidFormatCSVExit2(t *testing.T) {
 
 	resetExportFlags()
 	code, out := executeCmd("export", "--format", "csv")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for export --format csv, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -534,7 +538,7 @@ func TestImportWithoutFileFlag(t *testing.T) {
 
 	importFilePath = "" // ensure clean state
 	code, out := executeCmd("import")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for import without --file, got %d", code)
 	}
 	lines := parseJSONLMaps(out)
@@ -556,7 +560,7 @@ func TestImportNonexistentFile(t *testing.T) {
 
 	importFilePath = "" // ensure clean state
 	code, out := executeCmd("import", "--file", "/nonexistent/path/to/records.json")
-	if code != exitcode.ExitInvalidParams {
+	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for nonexistent file, got %d", code)
 	}
 	lines := parseJSONLMaps(out)

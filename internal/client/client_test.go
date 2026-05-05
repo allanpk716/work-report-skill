@@ -13,9 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 	"wr/internal/daemon"
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
 	"wr/internal/storage"
 )
 
@@ -108,13 +107,13 @@ func TestDaemonNotRunningError(t *testing.T) {
 		t.Fatal("expected error when daemon not running")
 	}
 
-	// Verify it's an ExitError with code 3 (daemon unreachable)
-	var exitErr *exitcode.ExitError
+	// Verify it's an ExitError with code 4 (daemon unreachable → network error)
+	var exitErr *agentsdk.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitDaemonUnreachable {
-		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, exitcode.ExitDaemonUnreachable)
+	if exitErr.Code != agentsdk.ExitNetworkError {
+		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, agentsdk.ExitNetworkError)
 	}
 
 	var record map[string]interface{}
@@ -145,12 +144,12 @@ func TestDaemonUnreachableError(t *testing.T) {
 		t.Fatal("expected error when daemon unreachable")
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitDaemonUnreachable {
-		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, exitcode.ExitDaemonUnreachable)
+	if exitErr.Code != agentsdk.ExitNetworkError {
+		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, agentsdk.ExitNetworkError)
 	}
 
 	var record map[string]interface{}
@@ -180,12 +179,12 @@ func TestDaemonCorruptStateNotRunning(t *testing.T) {
 		t.Fatal("expected error with corrupt state")
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitDaemonUnreachable {
-		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, exitcode.ExitDaemonUnreachable)
+	if exitErr.Code != agentsdk.ExitNetworkError {
+		t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, agentsdk.ExitNetworkError)
 	}
 
 	var record map[string]interface{}
@@ -208,7 +207,7 @@ func TestDaemonErrorResponse_InvalidType(t *testing.T) {
 	// Mock daemon that returns an error envelope with error_code=invalid_type
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		env := jsonl.ErrorEnvelope("invalid_type", "invalid type")
+		env := agentsdk.NewErrorEnvelope("wr", "invalid_type", "invalid type")
 		b, _ := json.Marshal(env)
 		w.Write(b)
 	}))
@@ -225,12 +224,12 @@ func TestDaemonErrorResponse_InvalidType(t *testing.T) {
 		t.Fatal("expected error for daemon error response")
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitInvalidParams {
-		t.Errorf("ExitError.Code = %d, want %d (ExitInvalidParams)", exitErr.Code, exitcode.ExitInvalidParams)
+	if exitErr.Code != agentsdk.ExitInvalidParams {
+		t.Errorf("ExitError.Code = %d, want %d (ExitInvalidParams)", exitErr.Code, agentsdk.ExitInvalidParams)
 	}
 	validateJSONLOutput(t, buf)
 }
@@ -238,7 +237,7 @@ func TestDaemonErrorResponse_InvalidType(t *testing.T) {
 func TestDaemonErrorResponse_LLMError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		env := jsonl.ErrorEnvelope("llm_error", "LLM classification failed")
+		env := agentsdk.NewErrorEnvelope("wr", "llm_error", "LLM classification failed")
 		b, _ := json.Marshal(env)
 		w.Write(b)
 	}))
@@ -254,12 +253,12 @@ func TestDaemonErrorResponse_LLMError(t *testing.T) {
 		t.Fatal("expected error for daemon error response")
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitNetworkError {
-		t.Errorf("ExitError.Code = %d, want %d (ExitNetworkError)", exitErr.Code, exitcode.ExitNetworkError)
+	if exitErr.Code != agentsdk.ExitNetworkError {
+		t.Errorf("ExitError.Code = %d, want %d (ExitNetworkError)", exitErr.Code, agentsdk.ExitNetworkError)
 	}
 	validateJSONLOutput(t, buf)
 }
@@ -267,7 +266,7 @@ func TestDaemonErrorResponse_LLMError(t *testing.T) {
 func TestDaemonSuccessResponse_NoError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		env := jsonl.SuccessEnvelope(map[string]interface{}{"status": "ok"})
+		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{"status": "ok"})
 		b, _ := json.Marshal(env)
 		w.Write(b)
 	}))
@@ -341,8 +340,8 @@ func callDaemonWithDir(w io.Writer, dir, method, path string, body io.Reader) er
 	if record["type"] == "error" {
 		errorCode, _ := record["error_code"].(string)
 		msg, _ := record["message"].(string)
-		return &exitcode.ExitError{
-			Code: exitcode.FromErrorCode(errorCode),
+		return &agentsdk.ExitError{
+			Code: errorToExitCode(errorCode),
 			Err:  errors.New(msg),
 		}
 	}
@@ -370,11 +369,11 @@ func validateJSONLOutput(t *testing.T, buf bytes.Buffer) {
 		if line == "" {
 			continue
 		}
-		var env jsonl.Envelope
+		var env agentsdk.Envelope
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			t.Fatalf("invalid JSONL line: %s\nerr: %v", line, err)
 		}
-		if err := jsonl.ValidateEnvelope(env); err != nil {
+		if err := agentsdk.ValidateEnvelope(env); err != nil {
 			t.Errorf("envelope validation failed: %v; line=%s", err, line)
 		}
 	}

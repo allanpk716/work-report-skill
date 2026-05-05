@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
+
 	"wr/internal/config"
-	"wr/internal/jsonl"
+	
 	"wr/internal/llm"
 	"wr/internal/models"
 	"wr/internal/pushover"
@@ -22,43 +24,36 @@ import (
 
 const Version = "0.1.0"
 
-// writeEnvelope writes a JSONL envelope as the HTTP response.
-func writeEnvelope(w http.ResponseWriter, env jsonl.Envelope) {
-	b, err := json.Marshal(env)
-	if err != nil {
-		fallback := `{"version":"1.0","tool":"wr","type":"error","error_code":"marshal_error","message":"marshal error"}`
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "%s\n", fallback)
-		return
-	}
+// daemonWriter creates an SDK Writer that writes JSONL envelopes to the HTTP response.
+// Content-Type and HTTP 200 are set before any body write, matching the prior writeEnvelope contract.
+func daemonWriter(w http.ResponseWriter) *agentsdk.Writer {
 	w.Header().Set("Content-Type", "application/jsonl")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "%s\n", b)
+	return agentsdk.NewWriter(w, "wr")
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+	daemonWriter(w).Success(map[string]interface{}{
 		"version": Version,
-	}))
+	})
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"message": "daemon shutting down"}))
+	daemonWriter(w).Success(map[string]interface{}{"message": "daemon shutting down"})
 	go s.shutdown()
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -96,7 +91,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(response))
+	daemonWriter(w).Success(response)
 }
 
 // buildConfigDiagnostics returns a map describing config completeness with secrets redacted.
@@ -167,13 +162,13 @@ type addRequest struct {
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
 	var req addRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "invalid request body"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "invalid request body")
 		return
 	}
 
@@ -187,10 +182,10 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 
 		// cancel_or_update is informational — don't create a record
 		if result.Type == "cancel_or_update" {
-			writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+			daemonWriter(w).Success(map[string]interface{}{
 				"action":        "cancel_or_update",
 				"classification": result,
-			}))
+			})
 			return
 		}
 
@@ -235,10 +230,10 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 
 		// cancel_or_update is informational — don't create a record
 		if result.Type == "cancel_or_update" {
-			writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+			daemonWriter(w).Success(map[string]interface{}{
 				"action":         "cancel_or_update",
 				"classification": result,
-			}))
+			})
 			return
 		}
 
@@ -278,19 +273,19 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required fields
 	if req.Type == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_type", "missing required field: type"))
+		daemonWriter(w).ErrorWithCode("invalid_type", "missing required field: type")
 		return
 	}
 	if !models.IsValidType(req.Type) {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, or log)", req.Type)))
+		daemonWriter(w).ErrorWithCode("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, or log)", req.Type))
 		return
 	}
 	if req.Title == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required field: title"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "missing required field: title")
 		return
 	}
 	if req.Date == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required field: date"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "missing required field: date")
 		return
 	}
 
@@ -301,7 +296,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	result, err := s.storage.AddRecord(rec)
 	if err != nil {
 		log.Printf("[daemon] add error: %v", err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to add record: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to add record: %v", err))
 		return
 	}
 
@@ -319,7 +314,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(result))
+	daemonWriter(w).Success(result)
 }
 
 // classifyText performs LLM classification on the given text.
@@ -327,7 +322,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.ClassifyResult, error) {
 	cfg := s.config
 	if cfg == nil || cfg.LLM.Text.APIKey == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("llm_not_configured", "LLM text classification is not configured (missing api_key in llm.text)"))
+		daemonWriter(w).ErrorWithCode("llm_not_configured", "LLM text classification is not configured (missing api_key in llm.text)")
 		return nil, fmt.Errorf("llm not configured")
 	}
 
@@ -339,7 +334,7 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 	if err != nil {
 		log.Printf("[daemon] classify error: api_base=%s model=%s error=%v",
 			cfg.LLM.Text.APIBase, cfg.LLM.Text.Model, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("llm_error", fmt.Sprintf("LLM classification failed: %v", err)))
+		daemonWriter(w).ErrorWithCode("llm_error", fmt.Sprintf("LLM classification failed: %v", err))
 		return nil, err
 	}
 
@@ -352,7 +347,7 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textContext string) (*llm.ClassifyResult, error) {
 	cfg := s.config
 	if cfg == nil || cfg.LLM.Vision.APIKey == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("llm_not_configured", "LLM vision classification is not configured (missing api_key in llm.vision)"))
+		daemonWriter(w).ErrorWithCode("llm_not_configured", "LLM vision classification is not configured (missing api_key in llm.vision)")
 		return nil, fmt.Errorf("llm vision not configured")
 	}
 
@@ -364,7 +359,7 @@ func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textCont
 	if err != nil {
 		log.Printf("[daemon] classify_image error: api_base=%s model=%s error=%v image=%s",
 			cfg.LLM.Vision.APIBase, cfg.LLM.Vision.Model, err, imagePath)
-		writeEnvelope(w, jsonl.ErrorEnvelope("llm_error", fmt.Sprintf("LLM vision classification failed: %v", err)))
+		daemonWriter(w).ErrorWithCode("llm_error", fmt.Sprintf("LLM vision classification failed: %v", err))
 		return nil, err
 	}
 
@@ -384,37 +379,37 @@ type importRequest struct {
 // the request is rejected with an error identifying the offending index.
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
 	var req importRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "invalid request body"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "invalid request body")
 		return
 	}
 
 	if len(req.Records) == 0 {
-		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"imported": 0}))
+		daemonWriter(w).Success(map[string]interface{}{"imported": 0})
 		return
 	}
 
 	// Phase 1: Validate ALL records before persisting any.
 	for i, rec := range req.Records {
 		if rec.Type == "" {
-			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: type", i)))
+			daemonWriter(w).ErrorWithCode("import_record", fmt.Sprintf("record at index %d: missing required field: type", i))
 			return
 		}
 		if !models.IsValidType(rec.Type) {
-			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: invalid type: %q (must be meeting, task, reminder, or log)", i, rec.Type)))
+			daemonWriter(w).ErrorWithCode("import_record", fmt.Sprintf("record at index %d: invalid type: %q (must be meeting, task, reminder, or log)", i, rec.Type))
 			return
 		}
 		if rec.Title == "" {
-			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: title", i)))
+			daemonWriter(w).ErrorWithCode("import_record", fmt.Sprintf("record at index %d: missing required field: title", i))
 			return
 		}
 		if rec.Date == "" {
-			writeEnvelope(w, jsonl.ErrorEnvelope("import_record", fmt.Sprintf("record at index %d: missing required field: date", i)))
+			daemonWriter(w).ErrorWithCode("import_record", fmt.Sprintf("record at index %d: missing required field: date", i))
 			return
 		}
 	}
@@ -426,7 +421,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		result, err := s.storage.AddRecord(built)
 		if err != nil {
 			log.Printf("[daemon] import: storage error at record index %d: %v", imported, err)
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to add record at index %d: %v", imported, err)))
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to add record at index %d: %v", imported, err))
 			return
 		}
 
@@ -441,7 +436,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[daemon] import: imported=%d requested=%d", imported, len(req.Records))
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{"imported": imported}))
+	daemonWriter(w).Success(map[string]interface{}{"imported": imported})
 }
 
 // buildRecord creates the correct typed record struct from an addRequest.
@@ -480,7 +475,7 @@ func buildRecord(req addRequest) interface{} {
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -505,7 +500,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	records, err := s.storage.ListRecords(opts)
 	if err != nil {
 		log.Printf("[daemon] list error: %v", err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to list records: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to list records: %v", err))
 		return
 	}
 
@@ -522,30 +517,30 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+	daemonWriter(w).Success(map[string]interface{}{
 		"action":  "list",
 		"count":   len(entries),
 		"entries": entries,
-	}))
+	})
 }
 
 func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/complete/")
 	if id == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("record_not_found", "missing entry id"))
+		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id")
 		return
 	}
 
 	if err := s.storage.CompleteRecord(id); err != nil {
 		log.Printf("[daemon] complete error: id=%s err=%v", id, err)
 		if strings.Contains(err.Error(), "not found") {
-			writeEnvelope(w, jsonl.ErrorEnvelope("record_not_found", err.Error()))
+			daemonWriter(w).ErrorWithCode("record_not_found", err.Error())
 		} else {
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", err.Error()))
+			daemonWriter(w).ErrorWithCode("storage_error", err.Error())
 		}
 		return
 	}
@@ -561,31 +556,31 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	rec, _, err := s.storage.GetByID(id)
 	if err != nil {
 		// Record was completed but we can't read it back — still return success
-		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+		daemonWriter(w).Success(map[string]interface{}{
 			"action": "complete",
 			"id":     id,
-		}))
+		})
 		return
 	}
 
 	log.Printf("[daemon] complete: short_id=%s", id)
-	writeEnvelope(w, jsonl.SuccessEnvelope(rec))
+	daemonWriter(w).Success(rec)
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/update/")
 	if id == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("record_not_found", "missing entry id"))
+		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id")
 		return
 	}
 
 	var fields map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "invalid request body"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "invalid request body")
 		return
 	}
 
@@ -594,17 +589,17 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[daemon] update error: id=%s err=%v", id, err)
 		switch {
 		case errors.Is(err, storage.ErrRecordNotFound):
-			writeEnvelope(w, jsonl.ErrorEnvelope("record_not_found", err.Error()))
+			daemonWriter(w).ErrorWithCode("record_not_found", err.Error())
 		case errors.Is(err, storage.ErrRecordCompleted):
-			writeEnvelope(w, jsonl.ErrorEnvelope("already_completed", err.Error()))
+			daemonWriter(w).ErrorWithCode("already_completed", err.Error())
 		case errors.Is(err, storage.ErrRecordCancelled):
-			writeEnvelope(w, jsonl.ErrorEnvelope("already_cancelled", err.Error()))
+			daemonWriter(w).ErrorWithCode("already_cancelled", err.Error())
 		case errors.Is(err, storage.ErrEmptyUpdate):
-			writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", err.Error()))
+			daemonWriter(w).ErrorWithCode("invalid_body", err.Error())
 		case errors.Is(err, storage.ErrFieldNotAllowed):
-			writeEnvelope(w, jsonl.ErrorEnvelope("invalid_field", err.Error()))
+			daemonWriter(w).ErrorWithCode("invalid_field", err.Error())
 		default:
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", err.Error()))
+			daemonWriter(w).ErrorWithCode("storage_error", err.Error())
 		}
 		return
 	}
@@ -633,7 +628,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	cf := models.GetCommonFields(updated)
 	log.Printf("[daemon] update: short_id=%s type=%s fields=%v", cf.ShortID, cf.Type, fieldKeys(fields))
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(updated))
+	daemonWriter(w).Success(updated)
 }
 
 // fieldKeys returns the keys of a map for logging.
@@ -647,21 +642,21 @@ func fieldKeys(m map[string]interface{}) []string {
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/cancel/")
 	if id == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("record_not_found", "missing entry id"))
+		daemonWriter(w).ErrorWithCode("record_not_found", "missing entry id")
 		return
 	}
 
 	if err := s.storage.CancelRecord(id); err != nil {
 		log.Printf("[daemon] cancel error: id=%s err=%v", id, err)
 		if strings.Contains(err.Error(), "not found") {
-			writeEnvelope(w, jsonl.ErrorEnvelope("record_not_found", err.Error()))
+			daemonWriter(w).ErrorWithCode("record_not_found", err.Error())
 		} else {
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", err.Error()))
+			daemonWriter(w).ErrorWithCode("storage_error", err.Error())
 		}
 		return
 	}
@@ -676,31 +671,31 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	// Read back the cancelled record for response
 	rec, _, err := s.storage.GetByID(id)
 	if err != nil {
-		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+		daemonWriter(w).Success(map[string]interface{}{
 			"action": "cancel",
 			"id":     id,
-		}))
+		})
 		return
 	}
 
 	log.Printf("[daemon] cancel: short_id=%s", id)
-	writeEnvelope(w, jsonl.SuccessEnvelope(rec))
+	daemonWriter(w).Success(rec)
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
 	query := r.URL.Query()
 	format := query.Get("format")
 	if format == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required query param: format"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "missing required query param: format")
 		return
 	}
 	if format != "json" && format != "markdown" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_params", fmt.Sprintf("invalid format: %q (must be json or markdown)", format)))
+		daemonWriter(w).ErrorWithCode("invalid_params", fmt.Sprintf("invalid format: %q (must be json or markdown)", format))
 		return
 	}
 
@@ -724,15 +719,15 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		records, err := s.storage.ListFullRecords(opts)
 		if err != nil {
 			log.Printf("[daemon] export json error: %v", err)
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to list records: %v", err)))
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to list records: %v", err))
 			return
 		}
 		log.Printf("[daemon] export: format=json count=%d", len(records))
-		writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+		daemonWriter(w).Success(map[string]interface{}{
 			"format":  "json",
 			"count":   len(records),
 			"records": records,
-		}))
+		})
 		return
 	}
 
@@ -750,7 +745,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		rpt, err := report.Generate(s.storage, date, log.Default())
 		if err != nil {
 			log.Printf("[daemon] export markdown error: date=%s err=%v", date, err)
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 			return
 		}
 		markdown = rpt.Markdown
@@ -760,7 +755,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		rpt, err := report.GenerateRange(s.storage, opts.DateFrom, opts.DateTo, loc, log.Default())
 		if err != nil {
 			log.Printf("[daemon] export markdown error: from=%s to=%s err=%v", opts.DateFrom, opts.DateTo, err)
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate range report: %v", err)))
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
 			return
 		}
 		markdown = rpt.Markdown
@@ -771,7 +766,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		rpt, err := report.Generate(s.storage, today, log.Default())
 		if err != nil {
 			log.Printf("[daemon] export markdown error: date=%s err=%v", today, err)
-			writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 			return
 		}
 		markdown = rpt.Markdown
@@ -779,16 +774,16 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[daemon] export: format=markdown count=%d", count)
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+	daemonWriter(w).Success(map[string]interface{}{
 		"format":  "markdown",
 		"count":   count,
 		"content": markdown,
-	}))
+	})
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -805,7 +800,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.Generate(s.storage, date, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report error: date=%s err=%v", date, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 		return
 	}
 
@@ -813,12 +808,12 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		date, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(rpt))
+	daemonWriter(w).Success(rpt)
 }
 
 func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -830,7 +825,7 @@ func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_today error: err=%v", err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate today report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate today report: %v", err))
 		return
 	}
 
@@ -838,12 +833,12 @@ func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 		rpt.Date, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(rpt))
+	daemonWriter(w).Success(rpt)
 }
 
 func (s *Server) handleReportPushToday(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -855,7 +850,7 @@ func (s *Server) handleReportPushToday(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_push_today error: err=%v", err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 		return
 	}
 
@@ -864,20 +859,20 @@ func (s *Server) handleReportPushToday(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReportPushDate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
 	date := strings.TrimPrefix(r.URL.Path, "/api/report/push/date/")
 	if date == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing date in path"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "missing date in path")
 		return
 	}
 
 	rpt, err := report.Generate(s.storage, date, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_push_date error: date=%s err=%v", date, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 		return
 	}
 
@@ -886,7 +881,7 @@ func (s *Server) handleReportPushDate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -894,7 +889,7 @@ func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
 	from := query.Get("from")
 	to := query.Get("to")
 	if from == "" || to == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required query params: from and to"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "missing required query params: from and to")
 		return
 	}
 
@@ -906,7 +901,7 @@ func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_range error: from=%s to=%s err=%v", from, to, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate range report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
 		return
 	}
 
@@ -914,12 +909,12 @@ func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
 		from, to, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(rpt))
+	daemonWriter(w).Success(rpt)
 }
 
 func (s *Server) handleReportWeek(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -931,7 +926,7 @@ func (s *Server) handleReportWeek(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_week error: err=%v", err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate week report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate week report: %v", err))
 		return
 	}
 
@@ -939,12 +934,12 @@ func (s *Server) handleReportWeek(w http.ResponseWriter, r *http.Request) {
 		rpt.DateFrom, rpt.DateTo, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(rpt))
+	daemonWriter(w).Success(rpt)
 }
 
 func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -952,7 +947,7 @@ func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
 	from := query.Get("from")
 	to := query.Get("to")
 	if from == "" || to == "" {
-		writeEnvelope(w, jsonl.ErrorEnvelope("invalid_body", "missing required query params: from and to"))
+		daemonWriter(w).ErrorWithCode("invalid_body", "missing required query params: from and to")
 		return
 	}
 
@@ -964,7 +959,7 @@ func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_push_range error: from=%s to=%s err=%v", from, to, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate range report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
 		return
 	}
 
@@ -973,7 +968,7 @@ func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeEnvelope(w, jsonl.ErrorEnvelope("method_not_allowed", "method not allowed"))
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -985,7 +980,7 @@ func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
 	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
 	if err != nil {
 		log.Printf("[daemon] report_push_week error: err=%v", err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("storage_error", fmt.Sprintf("failed to generate week report: %v", err)))
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate week report: %v", err))
 		return
 	}
 
@@ -997,7 +992,7 @@ func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeReport) {
 	if s.config == nil || s.config.Pushover.APIToken == "" || s.config.Pushover.UserKey == "" {
 		log.Printf("[daemon] report_push_range: pushover_not_configured from=%s to=%s", rpt.DateFrom, rpt.DateTo)
-		writeEnvelope(w, jsonl.ErrorEnvelope("pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)"))
+		daemonWriter(w).ErrorWithCode("pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)")
 		return
 	}
 
@@ -1009,7 +1004,7 @@ func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeRep
 	title := fmt.Sprintf("工作报告 %s ~ %s", rpt.DateFrom, rpt.DateTo)
 	if err := pushover.Send(context.Background(), cfg, rpt.Markdown, title, 0); err != nil {
 		log.Printf("[daemon] report_push_range: send failed from=%s to=%s err=%v", rpt.DateFrom, rpt.DateTo, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("push_error", fmt.Sprintf("Pushover send failed: %v", err)))
+		daemonWriter(w).ErrorWithCode("push_error", fmt.Sprintf("Pushover send failed: %v", err))
 		return
 	}
 
@@ -1017,14 +1012,14 @@ func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeRep
 		rpt.DateFrom, rpt.DateTo, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+	daemonWriter(w).Success(map[string]interface{}{
 		"date_from": rpt.DateFrom,
 		"date_to":   rpt.DateTo,
 		"days":      rpt.DaysCount,
 		"total":     rpt.Summary.Total,
 		"pushed":    true,
 		"summary":   rpt.Summary,
-	}))
+	})
 }
 
 // sendReportPush generates a Pushover notification from the daily report.
@@ -1033,7 +1028,7 @@ func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) 
 	// Check Pushover configuration
 	if s.config == nil || s.config.Pushover.APIToken == "" || s.config.Pushover.UserKey == "" {
 		log.Printf("[daemon] report_push: pushover_not_configured date=%s", rpt.Date)
-		writeEnvelope(w, jsonl.ErrorEnvelope("pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)"))
+		daemonWriter(w).ErrorWithCode("pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)")
 		return
 	}
 
@@ -1045,7 +1040,7 @@ func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) 
 	title := fmt.Sprintf("工作日报 %s", rpt.Date)
 	if err := pushover.Send(context.Background(), cfg, rpt.Markdown, title, 0); err != nil {
 		log.Printf("[daemon] report_push: send failed date=%s err=%v", rpt.Date, err)
-		writeEnvelope(w, jsonl.ErrorEnvelope("push_error", fmt.Sprintf("Pushover send failed: %v", err)))
+		daemonWriter(w).ErrorWithCode("push_error", fmt.Sprintf("Pushover send failed: %v", err))
 		return
 	}
 
@@ -1053,10 +1048,10 @@ func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) 
 		rpt.Date, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
-	writeEnvelope(w, jsonl.SuccessEnvelope(map[string]interface{}{
+	daemonWriter(w).Success(map[string]interface{}{
 		"date":    rpt.Date,
 		"total":   rpt.Summary.Total,
 		"pushed":  true,
 		"summary": rpt.Summary,
-	}))
+	})
 }

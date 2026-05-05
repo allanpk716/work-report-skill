@@ -11,8 +11,7 @@ import (
 	"testing"
 
 	"wr/internal/daemon"
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 )
 
 func TestExportRequiresFormat(t *testing.T) {
@@ -25,12 +24,12 @@ func TestExportRequiresFormat(t *testing.T) {
 		t.Fatal("expected error when --format is missing")
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if !asExitError(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitInvalidParams {
-		t.Errorf("expected exit code %d, got %d", exitcode.ExitInvalidParams, exitErr.Code)
+	if exitErr.Code != agentsdk.ExitInvalidParams {
+		t.Errorf("expected exit code %d, got %d", agentsdk.ExitInvalidParams, exitErr.Code)
 	}
 	_ = stdout
 }
@@ -47,12 +46,12 @@ func TestExportInvalidFormat(t *testing.T) {
 		t.Fatal("expected error for invalid format")
 	}
 
-	var exitErr *exitcode.ExitError
+	var exitErr *agentsdk.ExitError
 	if !asExitError(err, &exitErr) {
 		t.Fatalf("expected ExitError, got %T: %v", err, err)
 	}
-	if exitErr.Code != exitcode.ExitInvalidParams {
-		t.Errorf("expected exit code %d, got %d", exitcode.ExitInvalidParams, exitErr.Code)
+	if exitErr.Code != agentsdk.ExitInvalidParams {
+		t.Errorf("expected exit code %d, got %d", agentsdk.ExitInvalidParams, exitErr.Code)
 	}
 }
 
@@ -163,11 +162,11 @@ func resetExportFlags() {
 	exportFile = ""
 }
 
-func asExitError(err error, target **exitcode.ExitError) bool {
+func asExitError(err error, target **agentsdk.ExitError) bool {
 	if target == nil {
 		return false
 	}
-	if ee, ok := err.(*exitcode.ExitError); ok {
+	if ee, ok := err.(*agentsdk.ExitError); ok {
 		*target = ee
 		return true
 	}
@@ -187,4 +186,4 @@ func parsePort(url string) int {
 
 // suppress unused import warnings
 var _ = json.Marshal
-var _ = jsonl.ErrorEnvelope
+var _ = agentsdk.NewErrorEnvelope

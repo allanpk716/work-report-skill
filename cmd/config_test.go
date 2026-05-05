@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 	"github.com/spf13/pflag"
 
 	"wr/internal/config"
-	"wr/internal/jsonl"
 )
 
 // parseJSONL parses JSONL output into a slice of maps.
@@ -38,11 +38,11 @@ func assertValidJSONLEnvelope(t *testing.T, data []byte) {
 		if line == "" {
 			continue
 		}
-		var env jsonl.Envelope
+		var env agentsdk.Envelope
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			t.Fatalf("invalid JSONL line: %s\nerr: %v", line, err)
 		}
-		if err := jsonl.ValidateEnvelope(env); err != nil {
+		if err := agentsdk.ValidateEnvelope(env); err != nil {
 			t.Errorf("envelope validation failed: %v; line=%s", err, line)
 		}
 	}
@@ -89,10 +89,14 @@ func resetConfigFlags() {
 }
 
 func withJSONLCapture(f func()) []byte {
+	// Ensure app is initialized (tests run without main.go calling InitApp)
+	if app == nil {
+		InitApp()
+	}
 	var buf bytes.Buffer
-	orig := jsonl.DefaultWriter
-	jsonl.DefaultWriter = jsonl.NewWriter(&buf)
-	defer func() { jsonl.DefaultWriter = orig }()
+	origWriter := app.JSONL()
+	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
+	defer func() { app.SetWriter(origWriter) }()
 	resetConfigFlags()
 	f()
 	return buf.Bytes()

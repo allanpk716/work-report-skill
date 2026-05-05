@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"wr/internal/client"
-	"wr/internal/exitcode"
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 
 	"github.com/spf13/cobra"
 )
@@ -27,10 +27,10 @@ var exportCmd = &cobra.Command{
 	Short: "Export work report entries in JSON or Markdown format",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if exportFormat == "" {
-			return writeExitError(exitcode.ExitInvalidParams, "--format is required (json or markdown)")
+			return writeExitError(agentsdk.ExitInvalidParams, "--format is required (json or markdown)")
 		}
 		if exportFormat != "json" && exportFormat != "markdown" {
-			return writeExitError(exitcode.ExitInvalidParams, "--format must be \"json\" or \"markdown\"")
+			return writeExitError(agentsdk.ExitInvalidParams, "--format must be \"json\" or \"markdown\"")
 		}
 
 		path := "/api/export"
@@ -73,7 +73,7 @@ var exportCmd = &cobra.Command{
 			return err
 		}
 		if err := os.WriteFile(exportFile, buf.Bytes(), 0644); err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("cannot write to %q: %v", exportFile, err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot write to %q: %v", exportFile, err))
 		}
 		return nil
 	},

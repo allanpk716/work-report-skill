@@ -3,11 +3,10 @@ package cmd
 import (
 	"fmt"
 
-	"wr/internal/config"
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
-
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 	"github.com/spf13/cobra"
+
+	"wr/internal/config"
 )
 
 var (
@@ -38,13 +37,13 @@ var configInitCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := config.DefaultConfigPath()
 		if err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: cannot determine config path: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: cannot determine config path: %v", err))
 		}
 
 		// Load existing or start with defaults
 		cfg, err := config.Load(path)
 		if err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: load: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: load: %v", err))
 		}
 
 		// Override with any flags that were explicitly set
@@ -87,14 +86,14 @@ var configInitCmd = &cobra.Command{
 
 		// Validate before saving
 		if err := cfg.Validate(); err != nil {
-			return writeExitError(exitcode.ExitInvalidParams, fmt.Sprintf("config: validation failed: %v", err))
+			return writeExitError(agentsdk.ExitInvalidParams, fmt.Sprintf("config: validation failed: %v", err))
 		}
 
 		if err := cfg.Save(path); err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: save failed: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: save failed: %v", err))
 		}
 
-		return jsonl.Success(map[string]interface{}{
+		return app.JSONL().Success(map[string]interface{}{
 			"path": path,
 		})
 	},
@@ -111,28 +110,28 @@ var configSetCmd = &cobra.Command{
 
 		path, err := config.DefaultConfigPath()
 		if err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: cannot determine config path: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: cannot determine config path: %v", err))
 		}
 
 		cfg, err := config.Load(path)
 		if err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: load: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: load: %v", err))
 		}
 
 		if err := cfg.SetByPath(key, value); err != nil {
-			return writeExitError(exitcode.ExitInvalidParams, fmt.Sprintf("config: set: %v", err))
+			return writeExitError(agentsdk.ExitInvalidParams, fmt.Sprintf("config: set: %v", err))
 		}
 
 		// Validate before saving
 		if err := cfg.Validate(); err != nil {
-			return writeExitError(exitcode.ExitInvalidParams, fmt.Sprintf("config: validation failed: %v", err))
+			return writeExitError(agentsdk.ExitInvalidParams, fmt.Sprintf("config: validation failed: %v", err))
 		}
 
 		if err := cfg.Save(path); err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: save failed: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: save failed: %v", err))
 		}
 
-		return jsonl.Success(map[string]interface{}{
+		return app.JSONL().Success(map[string]interface{}{
 			"key":   key,
 			"value": value,
 		})
@@ -146,15 +145,15 @@ var configShowCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := config.DefaultConfigPath()
 		if err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: cannot determine config path: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: cannot determine config path: %v", err))
 		}
 
 		cfg, err := config.Load(path)
 		if err != nil {
-			return writeExitError(exitcode.ExitFatalError, fmt.Sprintf("config: load: %v", err))
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("config: load: %v", err))
 		}
 
-		return jsonl.Success(cfg.Redacted())
+		return app.JSONL().Success(cfg.Redacted())
 	},
 }
 

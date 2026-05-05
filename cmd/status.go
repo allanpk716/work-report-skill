@@ -5,7 +5,6 @@ import (
 
 	"wr/internal/client"
 	"wr/internal/config"
-	"wr/internal/jsonl"
 
 	"github.com/spf13/cobra"
 )
@@ -72,7 +71,7 @@ func localStatus() {
 		}
 	}
 
-	jsonl.Success(map[string]interface{}{
+	app.JSONL().Success(map[string]interface{}{
 		"daemon": map[string]interface{}{
 			"status":     "not_running",
 			"suggestion": "Run 'wr daemon start' to start the daemon.",

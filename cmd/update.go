@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
+
 	"wr/internal/client"
-	"wr/internal/exitcode"
 
 	"github.com/spf13/cobra"
 )
@@ -82,7 +83,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		if len(fields) == 0 {
-			return writeExitError(exitcode.ExitInvalidParams, "no fields specified for update")
+			return writeExitError(agentsdk.ExitInvalidParams, "no fields specified for update")
 		}
 
 		path := fmt.Sprintf("/api/update/%s", args[0])

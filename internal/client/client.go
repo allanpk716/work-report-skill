@@ -10,9 +10,8 @@ import (
 	"net/http"
 	"time"
 
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
 	"wr/internal/daemon"
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
 )
 
 const clientTimeout = 5 * time.Second
@@ -71,8 +70,8 @@ func CallDaemon(w io.Writer, method, path string, body io.Reader) error {
 	if record["type"] == "error" {
 		errorCode, _ := record["error_code"].(string)
 		msg, _ := record["message"].(string)
-		return &exitcode.ExitError{
-			Code: exitcode.FromErrorCode(errorCode),
+		return &agentsdk.ExitError{
+			Code: errorToExitCode(errorCode),
 			Err:  errors.New(msg),
 		}
 	}
@@ -101,11 +100,29 @@ func CallDaemonPost(w io.Writer, path string, payload interface{}) error {
 func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
 	msg += " Run 'wr daemon start' to start the daemon, then retry your command."
-	env := jsonl.ErrorEnvelope("daemon_not_running", msg)
+	env := agentsdk.NewErrorEnvelope("wr", "daemon_not_running", msg)
 	b, _ := json.Marshal(env)
 	fmt.Fprintf(w, "%s\n", b)
-	return &exitcode.ExitError{
-		Code: exitcode.ExitDaemonUnreachable,
+	return &agentsdk.ExitError{
+		Code: agentsdk.ExitNetworkError,
 		Err:  errors.New(msg),
+	}
+}
+
+// errorToExitCode maps a daemon error_code string to an OS exit code.
+// This mirrors the mapping registered in cmd/errors.go via the SDK ErrorCodeRegistry,
+// but is duplicated here because the client package cannot import cmd (circular dependency).
+func errorToExitCode(code string) int {
+	switch code {
+	case "invalid_type", "invalid_body", "invalid_field", "method_not_allowed", "import_record":
+		return agentsdk.ExitInvalidParams
+	case "daemon_not_running", "llm_error", "llm_not_configured":
+		return agentsdk.ExitNetworkError
+	case "lock_conflict":
+		return agentsdk.ExitLockConflict
+	case "FATAL_CRASH":
+		return agentsdk.ExitFatalError
+	default:
+		return agentsdk.ExitFatalError
 	}
 }

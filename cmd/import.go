@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"wr/internal/daemon"
-	"wr/internal/exitcode"
-	"wr/internal/jsonl"
+	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	
 
 	"github.com/spf13/cobra"
 )
@@ -27,18 +27,18 @@ var importCmd = &cobra.Command{
 	Short: "Bulk import work report entries from a JSON file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if importFilePath == "" {
-			return writeExitErrorWithCode(exitcode.ExitInvalidParams, "invalid_params", "--file is required")
+			return writeExitErrorWithCode(agentsdk.ExitInvalidParams, "invalid_params", "--file is required")
 		}
 
 		data, err := os.ReadFile(importFilePath)
 		if err != nil {
-			return writeExitErrorWithCode(exitcode.ExitInvalidParams, "invalid_body",
+			return writeExitErrorWithCode(agentsdk.ExitInvalidParams, "invalid_body",
 				fmt.Sprintf("cannot read file %q: %v", importFilePath, err))
 		}
 
 		payload, err := normalizeImportPayload(data)
 		if err != nil {
-			return writeExitErrorWithCode(exitcode.ExitInvalidParams, "invalid_body",
+			return writeExitErrorWithCode(agentsdk.ExitInvalidParams, "invalid_body",
 				fmt.Sprintf("invalid JSON in %q: %v", importFilePath, err))
 		}
 
@@ -117,8 +117,8 @@ func callDaemonPostWithTimeout(w io.Writer, path string, payload interface{}, ti
 	if record["type"] == "error" {
 		errorCode, _ := record["error_code"].(string)
 		msg, _ := record["message"].(string)
-		return &exitcode.ExitError{
-			Code: exitcode.FromErrorCode(errorCode),
+		return &agentsdk.ExitError{
+			Code: app.ErrorCodeToExitCode(errorCode),
 			Err:  fmt.Errorf("%s", msg),
 		}
 	}
@@ -130,8 +130,8 @@ func callDaemonPostWithTimeout(w io.Writer, path string, payload interface{}, ti
 // and returns an ExitError. This is used by import for CLI-side validation errors
 // that should carry the same error_code the daemon would use.
 func writeExitErrorWithCode(exitCode int, errorCode string, msg string) error {
-	jsonl.DefaultWriter.ErrorWithCode(errorCode, msg)
-	return &exitcode.ExitError{Code: exitCode, Err: fmt.Errorf("%s", msg)}
+	app.JSONL().ErrorWithCode(errorCode, msg)
+	return &agentsdk.ExitError{Code: exitCode, Err: fmt.Errorf("%s", msg)}
 }
 
 // writeDaemonError reuses the client package error pattern locally for the
@@ -139,11 +139,11 @@ func writeExitErrorWithCode(exitCode int, errorCode string, msg string) error {
 func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
 	msg += " Run 'wr daemon start' to start the daemon, then retry your command."
-	env := jsonl.ErrorEnvelope("daemon_not_running", msg)
+	env := agentsdk.NewErrorEnvelope("wr", "daemon_not_running", msg)
 	b, _ := json.Marshal(env)
 	fmt.Fprintf(w, "%s\n", b)
-	return &exitcode.ExitError{
-		Code: exitcode.ExitDaemonUnreachable,
+	return &agentsdk.ExitError{
+		Code: agentsdk.ExitNetworkError,
 		Err:  fmt.Errorf("%s", msg),
 	}
 }
