@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"wr/internal/config"
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 	"wr/internal/llm"
 	"wr/internal/pushover"
 	"wr/internal/scheduler"

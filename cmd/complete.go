@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"os"
 
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/client"
 

@@ -4,18 +4,29 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/allanpk716/agent-cli-sdk"
+	"github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 	"wr/internal/config"
 )
 
 // wrConfigProvider adapts internal/config to the SDK's ConfigProvider interface.
 // It delegates to config.Load, config.Redacted, config.SetByPath, config.Validate,
-// and config.Save, with error messages aligned so the SDK's pattern-matching on
-// whitelist violations triggers correctly.
+// and config.Save. Error types are aligned with the SDK's errors.As-based
+// classification so agentConfigSetCmd correctly maps to INPUT_INVALID.
 type wrConfigProvider struct{}
 
-// compile-time check
+// unknownFieldErr satisfies agentsdk.UnknownFieldError so the SDK's
+// agentConfigSetCmd classifies unknown-path errors as INPUT_INVALID.
+type unknownFieldErr struct {
+	field string
+}
+
+func (e *unknownFieldErr) Error() string        { return "config: unknown field " + e.field + " (not in whitelist)" }
+func (e *unknownFieldErr) Field() string        { return e.field }
+func (e *unknownFieldErr) IsUnknownFieldError() bool { return true }
+
+// compile-time checks
 var _ agentsdk.ConfigProvider = (*wrConfigProvider)(nil)
+var _ agentsdk.UnknownFieldError = (*unknownFieldErr)(nil)
 
 // ListRedacted loads the current config and returns a redacted copy with
 // sensitive fields (API keys, tokens) masked.
@@ -37,12 +48,11 @@ func (p *wrConfigProvider) Set(jsonPath, value string) error {
 	}
 
 	if err := cfg.SetByPath(jsonPath, value); err != nil {
-		// Align error messages with SDK pattern-matching.
-		// SDK checks for: "not configurable", "not in whitelist", "unknown field".
-		// wr config.SetByPath returns "unknown path" — remap to "unknown field".
+		// Return SDK-compatible UnknownFieldError so agentConfigSetCmd
+		// classifies this as INPUT_INVALID via errors.As.
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "unknown path") {
-			return fmt.Errorf("config: unknown field %q (not in whitelist)", jsonPath)
+		if strings.Contains(errMsg, "unknown path") || strings.Contains(errMsg, "unhandled path") {
+			return &unknownFieldErr{field: jsonPath}
 		}
 		return err
 	}

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"wr/internal/daemon"
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 )
 
 func TestExportRequiresFormat(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"wr/internal/client"
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"github.com/spf13/cobra"
 )

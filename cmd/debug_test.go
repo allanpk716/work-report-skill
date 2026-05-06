@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 )
 
 // resetAppForTest creates a fresh app with WR_HOME pointing to tmpHome,

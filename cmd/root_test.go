@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 )
 
 // TestPanicRecovery verifies that a panic inside a command handler is caught

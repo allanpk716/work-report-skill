@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 )
 
 // registerErrorCodes registers all wr-specific error codes with the SDK ErrorCodeRegistry.

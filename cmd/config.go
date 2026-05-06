@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	agentsdk "github.com/allanpk716/agent-cli-sdk"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 	"github.com/spf13/cobra"
 
 	"wr/internal/config"
