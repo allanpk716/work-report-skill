@@ -461,7 +461,7 @@ func proxyStatusWithSource(source string, state daemon.DaemonState) error {
 	if record["type"] == "error" {
 		errorCode, _ := record["error_code"].(string)
 		msg, _ := record["message"].(string)
-		return writeExitErrorWithCode(errorToExitCodeLocal(errorCode), errorCode, msg)
+		return writeExitErrorWithCode(app.Registry().ToExitCode(errorCode), errorCode, msg)
 	}
 
 	// Extract data from daemon response and inject source/pid/port.
@@ -476,19 +476,4 @@ func proxyStatusWithSource(source string, state daemon.DaemonState) error {
 	return app.JSONL().Success(data)
 }
 
-// errorToExitCodeLocal maps daemon error_code strings to OS exit codes.
-// Duplicated from client package to avoid circular import.
-func errorToExitCodeLocal(code string) int {
-	switch code {
-	case "invalid_type", "invalid_body", "invalid_field", "method_not_allowed", "import_record":
-		return agentsdk.ExitInvalidParams
-	case "daemon_not_running", "llm_error", "llm_not_configured":
-		return agentsdk.ExitNetworkError
-	case "lock_conflict":
-		return agentsdk.ExitLockConflict
-	case "FATAL_CRASH":
-		return agentsdk.ExitFatalError
-	default:
-		return agentsdk.ExitFatalError
-	}
-}
+

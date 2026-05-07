@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
+
+	"wr/internal/client"
 )
 
 // app is the SDK App instance shared by all commands.
@@ -40,6 +42,11 @@ func InitApp() {
 	}
 
 	registerErrorCodes()
+
+	// Inject the populated registry into the client package so CallDaemon
+	// can map daemon error_code strings to exit codes without hand-written mappings.
+	client.SetRegistry(app.Registry())
+
 	registerConfigProvider()
 	registerCommandMeta()
 

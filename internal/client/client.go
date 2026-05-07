@@ -16,6 +16,17 @@ import (
 
 const clientTimeout = 5 * time.Second
 
+// registry holds the injected ErrorCodeRegistry for mapping daemon error_code
+// strings to OS exit codes. Must be set via SetRegistry() before any CallDaemon
+// call that may encounter a daemon error envelope.
+var registry *agentsdk.ErrorCodeRegistry
+
+// SetRegistry injects the ErrorCodeRegistry into the client package.
+// Called from cmd/app.go InitApp() after registerErrorCodes().
+func SetRegistry(r *agentsdk.ErrorCodeRegistry) {
+	registry = r
+}
+
 // CallDaemon reads the daemon state file and sends an HTTP request to the daemon.
 // It returns the response body or writes a JSONL error to the writer and returns an error.
 func CallDaemon(w io.Writer, method, path string, body io.Reader) error {
@@ -70,8 +81,12 @@ func CallDaemon(w io.Writer, method, path string, body io.Reader) error {
 	if record["type"] == "error" {
 		errorCode, _ := record["error_code"].(string)
 		msg, _ := record["message"].(string)
+		exitCode := agentsdk.ExitFatalError
+		if registry != nil {
+			exitCode = registry.ToExitCode(errorCode)
+		}
 		return &agentsdk.ExitError{
-			Code: errorToExitCode(errorCode),
+			Code: exitCode,
 			Err:  errors.New(msg),
 		}
 	}
@@ -109,20 +124,4 @@ func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
 	}
 }
 
-// errorToExitCode maps a daemon error_code string to an OS exit code.
-// This mirrors the mapping registered in cmd/errors.go via the SDK ErrorCodeRegistry,
-// but is duplicated here because the client package cannot import cmd (circular dependency).
-func errorToExitCode(code string) int {
-	switch code {
-	case "invalid_type", "invalid_body", "invalid_field", "method_not_allowed", "import_record":
-		return agentsdk.ExitInvalidParams
-	case "daemon_not_running", "llm_error", "llm_not_configured":
-		return agentsdk.ExitNetworkError
-	case "lock_conflict":
-		return agentsdk.ExitLockConflict
-	case "FATAL_CRASH":
-		return agentsdk.ExitFatalError
-	default:
-		return agentsdk.ExitFatalError
-	}
-}
+

@@ -18,6 +18,35 @@ import (
 	"wr/internal/storage"
 )
 
+// TestMain initializes the client registry with the same error codes as
+// cmd/registerErrorCodes so that the test helper callDaemonWithDir can
+// map daemon error_code strings to exit codes correctly.
+func TestMain(m *testing.M) {
+	r := agentsdk.NewErrorCodeRegistry()
+	// Mirror cmd/errors.go registerErrorCodes()
+	_ = r.Register("invalid_type", agentsdk.ExitInvalidParams, "")
+	_ = r.Register("invalid_body", agentsdk.ExitInvalidParams, "")
+	_ = r.Register("invalid_field", agentsdk.ExitInvalidParams, "")
+	_ = r.Register("invalid_params", agentsdk.ExitInvalidParams, "")
+	_ = r.Register("method_not_allowed", agentsdk.ExitInvalidParams, "")
+	_ = r.Register("import_record", agentsdk.ExitInvalidParams, "")
+	_ = r.Register("daemon_not_running", agentsdk.ExitNetworkError, "")
+	_ = r.Register("llm_error", agentsdk.ExitNetworkError, "")
+	_ = r.Register("llm_not_configured", agentsdk.ExitNetworkError, "")
+	_ = r.Register("lock_conflict", agentsdk.ExitLockConflict, "")
+	_ = r.Register("storage_error", agentsdk.ExitFatalError, "")
+	_ = r.Register("record_not_found", agentsdk.ExitFatalError, "")
+	_ = r.Register("already_completed", agentsdk.ExitFatalError, "")
+	_ = r.Register("already_cancelled", agentsdk.ExitFatalError, "")
+	_ = r.Register("push_error", agentsdk.ExitFatalError, "")
+	_ = r.Register("pushover_not_configured", agentsdk.ExitFatalError, "")
+	_ = r.Register("marshal_error", agentsdk.ExitFatalError, "")
+	_ = r.Register("unknown", agentsdk.ExitFatalError, "")
+	_ = r.Register("daemon_start_timeout", agentsdk.ExitFatalError, "")
+	SetRegistry(r)
+	os.Exit(m.Run())
+}
+
 // ── Client with running test server ──
 
 func newTestDaemonServer(t *testing.T) *daemon.Server {
@@ -340,8 +369,12 @@ func callDaemonWithDir(w io.Writer, dir, method, path string, body io.Reader) er
 	if record["type"] == "error" {
 		errorCode, _ := record["error_code"].(string)
 		msg, _ := record["message"].(string)
+		exitCode := agentsdk.ExitFatalError
+		if registry != nil {
+			exitCode = registry.ToExitCode(errorCode)
+		}
 		return &agentsdk.ExitError{
-			Code: errorToExitCode(errorCode),
+			Code: exitCode,
 			Err:  errors.New(msg),
 		}
 	}
