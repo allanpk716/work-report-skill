@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -42,17 +43,30 @@ func setupAgentTest(t *testing.T) (tmpHome string, cleanup func()) {
 	}
 }
 
-// captureAgentOutput redirects JSONL output to a buffer, runs f, then
-// restores the original writer and returns the captured output.
+// captureAgentOutput redirects JSONL output AND os.Stdout to a buffer, runs f,
+// then restores the original writer and stdout and returns the captured output.
+// This is necessary because client.writeDaemonError writes to os.Stdout directly
+// (not through the SDK writer), so both must be captured for complete output.
 func captureAgentOutput(f func()) string {
 	var buf strings.Builder
 	origWriter := app.JSONL()
 	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
 	defer func() { app.SetWriter(origWriter) }()
 
+	// Also capture os.Stdout since client.CallDaemon writes responses there
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
 	resetConfigFlags()
 	f()
-	return strings.TrimSpace(buf.String())
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	// Read captured stdout and combine with SDK writer output
+	stdoutData, _ := io.ReadAll(r)
+	return strings.TrimSpace(buf.String() + string(stdoutData))
 }
 
 // parseSingleEnvelope parses a single JSONL line into an agentsdk.Envelope
