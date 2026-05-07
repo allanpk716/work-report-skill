@@ -1,5 +1,5 @@
-github.com/allanpk716/ai-agent-cli-rules/sdks/go v0.1.0 h1:G+nh53XjXjzcGDaPLaX66ztqMjeJ93upooGZ/PjSGzo=
-github.com/allanpk716/ai-agent-cli-rules/sdks/go v0.1.0/go.mod h1:N1hpbX7KeqLs1HtDgHLUf9BTNx3bqe2gXc4OhZ/B3jU=
+github.com/allanpk716/ai-agent-cli-rules/sdks/go v0.1.1-0.20260507014339-47d15f206aa0 h1:VxIxlFMpvIb0NXIX0u5D0gfRUgmkI6h0p5q6Oiyh27E=
+github.com/allanpk716/ai-agent-cli-rules/sdks/go v0.1.1-0.20260507014339-47d15f206aa0/go.mod h1:N1hpbX7KeqLs1HtDgHLUf9BTNx3bqe2gXc4OhZ/B3jU=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
