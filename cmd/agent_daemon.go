@@ -137,9 +137,6 @@ func runDaemon(suppressStartupMsg bool) error {
 		Port: port,
 		PID:  os.Getpid(),
 	}
-	if err := daemon.WriteState(dir, state); err != nil {
-		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot write state: %v", err))
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -150,30 +147,35 @@ func runDaemon(suppressStartupMsg bool) error {
 	}
 	defer sched.Stop()
 
-	// Catch up missed reminders after restart
-	catchUpRecords, err := store.ListFullRecords(storage.ListOptions{
-		RecordType: models.TypeReminder,
-	})
-	if err != nil {
-		log.Printf("[daemon] catchup: failed to list reminders: %v", err)
-	} else {
+	// Catch up missed reminders after restart — run in a goroutine so the HTTP
+	// server binds immediately.  Pushover retries with bad credentials can take
+	// 35+ s; without async catchup the daemon would be unreachable during that
+	// window, breaking status checks and UAT tests.
+	go func() {
+		catchUpRecords, err := store.ListFullRecords(storage.ListOptions{
+			RecordType: models.TypeReminder,
+		})
+		if err != nil {
+			log.Printf("[daemon] catchup: failed to list reminders: %v", err)
+			return
+		}
 		// Also include tasks/meetings with remind_before
 		remindable, err := store.ListFullRecords(storage.ListOptions{})
 		if err != nil {
 			log.Printf("[daemon] catchup: failed to list all records: %v", err)
-		} else {
-			// Filter to only those with remind_before or type=reminder
-			var filtered []interface{}
-			for _, rec := range remindable {
-				cf := models.GetCommonFields(rec)
-				if cf != nil && (cf.Type == models.TypeReminder || cf.RemindBefore != "") {
-					if cf.Status != models.StatusCompleted && cf.Status != models.StatusCancelled {
-						filtered = append(filtered, rec)
-					}
+			return
+		}
+		// Filter to only those with remind_before or type=reminder
+		var filtered []interface{}
+		for _, rec := range remindable {
+			cf := models.GetCommonFields(rec)
+			if cf != nil && (cf.Type == models.TypeReminder || cf.RemindBefore != "") {
+				if cf.Status != models.StatusCompleted && cf.Status != models.StatusCancelled {
+					filtered = append(filtered, rec)
 				}
 			}
-			catchUpRecords = filtered
 		}
+		catchUpRecords = filtered
 
 		result, err := sched.CatchUp(catchUpRecords)
 		if err != nil {
@@ -182,7 +184,7 @@ func runDaemon(suppressStartupMsg bool) error {
 			log.Printf("[daemon] catchup: scanned=%d fired=%d errors=%d",
 				result.Scanned, result.Fired, result.Errors)
 		}
-	}
+	}()
 
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)
@@ -202,7 +204,14 @@ func runDaemon(suppressStartupMsg bool) error {
 			"data_dir": dataDir,
 		})
 	}
-	return srv.Start(ctx, nil)
+	return srv.Start(ctx, func() {
+		// Write state file AFTER the HTTP server is listening so that status
+		// polls never see a state file pointing at an unbound port (which
+		// triggers stale-state cleanup and deletes the file).
+		if err := daemon.WriteState(dir, state); err != nil {
+			log.Printf("[daemon] warning: cannot write state: %v", err)
+		}
+	})
 }
 
 // startDetached spawns the daemon as a background child process, polls until the
