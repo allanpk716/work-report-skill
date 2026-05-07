@@ -2,9 +2,11 @@ import json, subprocess, os, sys, time, urllib.request, urllib.error
 
 results = []
 
+WR_DIR = "C:/WorkSpace/agent/cli--agent-things/work-report-skill"
+
 def run(cmd, timeout=10):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-    return r.stdout, r.stderr, r.returncode
+    r = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout)
+    return r.stdout.decode('utf-8', errors='replace'), r.stderr.decode('utf-8', errors='replace'), r.returncode
 
 def parse_jsonl(s):
     for line in s.strip().split('\n'):
@@ -13,71 +15,62 @@ def parse_jsonl(s):
             return json.loads(line)
     return None
 
-# TC1: daemon_not_running error includes suggestion field
+# TC1: daemon_not_running error includes suggestion in message
 print("=== TC1: daemon_not_running error includes suggestion ===")
 run("taskkill /F /IM wr.exe 2>/dev/null", timeout=5)
 time.sleep(2)
-out, err, rc = run("cd C:/WorkSpace/agent/work-report-skill && ./wr.exe list 2>/dev/null")
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe list 2>/dev/null")
 obj = parse_jsonl(out)
 tc1 = False
-if obj and obj.get("status") == "error" and obj.get("code") == "daemon_not_running":
-    sug = obj.get("suggestion", "")
-    if sug and len(sug) > 0 and "wr daemon start" in sug.lower():
+if obj and obj.get("type") == "error" and obj.get("error_code") == "daemon_not_running":
+    msg = obj.get("message", "")
+    if msg and len(msg) > 0 and "wr agent daemon start" in msg.lower():
         tc1 = True
-        print(f"  PASS: suggestion='{sug}'")
+        print(f"  PASS: message contains suggestion")
     else:
-        print(f"  FAIL: suggestion missing or empty: {sug}")
+        print(f"  FAIL: message missing or no suggestion: {msg}")
 else:
-    print(f"  FAIL: unexpected output: {out[:200]}")
+    print(f"  FAIL: unexpected output: type={obj.get('type') if obj else None}, error_code={obj.get('error_code') if obj else None}")
 results.append(("TC1", tc1))
 
-# TC2: wr status when daemon is offline
+# TC2: wr status when daemon is offline returns error
 print("\n=== TC2: wr status offline ===")
-out, err, rc = run("cd C:/WorkSpace/agent/work-report-skill && ./wr.exe status 2>/dev/null")
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe status 2>/dev/null")
 obj = parse_jsonl(out)
 tc2 = False
 if obj:
-    ds = obj.get("data", {}).get("daemon", {})
-    cfg = obj.get("data", {}).get("config", {})
     checks = []
-    if obj.get("status") == "success":
-        checks.append("status=success")
+    if obj.get("type") == "error" and obj.get("error_code") == "daemon_not_running":
+        checks.append("type=error, error_code=daemon_not_running")
     else:
-        checks.append(f"FAIL: status={obj.get('status')}")
-    if ds.get("status") == "not_running":
-        checks.append("daemon.status=not_running")
+        checks.append(f"FAIL: type={obj.get('type')}, error_code={obj.get('error_code')}")
+    msg = obj.get("message", "")
+    if msg and "wr agent daemon start" in msg.lower():
+        checks.append("message contains suggestion")
     else:
-        checks.append(f"FAIL: daemon.status={ds.get('status')}")
-    if ds.get("suggestion") and len(ds.get("suggestion")) > 0:
-        checks.append("daemon.suggestion present")
-    else:
-        checks.append("FAIL: daemon.suggestion missing")
-    for section in ["pushover", "llm"]:
-        if section in cfg:
-            checks.append(f"config.{section} present")
-    output_lower = out.lower()
-    secrets_found = []
-    if "p1o7zm" in output_lower:
-        secrets_found.append("pushover key")
-    if rc == 0:
-        checks.append("exit_code=0")
-    else:
-        checks.append(f"FAIL: exit_code={rc}")
+        checks.append(f"FAIL: message missing suggestion")
     print(f"  {'; '.join(checks)}")
     tc2 = all("FAIL" not in c for c in checks)
+else:
+    print(f"  FAIL: no JSONL output")
 results.append(("TC2", tc2))
 
 # TC3: wr status when daemon is running
 print("\n=== TC3: wr status online ===")
-run("cd C:/WorkSpace/agent/work-report-skill && start /B wr.exe daemon start > _uat_dlog.txt 2>&1", timeout=5)
-time.sleep(5)
-out, err, rc = run("cd C:/WorkSpace/agent/work-report-skill && ./wr.exe status 2>/dev/null")
+run(f"cd {WR_DIR} && ./wr.exe agent daemon stop 2>/dev/null", timeout=10)
+time.sleep(1)
+run(f"cd {WR_DIR} && ./wr.exe agent daemon start --detach 2>/dev/null", timeout=15)
+time.sleep(3)
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe status 2>/dev/null")
 obj = parse_jsonl(out)
 tc3 = False
 if obj:
     ds = obj.get("data", {}).get("daemon", {})
-    cfg = obj.get("data", {}).get("config", {})
     checks = []
+    if obj.get("type") == "result":
+        checks.append("type=result")
+    else:
+        checks.append(f"FAIL: type={obj.get('type')}")
     if ds.get("status") == "running":
         checks.append("daemon.status=running")
     else:
@@ -98,16 +91,16 @@ if obj:
         checks.append(f"FAIL: exit_code={rc}")
     print(f"  {'; '.join(checks)}")
     tc3 = all("FAIL" not in c for c in checks)
+else:
+    print(f"  FAIL: no JSONL output")
 results.append(("TC3", tc3))
 
-# TC4: Config completeness accuracy
+# TC4: Config completeness accuracy (daemon running)
 print("\n=== TC4: Config completeness accuracy ===")
-run("taskkill /F /IM wr.exe 2>/dev/null", timeout=5)
-time.sleep(2)
-out, err, rc = run("cd C:/WorkSpace/agent/work-report-skill && ./wr.exe status 2>/dev/null")
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe status 2>/dev/null")
 obj = parse_jsonl(out)
 tc4 = False
-if obj:
+if obj and obj.get("type") == "result":
     cfg = obj.get("data", {}).get("config", {})
     checks = []
     po = cfg.get("pushover", {})
@@ -128,11 +121,13 @@ if obj:
         checks.append("FAIL: llm.vision.configured missing")
     print(f"  {'; '.join(checks)}")
     tc4 = all("FAIL" not in c for c in checks)
+else:
+    print(f"  FAIL: no result envelope (daemon not running?)")
 results.append(("TC4", tc4))
 
 # TC5: No secret leakage
 print("\n=== TC5: No secret leakage ===")
-out, err, rc = run("cd C:/WorkSpace/agent/work-report-skill && ./wr.exe status 2>/dev/null")
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe status 2>/dev/null")
 config_path = os.path.expanduser("~/.work-report/config.json")
 with open(config_path) as f:
     real_config = json.load(f)
@@ -141,9 +136,9 @@ po = real_config.get("pushover", {})
 api_token = po.get("api_token", "")
 user_key = po.get("user_key", "")
 if api_token and api_token in out:
-    secrets.append(f"pushover.api_token")
+    secrets.append("pushover.api_token")
 if user_key and user_key in out:
-    secrets.append(f"pushover.user_key")
+    secrets.append("pushover.user_key")
 llm = real_config.get("llm", {})
 for section_name in ["text", "vision"]:
     sec = llm.get(section_name, {})
@@ -159,9 +154,11 @@ results.append(("TC5", tc5))
 
 # TC6: /api/status endpoint
 print("\n=== TC6: /api/status endpoint ===")
-run("cd C:/WorkSpace/agent/work-report-skill && start /B wr.exe daemon start > _uat_dlog.txt 2>&1", timeout=5)
-time.sleep(5)
-out, err, rc = run("cd C:/WorkSpace/agent/work-report-skill && ./wr.exe status 2>/dev/null")
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe agent daemon stop 2>/dev/null", timeout=10)
+time.sleep(1)
+run(f"cd {WR_DIR} && ./wr.exe agent daemon start --detach 2>/dev/null", timeout=15)
+time.sleep(3)
+out, err, rc = run(f"cd {WR_DIR} && ./wr.exe status 2>/dev/null")
 obj = parse_jsonl(out)
 port = obj.get("data", {}).get("daemon", {}).get("port", 18080) if obj else 18080
 tc6a = False
@@ -171,29 +168,29 @@ try:
     req = urllib.request.Request(f"http://localhost:{port}/api/status")
     resp = urllib.request.urlopen(req, timeout=5)
     body = json.loads(resp.read())
-    if body.get("status") == "success" and "data" in body:
+    if body.get("type") == "result" and "data" in body:
         d = body["data"]
         if "daemon" in d and "config" in d:
             tc6a = True
             checks.append("GET /api/status: valid response with daemon+config")
         else:
-            checks.append(f"GET /api/status: missing fields")
+            checks.append("GET /api/status: missing fields")
     else:
-        checks.append(f"GET /api/status: unexpected response")
+        checks.append("GET /api/status: unexpected response")
 except Exception as e:
     checks.append(f"GET /api/status: exception: {e}")
 try:
     req = urllib.request.Request(f"http://localhost:{port}/api/status", data=b"", method="POST")
     resp = urllib.request.urlopen(req, timeout=5)
     body = json.loads(resp.read())
-    checks.append(f"POST /api/status: unexpected success")
+    checks.append("POST /api/status: unexpected success")
 except urllib.error.HTTPError as e:
     body = json.loads(e.read())
-    if body.get("status") == "error" and "not allowed" in body.get("message", "").lower():
+    if body.get("type") == "error" and body.get("error_code") == "method_not_allowed":
         tc6b = True
         checks.append("POST /api/status: correctly rejected")
     else:
-        checks.append(f"POST /api/status: wrong error: {body}")
+        checks.append(f"POST /api/status: wrong error: type={body.get('type')}, error_code={body.get('error_code')}")
 except Exception as e:
     checks.append(f"POST /api/status: exception: {e}")
 tc6 = tc6a and tc6b

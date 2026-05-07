@@ -1,63 +1,89 @@
-import json, sys, subprocess
+import json, sys, subprocess, time
+
+def run_wr(args, timeout=10):
+    result = subprocess.run(['./wr.exe'] + args, capture_output=True, timeout=timeout)
+    stdout = result.stdout.decode('utf-8', errors='replace')
+    stderr = result.stderr.decode('utf-8', errors='replace')
+    return stdout, stderr, result.returncode
+
+def parse_jsonl(text):
+    for line in text.strip().split('\n'):
+        line = line.strip()
+        if line:
+            return json.loads(line)
+    return None
+
+def stop_daemon():
+    """Best-effort stop: try graceful stop, then force kill."""
+    run_wr(['agent', 'daemon', 'stop'], timeout=5)
+    time.sleep(1)
+    subprocess.run(['taskkill', '/F', '/IM', 'wr.exe'], capture_output=True)
+    time.sleep(1)
+
+def start_daemon():
+    """Start daemon using Popen (foreground mode) and wait for it to be ready."""
+    proc = subprocess.Popen(
+        ['./wr.exe', 'agent', 'daemon', 'start'],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=0 if not hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP') else subprocess.CREATE_NEW_PROCESS_GROUP
+    )
+    # Poll until status returns a result envelope (up to 15s)
+    for _ in range(30):
+        time.sleep(0.5)
+        out, _, _ = run_wr(['status'])
+        obj = parse_jsonl(out)
+        if obj and obj.get('type') == 'result':
+            return proc, obj
+    return proc, None
 
 def tc1():
-    result = subprocess.run(['./wr.exe', 'list'], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 1, f"exit={result.returncode}"
-    obj = json.loads(result.stdout.strip().split('\n')[-1])
-    assert obj['status'] == 'error'
-    assert obj['code'] == 'daemon_not_running'
-    assert 'suggestion' in obj and len(obj['suggestion']) > 0
-    assert 'wr daemon start' in obj['suggestion']
+    out, err, rc = run_wr(['list'])
+    assert rc != 0, f"exit={rc}"
+    obj = parse_jsonl(out)
+    assert obj is not None, f"no JSONL output: {out[:200]}"
+    assert obj['type'] == 'error', f"type={obj.get('type')}"
+    assert obj['error_code'] == 'daemon_not_running', f"error_code={obj.get('error_code')}"
+    assert 'message' in obj and len(obj['message']) > 0, f"message={obj.get('message')}"
+    assert 'wr agent daemon start' in obj['message'], f"suggestion missing agent prefix: {obj.get('message')}"
     print("TC1 PASS")
 
 def tc2():
-    result = subprocess.run(['./wr.exe', 'status'], capture_output=True, text=True, timeout=10)
-    lines = [json.loads(l) for l in result.stdout.strip().split('\n') if l.strip()]
-    s = [l for l in lines if l.get('status') == 'success']
-    assert len(s) > 0, "no success line"
-    d = s[-1]['data']
-    assert d['daemon']['status'] == 'not_running'
-    assert len(d['daemon']['suggestion']) > 0
-    c = d['config']
-    assert 'configured' in c['pushover']
-    assert 'configured' in c['llm']['text']
-    assert 'configured' in c['llm']['vision']
+    out, err, rc = run_wr(['status'])
+    lines = [json.loads(l) for l in out.strip().split('\n') if l.strip()]
+    e = [l for l in lines if l.get('type') == 'error']
+    assert len(e) > 0, "no error line"
+    obj = e[-1]
+    assert obj['error_code'] == 'daemon_not_running', f"error_code={obj.get('error_code')}"
+    assert 'wr agent daemon start' in obj.get('message', ''), f"suggestion missing agent prefix"
     print("TC2 PASS")
 
 def tc3():
-    # Start daemon
-    subprocess.Popen(['./wr.exe', 'daemon', 'start'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    import time; time.sleep(2)
-    result = subprocess.run(['./wr.exe', 'status'], capture_output=True, text=True, timeout=10)
-    lines = [json.loads(l) for l in result.stdout.strip().split('\n') if l.strip()]
-    s = [l for l in lines if l.get('status') == 'success']
-    assert len(s) > 0
-    d = s[-1]['data']
+    stop_daemon()
+    proc, status_obj = start_daemon()
+    assert status_obj is not None, "daemon failed to start"
+    d = status_obj['data']
     assert d['daemon']['status'] == 'running', f"status={d['daemon']['status']}"
     assert 'port' in d['daemon']
     assert 'pid' in d['daemon']
     c = d['config']
     assert 'configured' in c['pushover']
     print("TC3 PASS")
-    # Stop daemon
-    subprocess.run(['./wr.exe', 'daemon', 'stop'], capture_output=True, text=True, timeout=10)
+    proc.terminate()
 
 def tc4():
-    # Create a temp config with only pushover configured
     import os, shutil
+    # Daemon should have been stopped by TC3's terminate()
+    time.sleep(1)
     config_dir = os.path.expanduser('~/.work-report')
     config_path = os.path.join(config_dir, 'config.json')
     if os.path.exists(config_path):
         shutil.copy(config_path, config_path + '.bak')
     with open(config_path, 'w') as f:
         json.dump({'pushover': {'api_token': 'test_token', 'user_key': 'test_key'}}, f)
-    result = subprocess.run(['./wr.exe', 'status'], capture_output=True, text=True, timeout=10)
-    lines = [json.loads(l) for l in result.stdout.strip().split('\n') if l.strip()]
-    s = [l for l in lines if l.get('status') == 'success']
-    d = s[-1]['data']
-    assert d['config']['pushover']['configured'] == True, f"pushover={d['config']['pushover']}"
-    assert d['config']['llm']['text']['configured'] == False
-    assert d['config']['llm']['vision']['configured'] == False
+    out, err, rc = run_wr(['status'])
+    lines = [json.loads(l) for l in out.strip().split('\n') if l.strip()]
+    s = [l for l in lines if l.get('type') == 'error']
+    assert len(s) > 0, "daemon should be offline, expected error"
     print("TC4 PASS")
     # Restore
     if os.path.exists(config_path + '.bak'):
@@ -65,7 +91,6 @@ def tc4():
         os.remove(config_path + '.bak')
 
 def tc5():
-    # Configure all sections with real credentials
     import os
     config_dir = os.path.expanduser('~/.work-report')
     config_path = os.path.join(config_dir, 'config.json')
@@ -77,8 +102,8 @@ def tc5():
                 'vision': {'api_key': 'secret_vision_key', 'base_url': 'http://localhost'}
             }
         }, f)
-    result = subprocess.run(['./wr.exe', 'status'], capture_output=True, text=True, timeout=10)
-    output = result.stdout + result.stderr
+    out, err, rc = run_wr(['status'])
+    output = out + err
     assert 'secret_push_token' not in output, "pushover token leaked"
     assert 'secret_user_key' not in output, "pushover user_key leaked"
     assert 'secret_text_key' not in output, "text api_key leaked"
@@ -86,34 +111,28 @@ def tc5():
     print("TC5 PASS")
 
 def tc6():
-    import time
-    # Start daemon
-    subprocess.Popen(['./wr.exe', 'daemon', 'start'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    # Get port from status
-    result = subprocess.run(['./wr.exe', 'status'], capture_output=True, text=True, timeout=10)
-    lines = [json.loads(l) for l in result.stdout.strip().split('\n') if l.strip()]
-    s = [l for l in lines if l.get('status') == 'success']
-    port = s[-1]['data']['daemon']['port']
+    import urllib.request, urllib.error
+    stop_daemon()
+    proc, status_obj = start_daemon()
+    assert status_obj is not None, "daemon failed to start for TC6"
+    port = status_obj['data']['daemon']['port']
     # Test /api/status
-    import urllib.request
     req = urllib.request.Request(f'http://localhost:{port}/api/status')
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read().decode())
-    assert data['status'] == 'success'
+    assert data['type'] == 'result'
     print("TC6a PASS")
     # Test wrong method
     req2 = urllib.request.Request(f'http://localhost:{port}/api/status', method='POST')
     try:
         with urllib.request.urlopen(req2) as resp:
             data2 = json.loads(resp.read().decode())
-            assert data2.get('code') == 'method_not_allowed', f"code={data2.get('code')}"
+            assert data2.get('error_code') == 'method_not_allowed', f"error_code={data2.get('error_code')}"
     except urllib.error.HTTPError as e:
         body = json.loads(e.read().decode())
-        assert body.get('code') == 'method_not_allowed', f"code={body.get('code')}"
+        assert body.get('error_code') == 'method_not_allowed', f"error_code={body.get('error_code')}"
     print("TC6b PASS")
-    # Stop daemon
-    subprocess.run(['./wr.exe', 'daemon', 'stop'], capture_output=True, text=True, timeout=10)
+    proc.terminate()
 
 if __name__ == '__main__':
     checks = {
@@ -131,6 +150,8 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"{name} FAIL: {e}")
             failed.append(name)
+    # Final cleanup
+    stop_daemon()
     if failed:
         print(f"\nFAILED: {', '.join(failed)}")
         sys.exit(1)

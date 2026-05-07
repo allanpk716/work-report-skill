@@ -1,7 +1,0 @@
-[scheduler] 2026/05/02 21:53:06 [scheduler] state load: scheduler: state file and backup both unreadable: main=open C:\Users\allan716\.work-report\scheduler-state.json: The system cannot find the file specified., backup=open C:\Users\allan716\.work-report\scheduler-state.json.bak: The system cannot find the file specified. (starting fresh)
-[scheduler] 2026/05/02 21:53:06 [scheduler] started
-[scheduler] 2026/05/02 21:53:06 [scheduler] catchup complete: scanned=0 skipped=0 fired=0 errors=0 recurring_skipped=0
-2026/05/02 21:53:06 [daemon] catchup: scanned=0 fired=0 errors=0
-[daemon] starting on port 18080 (pid=35000) data_dir=C:\Users\allan716\.work-report\work-records
-2026/05/02 21:53:06 [daemon] listening on :18080 (pid=35000)
-[scheduler] 2026/05/02 21:53:06 [scheduler] stopped

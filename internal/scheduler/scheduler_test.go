@@ -414,25 +414,41 @@ func TestUnregister_NotFound(t *testing.T) {
 
 // --- Trigger ---
 
+// soonTriggerParams returns (date, timeStr, remindBefore) so the scheduler
+// trigger fires approximately targetDelay from now. It uses RemindBefore to
+// subtract from the next minute boundary, avoiding the 1-60s wait.
+func soonTriggerParams(t *testing.T, loc *time.Location, targetDelay time.Duration) (date, timeStr, remindBefore string) {
+	t.Helper()
+	for {
+		now := time.Now().In(loc)
+		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+		gap := nextMinute.Sub(now)
+		if gap > targetDelay+2*time.Second {
+			rb := gap - targetDelay
+			return nextMinute.Format("2006-01-02"), nextMinute.Format("15:04"),
+				fmt.Sprintf("%ds", int(rb.Seconds()))
+		}
+		// Too close to minute boundary; wait for next minute and retry.
+		time.Sleep(time.Until(nextMinute) + 10*time.Millisecond)
+	}
+}
+
 func TestTrigger_Success(t *testing.T) {
 	s, mock, statePath := testScheduler(t)
 	s.Start()
 	defer s.Stop()
 
 	loc := s.cfg.Location()
-	// We need the trigger to happen within a few seconds, but computeTriggerTime
-	// only parses HH:MM (seconds=00). So we target the start of the next minute
-	// which is at most 60 seconds away.
-	now := time.Now().In(loc)
-	nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+	date, timeStr, rb := soonTriggerParams(t, loc, 3*time.Second)
 	rec := &models.ReminderRecord{
 		CommonFields: models.CommonFields{
-			Type:    models.TypeReminder,
-			Title:   "Trigger test",
-			Date:    nextMinute.Format("2006-01-02"),
-			Time:    nextMinute.Format("15:04"),
-			ShortID: "trig001",
-			Status:  models.StatusActive,
+			Type:         models.TypeReminder,
+			Title:        "Trigger test",
+			Date:         date,
+			Time:         timeStr,
+			RemindBefore: rb,
+			ShortID:      "trig001",
+			Status:       models.StatusActive,
 		},
 	}
 
@@ -440,10 +456,10 @@ func TestTrigger_Success(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Wait up to 90 seconds (worst case: 59s until next minute + 30s buffer)
-	deadline := time.Now().Add(90 * time.Second)
+	// Wait up to 10 seconds (trigger should fire in ~3s)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		entry := s.State().GetEntry("trig001")
 		if entry != nil && entry.Fired {
 			break
@@ -484,16 +500,16 @@ func TestTrigger_PushoverFail(t *testing.T) {
 	defer s.Stop()
 
 	loc := s.cfg.Location()
-	now := time.Now().In(loc)
-	nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+	date, timeStr, rb := soonTriggerParams(t, loc, 3*time.Second)
 	rec := &models.ReminderRecord{
 		CommonFields: models.CommonFields{
-			Type:    models.TypeReminder,
-			Title:   "Fail test",
-			Date:    nextMinute.Format("2006-01-02"),
-			Time:    nextMinute.Format("15:04"),
-			ShortID: "fail001",
-			Status:  models.StatusActive,
+			Type:         models.TypeReminder,
+			Title:        "Fail test",
+			Date:         date,
+			Time:         timeStr,
+			RemindBefore: rb,
+			ShortID:      "fail001",
+			Status:       models.StatusActive,
 		},
 	}
 
@@ -501,10 +517,10 @@ func TestTrigger_PushoverFail(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Wait for trigger
-	deadline := time.Now().Add(90 * time.Second)
+	// Wait for trigger (~3s)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		entry := s.State().GetEntry("fail001")
 		if entry != nil && entry.LastError != "" {
 			break
@@ -529,16 +545,16 @@ func TestTrigger_Recurring(t *testing.T) {
 	defer s.Stop()
 
 	loc := s.cfg.Location()
-	now := time.Now().In(loc)
-	nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+	date, timeStr, rb := soonTriggerParams(t, loc, 3*time.Second)
 	rec := &models.ReminderRecord{
 		CommonFields: models.CommonFields{
-			Type:    models.TypeReminder,
-			Title:   "Daily standup",
-			Date:    nextMinute.Format("2006-01-02"),
-			Time:    nextMinute.Format("15:04"),
-			ShortID: "recur001",
-			Status:  models.StatusActive,
+			Type:         models.TypeReminder,
+			Title:        "Daily standup",
+			Date:         date,
+			Time:         timeStr,
+			RemindBefore: rb,
+			ShortID:      "recur001",
+			Status:       models.StatusActive,
 		},
 		Recurring: "daily",
 	}
@@ -555,10 +571,10 @@ func TestTrigger_Recurring(t *testing.T) {
 		t.Errorf("Recurring = %q, want %q", entry.Recurring, "daily")
 	}
 
-	// Wait for first trigger
-	deadline := time.Now().Add(90 * time.Second)
+	// Wait for first trigger (~3s)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		entry := s.State().GetEntry("recur001")
 		if entry != nil && entry.Fired {
 			break

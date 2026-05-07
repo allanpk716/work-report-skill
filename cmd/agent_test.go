@@ -1119,6 +1119,13 @@ func TestAgentDaemonEnsureRunning_AlreadyRunning(t *testing.T) {
 }
 
 func TestAgentDaemonEnsureRunning_StaleState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping: exec.Command via os.Args[0] spawns cmd.test.exe as daemon on Windows")
+	}
+
 	tmpHome, cleanup := setupAgentTest(t)
 	defer cleanup()
 
