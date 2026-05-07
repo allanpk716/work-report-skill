@@ -35,10 +35,11 @@ func InitApp() {
 	// Register custom health checks (daemon, llm, pushover).
 	registerHealthChecks()
 
-	// Add agent command tree (schema, errors, config, doctor, debug, cache).
+	// Add agent command tree (schema, errors, config, doctor, debug, cache)
+	// plus the daemon sub-command group.
 	// Guard against double-registration in tests that call InitApp() repeatedly.
 	if _, _, err := rootCmd.Find([]string{"agent"}); err != nil {
-		rootCmd.AddCommand(app.AgentCommands())
+		rootCmd.AddCommand(app.AgentCommands(newDaemonGroupCmd()))
 	}
 
 	registerErrorCodes()
@@ -49,9 +50,6 @@ func InitApp() {
 
 	registerConfigProvider()
 	registerCommandMeta()
-
-	// Register daemon commands under the agent command tree.
-	registerAgentDaemonCommands()
 }
 
 // App returns the shared SDK App instance for use by downstream slices.

@@ -28,23 +28,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// registerAgentDaemonCommands registers the daemon command group under the
-// "agent" command tree. Uses Find guard to prevent double-registration in
-// tests that call InitApp() repeatedly.
-func registerAgentDaemonCommands() {
-	agentCmd, _, err := rootCmd.Find([]string{"agent"})
-	if err != nil || agentCmd == nil {
-		// Agent command tree not yet registered — skip silently.
-		// This should not happen in normal flow since registerAgentDaemonCommands
-		// is called after rootCmd.AddCommand(app.AgentCommands()).
-		return
-	}
-
-	// Guard: if "agent daemon" already exists, skip.
-	if existing, _, _ := agentCmd.Find([]string{"daemon"}); existing != nil && existing != agentCmd {
-		return
-	}
-
+// newDaemonGroupCmd creates the "agent daemon" command group with start/stop/status/ensure-running subcommands.
+// This command is passed to AgentCommands(extra...) so it's registered under the agent tree
+// without requiring Find() guard logic.
+func newDaemonGroupCmd() *cobra.Command {
 	daemonGroupCmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Manage the wr daemon process",
@@ -55,7 +42,7 @@ func registerAgentDaemonCommands() {
 	daemonGroupCmd.AddCommand(newDaemonStatusCmd())
 	daemonGroupCmd.AddCommand(newDaemonEnsureRunningCmd())
 
-	agentCmd.AddCommand(daemonGroupCmd)
+	return daemonGroupCmd
 }
 
 func newDaemonStartCmd() *cobra.Command {

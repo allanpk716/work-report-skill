@@ -36,9 +36,6 @@ func setupAgentTest(t *testing.T) (tmpHome string, cleanup func()) {
 	registerConfigProvider()
 	registerCommandMeta()
 
-	// Register daemon commands under the agent command tree.
-	registerAgentDaemonCommands()
-
 	return tmpHome, func() {
 		appCleanup()
 		homeCleanup()
