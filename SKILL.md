@@ -10,6 +10,58 @@
 
 ---
 
+## 快速集成（5 分钟）
+
+Agent 只需读取本段即可完成 add / list / report 三个核心操作。完整参考见下方各章节。
+
+### 前置
+
+```bash
+wr config init                    # 最小配置（无需 LLM key）
+wr agent daemon ensure-running    # 启动守护进程（幂等）
+```
+
+### 添加记录
+
+`--date` 省略时默认今天。`--type` 和 `--title` 必填。
+
+```bash
+wr add --type log --title "完成了代码审查"
+wr add --type meeting --title "站会" --time 10:00
+wr add --type task --title "Review PR #42" --priority high
+```
+
+输出为 JSONL：`type: "result"` 成功，`type: "error"` 失败（查看 `error_code`）。
+
+### 查看 / 报告
+
+```bash
+wr list              # 今天 active 记录
+wr report today      # 今日报告（含 markdown）
+wr report week       # 本周报告
+```
+
+### 完成 / 取消
+
+```bash
+wr complete <short_id>                            # 通过 ID
+wr complete --title "Review PR #42" --date 2026-05-08  # 通过标题+日期
+```
+
+> `--date` 在 complete/cancel 中**不默认今天**，必须显式提供。
+
+### 常见错误
+
+| `error_code` | 处理 |
+|---|---|
+| `daemon_not_running` | `wr agent daemon ensure-running` 后重试 |
+| `record_not_found` | `wr list` 查找正确 ID |
+| `invalid_type` | `--type` 须为 meeting / task / reminder / log |
+
+> 完整命令参考、JSONL 格式规范、错误码表见下方各章节。
+
+---
+
 ## Migration Notes
 
 **M005 SDK migration (v0.1.0):** Daemon commands moved from `wr daemon` to the `wr agent daemon` namespace. The old bare paths (`wr daemon start`, `wr daemon stop`, `wr daemon status`) are no longer registered. All daemon management commands are now under `wr agent daemon`:
