@@ -310,6 +310,17 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		usedLLM = true
 	}
 
+	// Default date to today when not using LLM classification.
+	// When LLM is used (text/image classification), the LLM result provides the date.
+	if !usedLLM && req.Date == "" {
+		loc := time.UTC
+		if s.config != nil {
+			loc = s.config.Location()
+		}
+		req.Date = time.Now().In(loc).Format("2006-01-02")
+		log.Printf("[daemon] add: source=default_today date=%s", req.Date)
+	}
+
 	// Validate required fields
 	if req.Type == "" {
 		daemonWriter(w).ErrorWithCode("invalid_type", "missing required field: type")

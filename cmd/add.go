@@ -102,7 +102,7 @@ func splitByComma(s string) []string {
 func init() {
 	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, log)")
 	addCmd.Flags().StringVar(&addTitle, "title", "", "Entry title")
-	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD)")
+	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD, defaults to today if omitted)")
 	addCmd.Flags().StringVar(&addTime, "time", "", "Time (HH:MM)")
 	addCmd.Flags().StringVar(&addText, "text", "", "Natural language text for LLM classification (type/title/date become optional)")
 	addCmd.Flags().StringVar(&addImage, "image", "", "Image path for LLM vision classification (type/title/date become optional)")

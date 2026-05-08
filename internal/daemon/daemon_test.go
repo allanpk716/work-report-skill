@@ -285,8 +285,17 @@ func TestAddEndpointMissingDate(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.router.ServeHTTP(w, req)
 
-	assertJSONLStatus(t, w.Body.Bytes(), "error")
-	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+	// Missing date is now auto-filled to today (source=default_today)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	date, _ := data["date"].(string)
+	today := time.Now().UTC().Format("2006-01-02")
+	if date != today {
+		t.Errorf("expected date %s (auto-filled today), got %s", today, date)
+	}
 }
 
 func TestAddEndpointAllTypes(t *testing.T) {
@@ -1033,6 +1042,150 @@ func TestAddEndpoint_NormalAddStillWorks(t *testing.T) {
 	data := record["data"].(map[string]interface{})
 	if data["type"] != "meeting" {
 		t.Errorf("expected type meeting, got %v", data["type"])
+	}
+}
+
+// ── Default-today tests (date auto-fill when not using LLM) ──
+
+func TestAddEndpoint_DefaultToday_NoDate(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// No date field — should auto-fill to today
+	body := strings.NewReader(`{"type":"log","title":"test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	date, _ := data["date"].(string)
+	today := time.Now().UTC().Format("2006-01-02")
+	if date != today {
+		t.Errorf("expected date %s (default_today), got %s", today, date)
+	}
+}
+
+func TestAddEndpoint_DefaultToday_ExplicitDatePreserved(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// Explicit date should be preserved, not overwritten
+	body := strings.NewReader(`{"type":"log","title":"test","date":"2026-05-03"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	date, _ := data["date"].(string)
+	if date != "2026-05-03" {
+		t.Errorf("expected date 2026-05-03 (explicit), got %s", date)
+	}
+}
+
+func TestAddEndpoint_DefaultToday_WithConfiguredTimezone(t *testing.T) {
+	// Use Asia/Shanghai timezone to verify the date is computed in the configured TZ
+	cfg := &config.Config{
+		Timezone: "Asia/Shanghai",
+	}
+	srv, _ := newTestServer(t, cfg)
+
+	body := strings.NewReader(`{"type":"log","title":"tz test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	date, _ := data["date"].(string)
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	expected := time.Now().In(loc).Format("2006-01-02")
+	if date != expected {
+		t.Errorf("expected date %s (Asia/Shanghai), got %s", expected, date)
+	}
+}
+
+func TestAddEndpoint_DefaultToday_NotAppliedInLLMMode(t *testing.T) {
+	// When LLM classification is used (text without explicit type),
+	// the default-today logic should NOT be applied — LLM provides the date.
+	mockServer := mockLLMServer(t, llm.ClassifyResult{
+		Type:  "task",
+		Title: "LLM classified task",
+		Date:  "2025-12-25", // LLM returns a specific date, not today
+	})
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	// text without type → triggers LLM classification (usedLLM=true)
+	body := strings.NewReader(`{"text":"some text"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	date, _ := data["date"].(string)
+	today := time.Now().UTC().Format("2006-01-02")
+	if date == today {
+		t.Errorf("in LLM mode, date should come from LLM result, not default_today; got %s", date)
+	}
+	if date != "2025-12-25" {
+		t.Errorf("expected date 2025-12-25 (from LLM), got %s", date)
+	}
+}
+
+func TestAddEndpoint_DefaultToday_TextWithExplicitType(t *testing.T) {
+	// When text is provided WITH explicit type, LLM is NOT called (usedLLM=false),
+	// so default-today should apply.
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: "http://127.0.0.1:0", // unreachable — proves LLM not called
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"type":"log","title":"test","text":"some text"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	date, _ := data["date"].(string)
+	today := time.Now().UTC().Format("2006-01-02")
+	if date != today {
+		t.Errorf("expected date %s (default_today, type explicit so LLM not used), got %s", today, date)
 	}
 }
 

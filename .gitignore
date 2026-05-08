@@ -37,3 +37,6 @@ docs/exsample/
 _uat_*
 _tmp_*
 
+
+# ── GSD baseline (auto-generated) ──
+coverage/
