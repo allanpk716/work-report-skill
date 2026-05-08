@@ -102,6 +102,80 @@ func Classify(client *Client, text string, today time.Time, location *time.Locat
 	return result, nil
 }
 
+// ClassifyBatch sends the input text to the LLM and returns zero or more
+// ClassifyResult entries.  The system prompt instructs the LLM to return a
+// JSON array when the input contains multiple independent events, or a single
+// object for one event.  The function handles both response shapes transparently.
+func ClassifyBatch(client *Client, text string, today time.Time, location *time.Location) ([]ClassifyResult, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, &ClassifyError{Op: "validate_input", Err: fmt.Errorf("empty text"), Text: text}
+	}
+
+	start := time.Now()
+	systemPrompt := buildSystemPrompt(today, location)
+	messages := []chatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: text},
+	}
+
+	content, err := client.CallChat(context.Background(), messages)
+	if err != nil {
+		logger.Errorf("classify_batch error: api_base=%s latency=%dms error=%v input_len=%d",
+			client.apiBase, time.Since(start).Milliseconds(), err, len(text))
+		return nil, &ClassifyError{Op: "call_api", Err: err, Text: text}
+	}
+
+	results, err := parseClassifyBatchResponse(content)
+	if err != nil {
+		logger.Errorf("classify_batch parse error: latency=%dms error=%v input_len=%d",
+			time.Since(start).Milliseconds(), err, len(text))
+		return nil, &ClassifyError{Op: "parse_json", Err: err, Text: text}
+	}
+
+	// Validate every result's type.
+	for i, r := range results {
+		if !isValidType(r.Type) {
+			return nil, &ClassifyError{
+				Op:   "validate_type",
+				Err:  fmt.Errorf("result[%d]: invalid type %q, must be one of %v", i, r.Type, AllowedClassifyTypes),
+				Text: text,
+			}
+		}
+	}
+
+	logger.Infof("classify_batch ok: count=%d latency=%dms input_len=%d",
+		len(results), time.Since(start).Milliseconds(), len(text))
+
+	return results, nil
+}
+
+// parseClassifyBatchResponse extracts ClassifyResult entries from the LLM
+// response.  It handles two shapes:
+//   - JSON array:  [{...}, {...}, ...]  →  returns all entries
+//   - JSON object: {...}               →  returns single-element slice
+//   - markdown code-fenced JSON         →  unwrapped first
+func parseClassifyBatchResponse(content string) ([]ClassifyResult, error) {
+	jsonStr := extractJSON(content)
+	trimmed := strings.TrimSpace(jsonStr)
+
+	var results []ClassifyResult
+
+	// Try parsing as JSON array first.
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal([]byte(trimmed), &results); err != nil {
+			return nil, fmt.Errorf("parse JSON array from LLM response: %w\nraw content: %s", err, truncate(content, 200))
+		}
+		return results, nil
+	}
+
+	// Fall back to single object wrapped in a slice.
+	var single ClassifyResult
+	if err := json.Unmarshal([]byte(trimmed), &single); err != nil {
+		return nil, fmt.Errorf("parse JSON from LLM response: %w\nraw content: %s", err, truncate(content, 200))
+	}
+	return []ClassifyResult{single}, nil
+}
+
 // buildSystemPrompt constructs the system prompt for the classifier.
 func buildSystemPrompt(today time.Time, location *time.Location) string {
 	dateStr := today.In(location).Format("2006-01-02")
@@ -118,9 +192,32 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 4. **log** — 工作日志、已完成的事、记录性的文字
 5. **cancel_or_update** — 取消、修改、更新已有记录的操作（包含目标记录ID时使用target_id字段）
 
+## 会议关键词优先级
+
+当输入中出现以下关键词时，**必须优先**分类为 **meeting** 类型，即使上下文可能暗示其他类型：
+- 开会、会议、评审、Review、讨论、面谈、沟通、访谈、约谈
+- 周会、站会、早会、夕会、例会、复盘会、同步会、对齐会
+- 1v1、一对一、面谈、约聊、约了（某人）
+- 与（某人）开/讨论/沟通/评审
+
+仅当关键词明显用于否定或取消语境（如"取消会议"、"不用开会了"）时，才考虑 cancel_or_update 或 log 类型。
+
+## 多事件检测
+
+当用户输入包含**多个独立事件**时（例如"上午完成了需求文档，下午开了项目评审会"，或"10点周会，2点给客户打电话"），必须为每个事件单独生成一条记录，以 **JSON 数组** 格式返回：[{...},{...}]。
+
+判断多事件的依据：
+- 时间分隔：不同时间段的事件（上午/下午/10点/2点）
+- 明显分隔符：逗号、分号、句号分隔的独立事件
+- 不同动作类型：一个完成了一个任务，另一个是会议或提醒
+
+当输入只描述**单个事件**时，返回单个 JSON 对象 {...}。
+
 ## 输出格式
 
-返回纯JSON对象（不要markdown代码块），包含以下字段：
+返回纯JSON（不要markdown代码块），包含以下字段：
+- 单个事件时返回JSON对象：{...}
+- 多个事件时返回JSON数组：[{...},{...}]
 - type: 分类类型（必填）
 - title: 标题摘要（必填）
 - date: 日期，格式 YYYY-MM-DD（如适用）
@@ -172,7 +269,7 @@ func extractJSON(content string) string {
 	trimmed := strings.TrimSpace(content)
 
 	// Try direct JSON parse first.
-	if strings.HasPrefix(trimmed, "{") {
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return trimmed
 	}
 
