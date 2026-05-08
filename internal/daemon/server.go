@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/config"
+	"wr/internal/digest"
 	"wr/internal/logger"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
@@ -17,12 +19,13 @@ import (
 
 // Server is the HTTP daemon server.
 type Server struct {
-	port      int
-	router    *http.ServeMux
-	http      *http.Server
-	storage   *storage.Storage
-	config    *config.Config
-	scheduler *scheduler.Scheduler
+	port        int
+	router      *http.ServeMux
+	http        *http.Server
+	storage     *storage.Storage
+	config      *config.Config
+	scheduler   *scheduler.Scheduler
+	digestStore *digest.DigestStore
 }
 
 // NewServer creates a new daemon server bound to the given port with storage.
@@ -33,6 +36,17 @@ func NewServer(port int, store *storage.Storage, cfg *config.Config) *Server {
 		storage: store,
 		config:  cfg,
 	}
+
+	// Initialize digest store backed by DataDir/digests.json.
+	if cfg != nil && cfg.DataDir != "" {
+		s.digestStore = digest.NewStore(filepath.Join(cfg.DataDir, "digests.json"))
+	} else {
+		// Fallback: use default path when config is nil (tests).
+		if defaultPath, err := digest.DefaultStorePath(); err == nil {
+			s.digestStore = digest.NewStore(defaultPath)
+		}
+	}
+
 	s.registerRoutes()
 	return s
 }
@@ -60,6 +74,11 @@ func (s *Server) Port() int {
 // Config returns the server's configuration.
 func (s *Server) Config() *config.Config {
 	return s.config
+}
+
+// DigestStore returns the server's digest store instance (may be nil if init failed).
+func (s *Server) DigestStore() *digest.DigestStore {
+	return s.digestStore
 }
 
 // Router returns the underlying HTTP handler for testing.
@@ -149,4 +168,11 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/report/range", s.handleReportRange)
 	s.router.HandleFunc("/api/report/push/week", s.handleReportPushWeek)
 	s.router.HandleFunc("/api/report/push/range", s.handleReportPushRange)
+
+	// Digest CRUD endpoints
+	s.router.HandleFunc("/api/digest/add", s.handleDigestAdd)
+	s.router.HandleFunc("/api/digest/list", s.handleDigestList)
+	s.router.HandleFunc("/api/digest/remove/", s.handleDigestRemove)
+	s.router.HandleFunc("/api/digest/enable/", s.handleDigestEnable)
+	s.router.HandleFunc("/api/digest/disable/", s.handleDigestDisable)
 }

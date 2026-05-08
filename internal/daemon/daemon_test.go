@@ -24,7 +24,8 @@ import (
 )
 
 // newTestServer creates a Server backed by a temp directory for storage.
-// If cfg is nil, a minimal config is created.
+// If cfg is nil, a minimal config is created with DataDir set to the temp dir
+// so that the digest store also uses the temp dir (not the real ~/.work-report).
 func newTestServer(t *testing.T, cfg ...*config.Config) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -32,8 +33,12 @@ func newTestServer(t *testing.T, cfg ...*config.Config) (*Server, string) {
 	var c *config.Config
 	if len(cfg) > 0 && cfg[0] != nil {
 		c = cfg[0]
+		// Ensure DataDir is set so digest store uses temp dir.
+		if c.DataDir == "" {
+			c.DataDir = dir
+		}
 	} else {
-		c = &config.Config{}
+		c = &config.Config{DataDir: dir}
 	}
 	srv := NewServer(0, store, c)
 	return srv, dir
@@ -5150,5 +5155,362 @@ func TestHandleStop_LogsShutdown(t *testing.T) {
 	}
 	if !strings.Contains(logContent, "daemon shutting down") {
 		t.Errorf("expected log to contain 'daemon shutting down', got: %s", logContent)
+	}
+}
+
+// ── Digest CRUD handler tests ──
+
+func TestDigestAddEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"schedule":"0 8 * * *","scope":"today","direction":"agenda"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	assertJSONLStatus(t, respBody, "success")
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", respBody)
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	id, _ := data["id"].(string)
+	if id == "" {
+		t.Error("expected non-empty digest id")
+	}
+	if data["schedule"] != "0 8 * * *" {
+		t.Errorf("expected schedule '0 8 * * *', got %v", data["schedule"])
+	}
+	if data["scope"] != "today" {
+		t.Errorf("expected scope 'today', got %v", data["scope"])
+	}
+	if data["direction"] != "agenda" {
+		t.Errorf("expected direction 'agenda', got %v", data["direction"])
+	}
+	if data["enabled"] != true {
+		t.Errorf("expected enabled=true, got %v", data["enabled"])
+	}
+	if data["created_at"] == "" {
+		t.Error("expected created_at to be set")
+	}
+}
+
+func TestDigestAddEndpoint_DefaultDirection(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"schedule":"0 18 * * 5","scope":"week"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["direction"] != "agenda" {
+		t.Errorf("expected default direction 'agenda', got %v", data["direction"])
+	}
+}
+
+func TestDigestAddEndpoint_InvalidScope(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"schedule":"0 8 * * *","scope":"invalid_scope"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_scope")
+}
+
+func TestDigestAddEndpoint_InvalidDirection(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"schedule":"0 8 * * *","scope":"today","direction":"backward"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_direction")
+}
+
+func TestDigestAddEndpoint_InvalidSchedule(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := strings.NewReader(`{"schedule":"","scope":"today"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_schedule")
+}
+
+func TestDigestAddEndpoint_InvalidJSON(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestDigestAddEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/digest/add", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestDigestListEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add two digests first
+	for _, scope := range []string{"today", "week"} {
+		body := strings.NewReader(fmt.Sprintf(`{"schedule":"0 8 * * *","scope":"%s","direction":"summary"}`, scope))
+		req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.router.ServeHTTP(w, req)
+		assertJSONLStatus(t, w.Body.Bytes(), "success")
+	}
+
+	// List
+	req := httptest.NewRequest(http.MethodGet, "/api/digest/list", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	count, _ := data["count"].(float64)
+	if count != 2 {
+		t.Errorf("expected 2 digests, got %v", count)
+	}
+	digests, ok := data["digests"].([]interface{})
+	if !ok || len(digests) != 2 {
+		t.Errorf("expected digests array with 2 items, got %v", data["digests"])
+	}
+}
+
+func TestDigestListEndpoint_Empty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/digest/list", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	count, _ := data["count"].(float64)
+	if count != 0 {
+		t.Errorf("expected 0 digests, got %v", count)
+	}
+}
+
+func TestDigestRemoveEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a digest
+	body := strings.NewReader(`{"schedule":"0 8 * * *","scope":"today"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	id := addData["id"].(string)
+
+	// Remove it
+	req = httptest.NewRequest(http.MethodPost, "/api/digest/remove/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var removeResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &removeResp)
+	removeData := removeResp["data"].(map[string]interface{})
+	if removeData["id"] != id {
+		t.Errorf("expected id %q, got %v", id, removeData["id"])
+	}
+	if removeData["message"] != "digest removed" {
+		t.Errorf("expected message 'digest removed', got %v", removeData["message"])
+	}
+
+	// Verify list is empty
+	req = httptest.NewRequest(http.MethodGet, "/api/digest/list", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var listResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData := listResp["data"].(map[string]interface{})
+	count, _ := listData["count"].(float64)
+	if count != 0 {
+		t.Errorf("expected 0 digests after remove, got %v", count)
+	}
+}
+
+func TestDigestRemoveEndpoint_NotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/remove/d_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "digest_not_found")
+}
+
+func TestDigestEnableDisableEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Add a digest (enabled by default)
+	body := strings.NewReader(`{"schedule":"0 8 * * *","scope":"today"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	addData := addResp["data"].(map[string]interface{})
+	id := addData["id"].(string)
+
+	// Disable
+	req = httptest.NewRequest(http.MethodPost, "/api/digest/disable/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var disableResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &disableResp)
+	disableData := disableResp["data"].(map[string]interface{})
+	if disableData["enabled"] != false {
+		t.Errorf("expected enabled=false after disable, got %v", disableData["enabled"])
+	}
+
+	// Enable
+	req = httptest.NewRequest(http.MethodPost, "/api/digest/enable/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var enableResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &enableResp)
+	enableData := enableResp["data"].(map[string]interface{})
+	if enableData["enabled"] != true {
+		t.Errorf("expected enabled=true after enable, got %v", enableData["enabled"])
+	}
+}
+
+func TestDigestEnableEndpoint_NotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/enable/d_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "digest_not_found")
+}
+
+func TestDigestDisableEndpoint_NotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/disable/d_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "digest_not_found")
+}
+
+func TestDigestListEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/list", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+// TestDigestCRUDEndToEnd exercises the full digest lifecycle: add → list → disable → enable → remove.
+func TestDigestCRUDEndToEnd(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// 1. Add
+	body := strings.NewReader(`{"schedule":"0 9 * * 1","scope":"week","direction":"summary"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var addResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &addResp)
+	id := addResp["data"].(map[string]interface{})["id"].(string)
+
+	// 2. List — should have 1
+	req = httptest.NewRequest(http.MethodGet, "/api/digest/list", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var listResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	count := listResp["data"].(map[string]interface{})["count"].(float64)
+	if count != 1 {
+		t.Fatalf("expected 1 digest, got %v", count)
+	}
+
+	// 3. Disable
+	req = httptest.NewRequest(http.MethodPost, "/api/digest/disable/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// 4. Enable
+	req = httptest.NewRequest(http.MethodPost, "/api/digest/enable/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// 5. Remove
+	req = httptest.NewRequest(http.MethodPost, "/api/digest/remove/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// 6. List — should be empty
+	req = httptest.NewRequest(http.MethodGet, "/api/digest/list", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	count = listResp["data"].(map[string]interface{})["count"].(float64)
+	if count != 0 {
+		t.Errorf("expected 0 digests after remove, got %v", count)
 	}
 }

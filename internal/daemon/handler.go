@@ -13,6 +13,7 @@ import (
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/config"
+	"wr/internal/digest"
 	"wr/internal/llm"
 	"wr/internal/logger"
 	"wr/internal/models"
@@ -1249,5 +1250,203 @@ func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) 
 		"pushed":  true,
 		"summary": rpt.Summary,
 	})
+}
+
+// ── Digest CRUD handlers ──
+
+// digestAddRequest is the JSON body expected by POST /api/digest/add.
+type digestAddRequest struct {
+	Schedule  string `json:"schedule"`
+	Scope     string `json:"scope"`
+	Direction string `json:"direction"`
+}
+
+// handleDigestAdd handles POST /api/digest/add — creates a new digest configuration.
+// Body: {"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}
+// Success: returns the created DigestConfig.
+func (s *Server) handleDigestAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	var req digestAddRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		daemonWriter(w).ErrorWithCode("invalid_body", "invalid request body")
+		return
+	}
+
+	// Validate scope
+	scope, err := digest.ParseScope(req.Scope)
+	if err != nil {
+		daemonWriter(w).ErrorWithCode("invalid_scope", err.Error())
+		return
+	}
+
+	// Validate direction — empty defaults to "agenda"
+	dir := digest.Direction(req.Direction)
+	if dir == "" {
+		dir = digest.DirectionAgenda
+	}
+	if dir != digest.DirectionAgenda && dir != digest.DirectionSummary {
+		daemonWriter(w).ErrorWithCode("invalid_direction", fmt.Sprintf("invalid direction %q (must be agenda or summary)", req.Direction))
+		return
+	}
+
+	cfg := digest.DigestConfig{
+		Schedule:  req.Schedule,
+		Scope:     scope,
+		Direction: dir,
+	}
+
+	added, err := s.digestStore.Add(cfg)
+	if err != nil {
+		logger.WithField("schedule", req.Schedule).Errorf("digest add error: %v", err)
+		daemonWriter(w).ErrorWithCode("invalid_schedule", err.Error())
+		return
+	}
+
+	logger.WithField("digest_id", added.ID).WithField("scope", string(added.Scope)).WithField("schedule", added.Schedule).Info("digest added via API")
+	daemonWriter(w).Success(added)
+}
+
+// handleDigestList handles GET /api/digest/list — returns all digest configurations.
+func (s *Server) handleDigestList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	digests, err := s.digestStore.List()
+	if err != nil {
+		logger.Errorf("digest list error: %v", err)
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to list digests: %v", err))
+		return
+	}
+
+	logger.WithField("count", len(digests)).Info("digest list via API")
+	daemonWriter(w).Success(map[string]interface{}{
+		"action": "list",
+		"count":  len(digests),
+		"digests": digests,
+	})
+}
+
+// handleDigestRemove handles POST /api/digest/remove/{id} — removes a digest configuration.
+func (s *Server) handleDigestRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/digest/remove/")
+	if id == "" {
+		daemonWriter(w).ErrorWithCode("digest_not_found", "missing digest id")
+		return
+	}
+
+	if err := s.digestStore.Remove(id); err != nil {
+		logger.WithField("digest_id", id).Errorf("digest remove error: %v", err)
+		daemonWriter(w).ErrorWithCode("digest_not_found", fmt.Sprintf("digest %q not found", id))
+		return
+	}
+
+	logger.WithField("digest_id", id).Info("digest removed via API")
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":  "remove",
+		"id":      id,
+		"message": "digest removed",
+	})
+}
+
+// handleDigestEnable handles POST /api/digest/enable/{id} — enables a digest configuration.
+func (s *Server) handleDigestEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/digest/enable/")
+	if id == "" {
+		daemonWriter(w).ErrorWithCode("digest_not_found", "missing digest id")
+		return
+	}
+
+	if err := s.digestStore.Enable(id); err != nil {
+		logger.WithField("digest_id", id).Errorf("digest enable error: %v", err)
+		daemonWriter(w).ErrorWithCode("digest_not_found", fmt.Sprintf("digest %q not found", id))
+		return
+	}
+
+	// Read back and return updated config
+	updated, err := s.digestStore.Get(id)
+	if err != nil {
+		daemonWriter(w).Success(map[string]interface{}{
+			"action": "enable",
+			"id":     id,
+		})
+		return
+	}
+
+	logger.WithField("digest_id", id).Info("digest enabled via API")
+	daemonWriter(w).Success(updated)
+}
+
+// handleDigestDisable handles POST /api/digest/disable/{id} — disables a digest configuration.
+func (s *Server) handleDigestDisable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/digest/disable/")
+	if id == "" {
+		daemonWriter(w).ErrorWithCode("digest_not_found", "missing digest id")
+		return
+	}
+
+	if err := s.digestStore.Disable(id); err != nil {
+		logger.WithField("digest_id", id).Errorf("digest disable error: %v", err)
+		daemonWriter(w).ErrorWithCode("digest_not_found", fmt.Sprintf("digest %q not found", id))
+		return
+	}
+
+	// Read back and return updated config
+	updated, err := s.digestStore.Get(id)
+	if err != nil {
+		daemonWriter(w).Success(map[string]interface{}{
+			"action": "disable",
+			"id":     id,
+		})
+		return
+	}
+
+	logger.WithField("digest_id", id).Info("digest disabled via API")
+	daemonWriter(w).Success(updated)
 }
 

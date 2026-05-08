@@ -41,4 +41,10 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("marshal_error", fatal, "JSON 序列化失败")
 	_ = app.RegisterErrorCode("unknown", fatal, "未知错误")
 	_ = app.RegisterErrorCode("daemon_start_timeout", fatal, "daemon 启动超时")
+
+	// Digest errors
+	_ = app.RegisterErrorCode("digest_not_found", fatal, "digest 配置未找到")
+	_ = app.RegisterErrorCode("invalid_scope", validateParams, "无效的 digest 范围")
+	_ = app.RegisterErrorCode("invalid_schedule", validateParams, "无效的 cron 表达式")
+	_ = app.RegisterErrorCode("invalid_direction", validateParams, "无效的 digest 方向")
 }
