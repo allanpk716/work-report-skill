@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +19,7 @@ import (
 	"wr/internal/client"
 	"wr/internal/config"
 	"wr/internal/daemon"
+	"wr/internal/logger"
 	"wr/internal/models"
 	"wr/internal/pushover"
 	"wr/internal/scheduler"
@@ -93,18 +93,14 @@ func runDaemon(suppressStartupMsg bool) error {
 		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot create sandbox dirs: %v", err))
 	}
 
-	logPath := filepath.Join(app.Sandbox().BaseDir(), "daemon.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot open daemon log: %v", err))
+	logDir := filepath.Join(app.Sandbox().BaseDir(), "logs")
+	if err := logger.Init(logDir); err != nil {
+		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot init logger: %v", err))
 	}
-	defer logFile.Close()
-
-	// Redirect all default log.Printf output to the daemon log file
-	log.SetOutput(logFile)
+	defer logger.Shutdown()
 
 	// Create storage layer
-	store := storage.New(dataDir, log.New(logFile, "[storage] ", log.LstdFlags))
+	store := storage.New(dataDir, nil)
 
 	srv := daemon.NewServer(port, store, cfg)
 
@@ -114,7 +110,7 @@ func runDaemon(suppressStartupMsg bool) error {
 	if err != nil {
 		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot determine scheduler state path: %v", err))
 	}
-	sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, log.New(logFile, "[scheduler] ", log.LstdFlags))
+	sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, nil)
 	srv.SetScheduler(sched)
 
 	dir, err := daemon.DefaultStateDir()
@@ -143,7 +139,7 @@ func runDaemon(suppressStartupMsg bool) error {
 
 	// Start scheduler
 	if err := sched.Start(); err != nil {
-		log.Printf("[daemon] scheduler start warning: %v", err)
+		logger.Warnf("scheduler start warning: %v", err)
 	}
 	defer sched.Stop()
 
@@ -156,13 +152,13 @@ func runDaemon(suppressStartupMsg bool) error {
 			RecordType: models.TypeReminder,
 		})
 		if err != nil {
-			log.Printf("[daemon] catchup: failed to list reminders: %v", err)
+			logger.Warnf("catchup: failed to list reminders: %v", err)
 			return
 		}
 		// Also include tasks/meetings with remind_before
 		remindable, err := store.ListFullRecords(storage.ListOptions{})
 		if err != nil {
-			log.Printf("[daemon] catchup: failed to list all records: %v", err)
+			logger.Warnf("catchup: failed to list all records: %v", err)
 			return
 		}
 		// Filter to only those with remind_before or type=reminder
@@ -179,9 +175,9 @@ func runDaemon(suppressStartupMsg bool) error {
 
 		result, err := sched.CatchUp(catchUpRecords)
 		if err != nil {
-			log.Printf("[daemon] catchup error: %v", err)
+			logger.Errorf("catchup error: %v", err)
 		} else {
-			log.Printf("[daemon] catchup: scanned=%d fired=%d errors=%d",
+			logger.Infof("catchup: scanned=%d fired=%d errors=%d",
 				result.Scanned, result.Fired, result.Errors)
 		}
 	}()
@@ -209,7 +205,7 @@ func runDaemon(suppressStartupMsg bool) error {
 		// polls never see a state file pointing at an unbound port (which
 		// triggers stale-state cleanup and deletes the file).
 		if err := daemon.WriteState(dir, state); err != nil {
-			log.Printf("[daemon] warning: cannot write state: %v", err)
+			logger.Warnf("warning: cannot write state: %v", err)
 		}
 	})
 }
