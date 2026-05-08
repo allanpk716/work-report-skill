@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
+
+	"wr/internal/logger"
 )
 
 // AllowedClassifyTypes are the valid values for ClassifyResult.Type.
@@ -75,14 +76,14 @@ func Classify(client *Client, text string, today time.Time, location *time.Locat
 
 	content, err := client.CallChat(context.Background(), messages)
 	if err != nil {
-		log.Printf("[llm] classify error: api_base=%s latency=%dms error=%v input_len=%d",
+		logger.Errorf("classify error: api_base=%s latency=%dms error=%v input_len=%d",
 			client.apiBase, time.Since(start).Milliseconds(), err, len(text))
 		return nil, &ClassifyError{Op: "call_api", Err: err, Text: text}
 	}
 
 	result, err := parseClassifyResponse(content)
 	if err != nil {
-		log.Printf("[llm] classify parse error: latency=%dms error=%v input_len=%d",
+		logger.Errorf("classify parse error: latency=%dms error=%v input_len=%d",
 			time.Since(start).Milliseconds(), err, len(text))
 		return nil, &ClassifyError{Op: "parse_json", Err: err, Text: text}
 	}
@@ -95,7 +96,7 @@ func Classify(client *Client, text string, today time.Time, location *time.Locat
 		}
 	}
 
-	log.Printf("[llm] classify ok: type=%s latency=%dms input_len=%d title=%q",
+	logger.Infof("classify ok: type=%s latency=%dms input_len=%d title=%q",
 		result.Type, time.Since(start).Milliseconds(), len(text), result.Title)
 
 	return result, nil

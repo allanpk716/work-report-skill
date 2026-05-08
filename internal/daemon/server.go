@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +12,7 @@ import (
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/config"
+	"wr/internal/logger"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
 )
@@ -97,7 +97,7 @@ func (s *Server) Start(ctx context.Context, onReady func()) error {
 		onReady()
 	}
 
-	log.Printf("[daemon] listening on :%d (pid=%d)", s.port, os.Getpid())
+	logger.WithField("port", s.port).WithField("pid", os.Getpid()).Infof("daemon listening")
 	if err := s.http.ListenAndServe(); err != http.ErrServerClosed {
 		return fmt.Errorf("daemon: server error: %w", err)
 	}
@@ -114,7 +114,7 @@ func (s *Server) shutdown() {
 // loggingMiddleware logs each HTTP request.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[daemon] %s %s", r.Method, r.URL.Path)
+		logger.WithField("method", r.Method).WithField("path", r.URL.Path).Debugf("request")
 		next.ServeHTTP(w, r)
 	})
 }

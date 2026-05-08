@@ -14,8 +14,8 @@ import (
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/config"
-	
 	"wr/internal/llm"
+	"wr/internal/logger"
 	"wr/internal/models"
 	"wr/internal/pushover"
 	"wr/internal/report"
@@ -258,7 +258,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 			req.Recurring = result.Recurring
 		}
 
-		log.Printf("[daemon] add: source=llm type=%s title=%q image=%s", req.Type, req.Title, req.Image)
+		logger.Infof("add: source=llm type=%s title=%q image=%s", req.Type, req.Title, req.Image)
 		usedLLM = true
 	} else if req.Text != "" && req.Type == "" {
 		// Text classification (existing flow)
@@ -306,7 +306,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 			req.Recurring = result.Recurring
 		}
 
-		log.Printf("[daemon] add: source=llm type=%s title=%q", req.Type, req.Title)
+		logger.Infof("add: source=llm type=%s title=%q", req.Type, req.Title)
 		usedLLM = true
 	}
 
@@ -318,7 +318,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 			loc = s.config.Location()
 		}
 		req.Date = time.Now().In(loc).Format("2006-01-02")
-		log.Printf("[daemon] add: source=default_today date=%s", req.Date)
+		logger.Infof("add: source=default_today date=%s", req.Date)
 	}
 
 	// Validate required fields
@@ -343,11 +343,11 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if req.IdempotencyKey != "" {
 		existing, _, err := s.storage.GetByIdempotencyKey(req.IdempotencyKey)
 		if err != nil {
-			log.Printf("[daemon] add: idempotency lookup error (degrading to normal add): key=%s err=%v", req.IdempotencyKey, err)
+			logger.Warnf("add: idempotency lookup error (degrading to normal add): key=%s err=%v", req.IdempotencyKey, err)
 		}
 		if existing != nil {
 			cf := models.GetCommonFields(existing)
-			log.Printf("[daemon] add: short_id=%s source=idempotent_hit key=%s", cf.ShortID, req.IdempotencyKey)
+			logger.Infof("add: short_id=%s source=idempotent_hit key=%s", cf.ShortID, req.IdempotencyKey)
 			daemonWriter(w).Success(existing)
 			return
 		}
@@ -359,7 +359,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	// Persist via storage
 	result, err := s.storage.AddRecord(rec)
 	if err != nil {
-		log.Printf("[daemon] add error: %v", err)
+		logger.Errorf("add error: %v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to add record: %v", err))
 		return
 	}
@@ -369,12 +369,12 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if usedLLM {
 		source = "llm"
 	}
-	log.Printf("[daemon] add: short_id=%s type=%s title=%q source=%s", cf.ShortID, cf.Type, cf.Title, source)
+	logger.Infof("add: short_id=%s type=%s title=%q source=%s", cf.ShortID, cf.Type, cf.Title, source)
 
 	// Register with scheduler if present
 	if s.scheduler != nil {
 		if err := s.scheduler.Register(result); err != nil {
-			log.Printf("[daemon] scheduler register warning: short_id=%s err=%v", cf.ShortID, err)
+			logger.Warnf("scheduler register warning: short_id=%s err=%v", cf.ShortID, err)
 		}
 	}
 
@@ -396,7 +396,7 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 	client := llm.NewClient(cfg.LLM.Text.APIBase, cfg.LLM.Text.APIKey, cfg.LLM.Text.Model)
 	result, err := llm.Classify(client, text, today, loc)
 	if err != nil {
-		log.Printf("[daemon] classify error: api_base=%s model=%s error=%v",
+		logger.Errorf("classify error: api_base=%s model=%s error=%v",
 			cfg.LLM.Text.APIBase, cfg.LLM.Text.Model, err)
 		daemonWriter(w).ErrorWithCode("llm_error", fmt.Sprintf("LLM classification failed: %v", err))
 		return nil, err
@@ -421,13 +421,13 @@ func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textCont
 	client := llm.NewClient(cfg.LLM.Vision.APIBase, cfg.LLM.Vision.APIKey, cfg.LLM.Vision.Model)
 	result, err := llm.ClassifyImage(client, imagePath, textContext, today, loc)
 	if err != nil {
-		log.Printf("[daemon] classify_image error: api_base=%s model=%s error=%v image=%s",
+		logger.Errorf("classify_image error: api_base=%s model=%s error=%v image=%s",
 			cfg.LLM.Vision.APIBase, cfg.LLM.Vision.Model, err, imagePath)
 		daemonWriter(w).ErrorWithCode("llm_error", fmt.Sprintf("LLM vision classification failed: %v", err))
 		return nil, err
 	}
 
-	log.Printf("[daemon] classify_image ok: type=%s model=%s image=%s",
+	logger.Infof("classify_image ok: type=%s model=%s image=%s",
 		result.Type, cfg.LLM.Vision.Model, imagePath)
 
 	return result, nil
@@ -484,7 +484,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		built := buildRecord(rec)
 		result, err := s.storage.AddRecord(built)
 		if err != nil {
-			log.Printf("[daemon] import: storage error at record index %d: %v", imported, err)
+			logger.Errorf("import: storage error at record index %d: %v", imported, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to add record at index %d: %v", imported, err))
 			return
 		}
@@ -492,14 +492,14 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		// Register with scheduler if present (log warning only — never fail primary operation)
 		if s.scheduler != nil {
 			if err := s.scheduler.Register(result); err != nil {
-				log.Printf("[daemon] import: scheduler register warning at index %d: %v", imported, err)
+				logger.Warnf("import: scheduler register warning at index %d: %v", imported, err)
 			}
 		}
 
 		imported++
 	}
 
-	log.Printf("[daemon] import: imported=%d requested=%d", imported, len(req.Records))
+	logger.Infof("import: imported=%d requested=%d", imported, len(req.Records))
 	daemonWriter(w).Success(map[string]interface{}{"imported": imported})
 }
 
@@ -564,7 +564,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 
 	records, err := s.storage.ListRecords(opts)
 	if err != nil {
-		log.Printf("[daemon] list error: %v", err)
+		logger.Errorf("list error: %v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to list records: %v", err))
 		return
 	}
@@ -600,7 +600,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.storage.CompleteRecord(id); err != nil {
-		log.Printf("[daemon] complete error: id=%s err=%v", id, err)
+		logger.Errorf("complete error: id=%s err=%v", id, err)
 		if strings.Contains(err.Error(), "not found") {
 			daemonWriter(w).ErrorWithCode("record_not_found", err.Error())
 		} else {
@@ -612,7 +612,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	// Unregister from scheduler if present
 	if s.scheduler != nil {
 		if err := s.scheduler.Unregister(id); err != nil {
-			log.Printf("[daemon] scheduler unregister warning: short_id=%s err=%v", id, err)
+			logger.Warnf("scheduler unregister warning: short_id=%s err=%v", id, err)
 		}
 	}
 
@@ -627,7 +627,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[daemon] complete: short_id=%s", id)
+	logger.Infof("complete: short_id=%s", id)
 	daemonWriter(w).Success(rec)
 }
 
@@ -649,7 +649,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.storage.UpdateRecord(id, fields)
 	if err != nil {
-		log.Printf("[daemon] update error: id=%s err=%v", id, err)
+		logger.Errorf("update error: id=%s err=%v", id, err)
 		switch {
 		case errors.Is(err, storage.ErrRecordNotFound):
 			daemonWriter(w).ErrorWithCode("record_not_found", err.Error())
@@ -684,12 +684,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		_ = s.scheduler.Unregister(id)
 		// Register with updated record
 		if err := s.scheduler.Register(updated); err != nil {
-			log.Printf("[daemon] scheduler re-register warning: short_id=%s err=%v", id, err)
+			logger.Warnf("scheduler re-register warning: short_id=%s err=%v", id, err)
 		}
 	}
 
 	cf := models.GetCommonFields(updated)
-	log.Printf("[daemon] update: short_id=%s type=%s fields=%v", cf.ShortID, cf.Type, fieldKeys(fields))
+	logger.Infof("update: short_id=%s type=%s fields=%v", cf.ShortID, cf.Type, fieldKeys(fields))
 
 	daemonWriter(w).Success(updated)
 }
@@ -722,7 +722,7 @@ func (s *Server) resolveRecordID(w http.ResponseWriter, r *http.Request, pathPre
 			daemonWriter(w).ErrorWithCode("record_not_found", fmt.Sprintf("no active record found with title=%q date=%q", title, date))
 			return "", false
 		}
-		log.Printf("[daemon] lookup error: title=%q date=%q err=%v", title, date, err)
+		logger.Errorf("lookup error: title=%q date=%q err=%v", title, date, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("lookup failed: %v", err))
 		return "", false
 	}
@@ -732,13 +732,13 @@ func (s *Server) resolveRecordID(w http.ResponseWriter, r *http.Request, pathPre
 		for i, m := range matches {
 			ids[i] = m.ShortID
 		}
-		log.Printf("[daemon] lookup: multiple_matches title=%q date=%q count=%d ids=%v", title, date, len(matches), ids)
+		logger.Infof("lookup: multiple_matches title=%q date=%q count=%d ids=%v", title, date, len(matches), ids)
 		daemonWriter(w).ErrorWithCode("multiple_matches", fmt.Sprintf("found %d records matching title=%q date=%q: %s", len(matches), title, date, strings.Join(ids, ", ")))
 		return "", false
 	}
 
 	resolved := matches[0].ShortID
-	log.Printf("[daemon] lookup: source=lookup title=%q date=%q resolved=%s", title, date, resolved)
+	logger.Infof("lookup: source=lookup title=%q date=%q resolved=%s", title, date, resolved)
 	return resolved, true
 }
 
@@ -762,7 +762,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.storage.CancelRecord(id); err != nil {
-		log.Printf("[daemon] cancel error: id=%s err=%v", id, err)
+		logger.Errorf("cancel error: id=%s err=%v", id, err)
 		if strings.Contains(err.Error(), "not found") {
 			daemonWriter(w).ErrorWithCode("record_not_found", err.Error())
 		} else {
@@ -774,7 +774,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	// Unregister from scheduler if present
 	if s.scheduler != nil {
 		if err := s.scheduler.Unregister(id); err != nil {
-			log.Printf("[daemon] scheduler unregister warning: short_id=%s err=%v", id, err)
+			logger.Warnf("scheduler unregister warning: short_id=%s err=%v", id, err)
 		}
 	}
 
@@ -788,7 +788,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[daemon] cancel: short_id=%s", id)
+	logger.Infof("cancel: short_id=%s", id)
 	daemonWriter(w).Success(rec)
 }
 
@@ -828,11 +828,11 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if format == "json" {
 		records, err := s.storage.ListFullRecords(opts)
 		if err != nil {
-			log.Printf("[daemon] export json error: %v", err)
+			logger.Errorf("export json error: %v", err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to list records: %v", err))
 			return
 		}
-		log.Printf("[daemon] export: format=json count=%d", len(records))
+		logger.Infof("export: format=json count=%d", len(records))
 		daemonWriter(w).Success(map[string]interface{}{
 			"format":  "json",
 			"count":   len(records),
@@ -854,7 +854,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		// Single date
 		rpt, err := report.Generate(s.storage, date, log.Default())
 		if err != nil {
-			log.Printf("[daemon] export markdown error: date=%s err=%v", date, err)
+			logger.Errorf("export markdown error: date=%s err=%v", date, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 			return
 		}
@@ -864,7 +864,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		// Date range
 		rpt, err := report.GenerateRange(s.storage, opts.DateFrom, opts.DateTo, loc, log.Default())
 		if err != nil {
-			log.Printf("[daemon] export markdown error: from=%s to=%s err=%v", opts.DateFrom, opts.DateTo, err)
+			logger.Errorf("export markdown error: from=%s to=%s err=%v", opts.DateFrom, opts.DateTo, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
 			return
 		}
@@ -875,7 +875,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		today := time.Now().In(loc).Format("2006-01-02")
 		rpt, err := report.Generate(s.storage, today, log.Default())
 		if err != nil {
-			log.Printf("[daemon] export markdown error: date=%s err=%v", today, err)
+			logger.Errorf("export markdown error: date=%s err=%v", today, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 			return
 		}
@@ -883,7 +883,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		count = rpt.Summary.Total
 	}
 
-	log.Printf("[daemon] export: format=markdown count=%d", count)
+	logger.Infof("export: format=markdown count=%d", count)
 	daemonWriter(w).Success(map[string]interface{}{
 		"format":  "markdown",
 		"count":   count,
@@ -909,12 +909,12 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.Generate(s.storage, date, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report error: date=%s err=%v", date, err)
+		logger.Errorf("report error: date=%s err=%v", date, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 		return
 	}
 
-	log.Printf("[daemon] report: date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+	logger.Infof("report: date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
 		date, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
@@ -934,12 +934,12 @@ func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_today error: err=%v", err)
+		logger.Errorf("report_today error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate today report: %v", err))
 		return
 	}
 
-	log.Printf("[daemon] report_today: date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+	logger.Infof("report_today: date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
 		rpt.Date, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
@@ -959,7 +959,7 @@ func (s *Server) handleReportPushToday(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_push_today error: err=%v", err)
+		logger.Errorf("report_push_today error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 		return
 	}
@@ -981,7 +981,7 @@ func (s *Server) handleReportPushDate(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.Generate(s.storage, date, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_push_date error: date=%s err=%v", date, err)
+		logger.Errorf("report_push_date error: date=%s err=%v", date, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
 		return
 	}
@@ -1010,12 +1010,12 @@ func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_range error: from=%s to=%s err=%v", from, to, err)
+		logger.Errorf("report_range error: from=%s to=%s err=%v", from, to, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
 		return
 	}
 
-	log.Printf("[daemon] report_range: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+	logger.Infof("report_range: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
 		from, to, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
@@ -1035,12 +1035,12 @@ func (s *Server) handleReportWeek(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_week error: err=%v", err)
+		logger.Errorf("report_week error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate week report: %v", err))
 		return
 	}
 
-	log.Printf("[daemon] report_week: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+	logger.Infof("report_week: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
 		rpt.DateFrom, rpt.DateTo, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
@@ -1068,7 +1068,7 @@ func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_push_range error: from=%s to=%s err=%v", from, to, err)
+		logger.Errorf("report_push_range error: from=%s to=%s err=%v", from, to, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
 		return
 	}
@@ -1089,7 +1089,7 @@ func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
 
 	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
 	if err != nil {
-		log.Printf("[daemon] report_push_week error: err=%v", err)
+		logger.Errorf("report_push_week error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate week report: %v", err))
 		return
 	}
@@ -1101,7 +1101,7 @@ func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
 // Returns pushover_not_configured error code if Pushover credentials are empty.
 func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeReport) {
 	if s.config == nil || s.config.Pushover.APIToken == "" || s.config.Pushover.UserKey == "" {
-		log.Printf("[daemon] report_push_range: pushover_not_configured from=%s to=%s", rpt.DateFrom, rpt.DateTo)
+		logger.Warnf("report_push_range: pushover_not_configured from=%s to=%s", rpt.DateFrom, rpt.DateTo)
 		daemonWriter(w).ErrorWithCode("pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)")
 		return
 	}
@@ -1113,12 +1113,12 @@ func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeRep
 
 	title := fmt.Sprintf("工作报告 %s ~ %s", rpt.DateFrom, rpt.DateTo)
 	if err := pushover.Send(context.Background(), cfg, rpt.Markdown, title, 0); err != nil {
-		log.Printf("[daemon] report_push_range: send failed from=%s to=%s err=%v", rpt.DateFrom, rpt.DateTo, err)
+		logger.Infof("report_push_range: send failed from=%s to=%s err=%v", rpt.DateFrom, rpt.DateTo, err)
 		daemonWriter(w).ErrorWithCode("push_error", fmt.Sprintf("Pushover send failed: %v", err))
 		return
 	}
 
-	log.Printf("[daemon] report_push_range: sent from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+	logger.Infof("report_push_range: sent from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
 		rpt.DateFrom, rpt.DateTo, rpt.DaysCount, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
@@ -1137,7 +1137,7 @@ func (s *Server) sendRangeReportPush(w http.ResponseWriter, rpt *report.RangeRep
 func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) {
 	// Check Pushover configuration
 	if s.config == nil || s.config.Pushover.APIToken == "" || s.config.Pushover.UserKey == "" {
-		log.Printf("[daemon] report_push: pushover_not_configured date=%s", rpt.Date)
+		logger.Warnf("report_push: pushover_not_configured date=%s", rpt.Date)
 		daemonWriter(w).ErrorWithCode("pushover_not_configured", "Pushover is not configured (api_token or user_key is empty)")
 		return
 	}
@@ -1149,12 +1149,12 @@ func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) 
 
 	title := fmt.Sprintf("工作日报 %s", rpt.Date)
 	if err := pushover.Send(context.Background(), cfg, rpt.Markdown, title, 0); err != nil {
-		log.Printf("[daemon] report_push: send failed date=%s err=%v", rpt.Date, err)
+		logger.Errorf("report_push: send failed date=%s err=%v", rpt.Date, err)
 		daemonWriter(w).ErrorWithCode("push_error", fmt.Sprintf("Pushover send failed: %v", err))
 		return
 	}
 
-	log.Printf("[daemon] report_push: sent date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
+	logger.Infof("report_push: sent date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
 		rpt.Date, rpt.Summary.Meetings, rpt.Summary.Tasks,
 		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
 
@@ -1165,3 +1165,4 @@ func (s *Server) sendReportPush(w http.ResponseWriter, rpt *report.DailyReport) 
 		"summary": rpt.Summary,
 	})
 }
+

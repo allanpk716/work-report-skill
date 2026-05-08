@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"wr/internal/logger"
 )
 
 // maxImageSize is the maximum allowed image file size (20 MB, OpenAI limit).
@@ -116,14 +117,14 @@ func ClassifyImage(client *Client, imagePath string, textContext string, today t
 
 	content, err := client.CallChat(context.Background(), messages)
 	if err != nil {
-		log.Printf("[llm] classify_image error: api_base=%s latency=%dms error=%v image=%s",
+		logger.Errorf("classify_image error: api_base=%s latency=%dms error=%v image=%s",
 			client.apiBase, time.Since(start).Milliseconds(), err, imagePath)
 		return nil, &ClassifyError{Op: "call_api", Err: err, Text: imagePath}
 	}
 
 	result, err := parseClassifyResponse(content)
 	if err != nil {
-		log.Printf("[llm] classify_image parse error: latency=%dms error=%v image=%s",
+		logger.Errorf("classify_image parse error: latency=%dms error=%v image=%s",
 			time.Since(start).Milliseconds(), err, imagePath)
 		return nil, &ClassifyError{Op: "parse_json", Err: err, Text: imagePath}
 	}
@@ -136,7 +137,7 @@ func ClassifyImage(client *Client, imagePath string, textContext string, today t
 		}
 	}
 
-	log.Printf("[llm] classify_image ok: type=%s latency=%dms model=%s image=%s title=%q",
+	logger.Infof("classify_image ok: type=%s latency=%dms model=%s image=%s title=%q",
 		result.Type, time.Since(start).Milliseconds(), client.model, imagePath, result.Title)
 
 	return result, nil
