@@ -28,8 +28,12 @@ target/
 vendor/
 *.exe
 *.log
-coverage/
+# ── Wr binary ──
+wr
+/wr
 .cache/
 tmp/
 docs/exsample/
+_uat_*
+_tmp_*
 

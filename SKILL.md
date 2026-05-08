@@ -156,8 +156,10 @@ wr add --type meeting --title "Project sync" --date 2026-05-03 --time 14:00 --lo
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","location":"Room 3A","tags":["project","weekly"],"priority":"","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","location":"Room 3A","status":"active","tags":["project","weekly"],"saved_at":"2026-05-03T14:00:00+08:00","short_id":"a1b2c3d4e5f67890"}}
 ```
+
+Empty fields (e.g. `priority`, `description`, `remind_before`, `recurring`) are omitted from the response — only fields with non-empty values are included.
 
 **LLM text classification example:**
 
@@ -221,7 +223,7 @@ wr list --date 2026-05-03 --type meeting
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"list","count":2,"entries":[{"short_id":"a1b2c3d4e5f67890","type":"meeting","title":"Project sync","date":"2026-05-03","time":"14:00","status":"active"},{"short_id":"f0e1d2c3b4a56789","type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"active"}]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"list","count":2,"entries":[{"date":"2026-05-03","short_id":"a1b2c3d4e5f67890","status":"active","time":"14:00","title":"Project sync","type":"meeting"},{"date":"2026-05-03","short_id":"f0e1d2c3b4a56789","status":"active","time":"10:00","title":"Standup","type":"meeting"}]}}
 ```
 
 **Error codes:** `storage_error`, `daemon_not_running`
@@ -281,7 +283,7 @@ wr update --title "Project sync" --date 2026-05-03 --time 15:00 --location "Room
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:30:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T14:30:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:30:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"active","tags":["project","weekly"],"saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T14:30:00+08:00","short_id":"a1b2c3d4e5f67890"}}
 ```
 
 **Error codes:** `record_not_found`, `multiple_matches`, `already_completed`, `already_cancelled`, `invalid_body`, `invalid_field`, `invalid_params`, `storage_error`, `daemon_not_running`
@@ -326,7 +328,7 @@ wr complete --title "Review PR #42" --date 2026-05-03
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T16:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","status":"completed","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T16:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"completed","tags":["project","weekly"],"saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00","short_id":"a1b2c3d4e5f67890"}}
 ```
 
 **Error codes:** `record_not_found`, `multiple_matches`, `storage_error`, `daemon_not_running`
@@ -373,7 +375,7 @@ wr cancel --title "Standup" --date 2026-05-03
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T12:00:00Z","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T12:00:00Z","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00","short_id":"f0e1d2c3b4a56789"}}
 ```
 
 **Error codes:** `record_not_found`, `multiple_matches`, `storage_error`, `daemon_not_running`
@@ -403,8 +405,10 @@ wr report today
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","summary":{"meetings":2,"tasks":3,"reminders":1,"logs":4,"total":10},"markdown":"...","entries":[...]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","meetings":[],"tasks":[],"reminders":[],"logs":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"logs":0},"markdown":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 日志 0 | 共计 0 条\n\n"}}
 ```
+
+The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `logs`) instead of a flat `entries` array. Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report.
 
 ##### wr report date \<YYYY-MM-DD\>
 
@@ -427,8 +431,10 @@ wr report week
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date_from":"2026-04-27","date_to":"2026-05-03","days_count":7,"summary":{"meetings":8,"tasks":12,"reminders":3,"logs":15,"total":38},"markdown":"..."}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date_from":"2026-04-27","date_to":"2026-05-03","days_count":7,"days":[{"date":"2026-04-27","meetings":[],"tasks":[],"reminders":[],"logs":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"logs":0},"markdown":"# 工作日报 2026-04-27\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 日志 0 | 共计 0 条\n\n"},{"date":"2026-04-28","meetings":[],"tasks":[],"reminders":[],"logs":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"logs":0},"markdown":"# 工作日报 2026-04-28\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 日志 0 | 共计 0 条\n\n"}],"merged_meetings":null,"merged_tasks":null,"merged_reminders":null,"merged_logs":null,"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"logs":0},"markdown":"# 工作周报 2026-04-27 ~ 2026-05-03\n\n📊 **汇总** (7天): 会议 0 | 任务 0 | 提醒 0 | 日志 0 | 共计 0 条\n\n"}}
 ```
+
+The `days` array contains per-day report objects (same structure as `wr report today`). The `merged_*` fields contain cross-day aggregated records (or `null` when empty). The top-level `summary` and `markdown` provide the week overview.
 
 ##### wr report range
 
@@ -571,7 +577,7 @@ wr export --format json --from 2026-05-01 --to 2026-05-07
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"count":3,"records":[{"type":"meeting","title":"Sprint planning","date":"2026-05-01","time":"09:00","status":"active","short_id":"a1b2c3d4e5f67890","saved_at":"2026-05-01T09:00:00+08:00"},{"type":"task","title":"Review PR #42","date":"2026-05-02","status":"completed","short_id":"f0e1d2c3b4a56789","saved_at":"2026-05-02T10:00:00+08:00"},{"type":"log","title":"Deployed v2.1","date":"2026-05-03","status":"active","short_id":"c3d4e5f6a7b89012","saved_at":"2026-05-03T14:00:00+08:00"}]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"count":3,"format":"json","records":[{"type":"meeting","title":"Sprint planning","date":"2026-05-01","time":"09:00","status":"active","saved_at":"2026-05-01T09:00:00+08:00","short_id":"a1b2c3d4e5f67890"},{"type":"task","title":"Review PR #42","date":"2026-05-02","priority":"high","status":"active","saved_at":"2026-05-02T10:00:00+08:00","short_id":"f0e1d2c3b4a56789"},{"type":"log","title":"Deployed v2.1","date":"2026-05-03","status":"active","saved_at":"2026-05-03T14:00:00+08:00","short_id":"c3d4e5f6a7b89012"}]}}
 ```
 
 **Markdown format example:**
@@ -583,8 +589,10 @@ wr export --format markdown --date 2026-05-03
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"format":"markdown","content":"## Work Report — 2026-05-03\n\n### Meetings\n- Sprint planning (09:00)\n\n### Tasks\n- Review PR #42\n\n### Logs\n- Deployed v2.1\n"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"count":3,"format":"markdown","content":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 1 | 任务 1 | 提醒 0 | 日志 1 | 共计 3 条\n\n## 📅 会议 (1)\n\n- Sprint planning [09:00]\n\n## ✅ 任务 (1)\n\n- Review PR #42 [进行中]\n\n## 📝 日志 (1)\n\n- Deployed v2.1\n\n"}}
 ```
+
+Markdown reports use Chinese headings with emoji decorators. The `content` field contains the full Markdown string.
 
 **Export to file:**
 
@@ -654,14 +662,12 @@ wr agent daemon ensure-running
 **Success output (daemon already running):**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"source":"already_running","pid":12345,"port":18080,"daemon":{"version":"0.1.0","status":"running"}}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"data_dir":{"accessible":true,"path":"..."},"exists":true,"llm":{"text":{"configured":true},"vision":{"configured":false}},"pushover":{"configured":true},"redacted":{"daemon":{"port":18080},"data_dir":"...","llm":{"text":{"api_key":"secr****","model":"","provider":""},"vision":{"api_key":"","model":"","provider":""}},"pushover":{"api_token":"secr****","user_key":"secr****"},"timezone":"Asia/Shanghai"}},"daemon":{"pid":12345,"port":18080,"status":"running","version":"0.1.0"},"datetime":{"current_date":"2026-05-03","current_datetime":"2026-05-03T22:00:00+08:00","current_time":"22:00:00","timezone":"Asia/Shanghai","weekday":"Friday"},"pid":12345,"port":18080,"records":{"active_logs":0,"active_meetings":2,"active_reminders":0,"active_tasks":1,"total_active":3},"scheduler":{"entries_count":2,"running":true},"source":"already_running"}}
 ```
 
 **Success output (daemon just started):**
 
-```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"source":"started","pid":12345,"port":18080,"daemon":{"version":"0.1.0","status":"running"}}}
-```
+Same structure as above, with `"source":"started"` instead of `"source":"already_running"`. The output includes full daemon diagnostics (config, datetime, records, scheduler) regardless of whether the daemon was just started or was already running.
 
 **Error codes:** `daemon_start_timeout`, `daemon_not_running`, `invalid_body`
 
@@ -687,14 +693,18 @@ wr status
 **Daemon running output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"daemon":{"version":"0.1.0","status":"running","pid":12345,"port":18080},"config":{"exists":true,"pushover":{"configured":true},"llm":{"text":{"configured":true},"vision":{"configured":false}},"data_dir":{"path":"/home/user/.work-report/work-records","accessible":true}},"scheduler":{"running":true,"entries_count":3}}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"data_dir":{"accessible":true,"path":"..."},"exists":true,"llm":{"text":{"configured":true},"vision":{"configured":false}},"pushover":{"configured":true},"redacted":{"daemon":{"port":18080},"data_dir":"...","llm":{"text":{"api_key":"secr****","model":"gpt-4o-mini","provider":""},"vision":{"api_key":"","model":"","provider":""}},"pushover":{"api_token":"secr****","user_key":"secr****"},"timezone":"Asia/Shanghai"}},"daemon":{"pid":12345,"port":18080,"status":"running","version":"0.1.0"},"datetime":{"current_date":"2026-05-03","current_datetime":"2026-05-03T22:00:00+08:00","current_time":"22:00:00","timezone":"Asia/Shanghai","weekday":"Friday"},"records":{"active_logs":0,"active_meetings":2,"active_reminders":0,"active_tasks":1,"total_active":3},"scheduler":{"entries_count":2,"running":true}}}
 ```
+
+The running output includes `datetime` (server date/time info), `records` (active record counts by type), `scheduler` state, and a `redacted` config view (keys masked as `secr****`).
 
 **Daemon not running output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"daemon":{"status":"not_running","suggestion":"Run 'wr agent daemon start' to start the daemon."},"config":{"exists":true,"pushover":{"configured":false},"llm":{"text":{"configured":true},"vision":{"configured":false}},"data_dir":{"path":"/home/user/.work-report/work-records","accessible":true}}}}
+{"version":"1.0","tool":"wr","type":"error","timestamp":"2026-05-03T14:00:00Z","error_code":"daemon_not_running","message":"daemon not running: ..."}
 ```
+
+When the daemon is not running, `wr status` returns a JSONL error with `error_code: "daemon_not_running"` and a descriptive `message` that includes the suggestion to run `wr agent daemon start`.
 
 ---
 
@@ -788,17 +798,25 @@ wr config show
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"pushover":{"api_token":"sk-x****","user_key":"user****"},"llm":{"text":{"provider":"","api_key":"sk-x****","api_base":"","model":"gpt-4o-mini"},"vision":{"provider":"","api_key":"","api_base":"","model":""}},"data_dir":"/home/user/.work-report/work-records","daemon":{"port":18080},"timezone":"Asia/Shanghai"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"pushover":{"api_token":"secr****","user_key":"secr****"},"llm":{"text":{"provider":"","api_key":"secr****","model":"gpt-4o-mini"},"vision":{"provider":"","api_key":"","model":""}},"data_dir":"/home/user/.work-report/work-records","daemon":{"port":18080},"timezone":"Asia/Shanghai"}}
 ```
+
+Secrets are redacted as `secr****` (first 4 chars shown, rest masked).
 
 ---
 
 ### wr --version
 
-Print the wr version.
+Print the wr version. This is the only command that outputs plain text instead of JSONL.
 
 ```bash
 wr --version
+```
+
+**Output (plain text, not JSONL):**
+
+```
+wr version dev
 ```
 
 ---
