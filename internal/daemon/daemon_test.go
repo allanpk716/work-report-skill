@@ -5514,3 +5514,446 @@ func TestDigestCRUDEndToEnd(t *testing.T) {
 		t.Errorf("expected 0 digests after remove, got %v", count)
 	}
 }
+
+// ── Prompt CRUD handler tests ──
+
+func TestPromptListEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/list", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	count := data["count"].(float64)
+	if count != 2 {
+		t.Errorf("expected 2 built-in prompts (agenda, report), got %v", count)
+	}
+	prompts, ok := data["prompts"].([]interface{})
+	if !ok || len(prompts) != 2 {
+		t.Fatalf("expected prompts array with 2 items, got %v", data["prompts"])
+	}
+
+	// Verify both are defaults initially
+	for _, p := range prompts {
+		pMap := p.(map[string]interface{})
+		isDefault, _ := pMap["is_default"].(bool)
+		if !isDefault {
+			t.Errorf("expected is_default=true for %v, got false", pMap["name"])
+		}
+		text, _ := pMap["text"].(string)
+		if text == "" {
+			t.Errorf("expected non-empty text for %v", pMap["name"])
+		}
+	}
+}
+
+func TestPromptListEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/list", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestPromptShowEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Show built-in agenda prompt (default)
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["name"] != "agenda" {
+		t.Errorf("expected name=agenda, got %v", data["name"])
+	}
+	isDefault, _ := data["is_default"].(bool)
+	if !isDefault {
+		t.Errorf("expected is_default=true for built-in agenda, got false")
+	}
+	text, _ := data["text"].(string)
+	if !strings.Contains(text, "Agenda") {
+		t.Errorf("expected agenda text to contain 'Agenda', got: %s", text)
+	}
+}
+
+func TestPromptShowEndpoint_Report(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/show/report", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["name"] != "report" {
+		t.Errorf("expected name=report, got %v", data["name"])
+	}
+	text, _ := data["text"].(string)
+	if !strings.Contains(text, "Report") {
+		t.Errorf("expected report text to contain 'Report', got: %s", text)
+	}
+}
+
+func TestPromptShowEndpoint_NotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/show/nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptShowEndpoint_MissingName(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/show/", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptShowEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/show/agenda", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestPromptSetEndpoint_Text(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	body := strings.NewReader(`{"text":"custom agenda prompt"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/agenda", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["name"] != "agenda" {
+		t.Errorf("expected name=agenda, got %v", data["name"])
+	}
+
+	// Verify the override is reflected in show
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data = record["data"].(map[string]interface{})
+	if data["text"] != "custom agenda prompt" {
+		t.Errorf("expected text='custom agenda prompt', got %v", data["text"])
+	}
+	isDefault, _ := data["is_default"].(bool)
+	if isDefault {
+		t.Errorf("expected is_default=false after set, got true")
+	}
+}
+
+func TestPromptSetEndpoint_File(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	// Create a temp file with prompt content
+	promptFile := filepath.Join(dir, "custom_prompt.txt")
+	if err := os.WriteFile(promptFile, []byte("file-based prompt content"), 0644); err != nil {
+		t.Fatalf("write prompt file: %v", err)
+	}
+
+	// Use json.Marshal to properly escape the file path
+	payload, _ := json.Marshal(map[string]string{"file": promptFile})
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/report", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify via show
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/report", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["text"] != "file-based prompt content" {
+		t.Errorf("expected text from file, got %v", data["text"])
+	}
+}
+
+func TestPromptSetEndpoint_FileNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	body := strings.NewReader(`{"file":"/nonexistent/path/prompt.txt"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/agenda", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestPromptSetEndpoint_EmptyText(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	body := strings.NewReader(`{"text":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/agenda", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestPromptSetEndpoint_InvalidJSON(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/agenda", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_body")
+}
+
+func TestPromptSetEndpoint_MissingName(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	body := strings.NewReader(`{"text":"some prompt"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptSetEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/set/agenda", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestPromptResetEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// First set a custom prompt
+	body := strings.NewReader(`{"text":"custom override"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/agenda", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Verify it's overridden
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["text"] != "custom override" {
+		t.Fatalf("expected override text, got %v", data["text"])
+	}
+
+	// Reset to default
+	req = httptest.NewRequest(http.MethodPost, "/api/prompt/reset/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resetResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resetResp)
+	resetData := resetResp["data"].(map[string]interface{})
+	if resetData["name"] != "agenda" {
+		t.Errorf("expected name=agenda, got %v", resetData["name"])
+	}
+	if resetData["message"] != "prompt reset to default" {
+		t.Errorf("expected reset message, got %v", resetData["message"])
+	}
+	// Text should be the built-in default (contains "Agenda")
+	resetText, _ := resetData["text"].(string)
+	if !strings.Contains(resetText, "Agenda") {
+		t.Errorf("expected default agenda text after reset, got: %s", resetText)
+	}
+
+	// Verify via show that it's back to default
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data = record["data"].(map[string]interface{})
+	isDefault, _ := data["is_default"].(bool)
+	if !isDefault {
+		t.Errorf("expected is_default=true after reset, got false")
+	}
+	if data["text"] != resetText {
+		t.Errorf("show text should match reset text")
+	}
+}
+
+func TestPromptResetEndpoint_NoOverride_NoOp(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Reset a prompt that was never overridden — should succeed (no-op)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/reset/agenda", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &record)
+	data := record["data"].(map[string]interface{})
+	if data["message"] != "prompt reset to default" {
+		t.Errorf("expected reset message, got %v", data["message"])
+	}
+}
+
+func TestPromptResetEndpoint_NonBuiltin(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// First set a custom (non-builtin) prompt
+	body := strings.NewReader(`{"text":"custom non-builtin"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/set/my-custom", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Reset should fail — no default for non-builtin names
+	req = httptest.NewRequest(http.MethodPost, "/api/prompt/reset/my-custom", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptResetEndpoint_MissingName(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/reset/", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptResetEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/reset/agenda", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+// TestPromptCRUDEndToEnd exercises the full prompt lifecycle: list → show → set → show → reset → list.
+func TestPromptCRUDEndToEnd(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// 1. List — 2 built-in defaults
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/list", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var listResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	count := listResp["data"].(map[string]interface{})["count"].(float64)
+	if count != 2 {
+		t.Fatalf("expected 2 prompts, got %v", count)
+	}
+
+	// 2. Show agenda — should be default
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// 3. Set agenda to custom text
+	body := strings.NewReader(`{"text":"my custom agenda"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/prompt/set/agenda", body)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// 4. Show agenda — should be override
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	var showResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &showResp)
+	showData := showResp["data"].(map[string]interface{})
+	if showData["text"] != "my custom agenda" {
+		t.Errorf("expected custom text, got %v", showData["text"])
+	}
+	if showData["is_default"] != false {
+		t.Errorf("expected is_default=false, got true")
+	}
+
+	// 5. List — still 2, but agenda is now overridden
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/list", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	count = listResp["data"].(map[string]interface{})["count"].(float64)
+	if count != 2 {
+		t.Errorf("expected 2 prompts after set, got %v", count)
+	}
+
+	// 6. Reset agenda
+	req = httptest.NewRequest(http.MethodPost, "/api/prompt/reset/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// 7. Show agenda — should be default again
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/show/agenda", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &showResp)
+	showData = showResp["data"].(map[string]interface{})
+	isDefault, _ := showData["is_default"].(bool)
+	if !isDefault {
+		t.Errorf("expected is_default=true after reset, got false")
+	}
+}

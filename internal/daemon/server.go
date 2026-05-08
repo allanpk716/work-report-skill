@@ -175,4 +175,10 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/digest/remove/", s.handleDigestRemove)
 	s.router.HandleFunc("/api/digest/enable/", s.handleDigestEnable)
 	s.router.HandleFunc("/api/digest/disable/", s.handleDigestDisable)
+
+	// Prompt CRUD endpoints
+	s.router.HandleFunc("/api/prompt/list", s.handlePromptList)
+	s.router.HandleFunc("/api/prompt/show/", s.handlePromptShow)
+	s.router.HandleFunc("/api/prompt/set/", s.handlePromptSet)
+	s.router.HandleFunc("/api/prompt/reset/", s.handlePromptReset)
 }

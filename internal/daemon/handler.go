@@ -1450,3 +1450,197 @@ func (s *Server) handleDigestDisable(w http.ResponseWriter, r *http.Request) {
 	daemonWriter(w).Success(updated)
 }
 
+// ── Prompt CRUD handlers ──
+
+// handlePromptList handles GET /api/prompt/list — lists all prompts with their current text and default status.
+func (s *Server) handlePromptList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	prompts, err := s.digestStore.ListPrompts()
+	if err != nil {
+		logger.Errorf("prompt list error: %v", err)
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to list prompts: %v", err))
+		return
+	}
+
+	// Convert map to sorted array for deterministic output
+	entries := make([]map[string]interface{}, 0, len(prompts))
+	for _, info := range prompts {
+		entry := map[string]interface{}{
+			"name":       string(info.Name),
+			"text":       info.Text,
+			"is_default": info.IsDefault,
+		}
+		if info.UpdatedAt != "" {
+			entry["updated_at"] = info.UpdatedAt
+		}
+		entries = append(entries, entry)
+	}
+
+	logger.WithField("count", len(entries)).Info("prompt list via API")
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":  "list",
+		"count":   len(entries),
+		"prompts": entries,
+	})
+}
+
+// handlePromptShow handles GET /api/prompt/show/{name} — returns the effective prompt text for a named prompt.
+func (s *Server) handlePromptShow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/api/prompt/show/")
+	if name == "" {
+		daemonWriter(w).ErrorWithCode("prompt_not_found", "missing prompt name")
+		return
+	}
+
+	text, err := s.digestStore.GetPrompt(digest.PromptName(name))
+	if err != nil {
+		if errors.Is(err, digest.ErrPromptNotFound) {
+			daemonWriter(w).ErrorWithCode("prompt_not_found", fmt.Sprintf("prompt %q not found (no default or override)", name))
+		} else {
+			logger.Errorf("prompt show error: name=%s err=%v", name, err)
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to get prompt: %v", err))
+		}
+		return
+	}
+
+	// Determine if it's a default or override
+	info, _ := s.digestStore.ListPrompts()
+	promptInfo, exists := info[digest.PromptName(name)]
+	isDefault := !exists || promptInfo.IsDefault
+
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":     "show",
+		"name":       name,
+		"text":       text,
+		"is_default": isDefault,
+	})
+}
+
+// promptSetRequest is the JSON body expected by POST /api/prompt/set/{name}.
+type promptSetRequest struct {
+	Text string `json:"text"`
+	File string `json:"file"`
+}
+
+// handlePromptSet handles POST /api/prompt/set/{name} — sets a custom prompt text.
+// Body: {"text": "..."} or {"file": "path/to/file.txt"}
+func (s *Server) handlePromptSet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/api/prompt/set/")
+	if name == "" {
+		daemonWriter(w).ErrorWithCode("prompt_not_found", "missing prompt name")
+		return
+	}
+
+	var req promptSetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		daemonWriter(w).ErrorWithCode("invalid_body", "invalid request body")
+		return
+	}
+
+	// Determine text source: explicit text or file content
+	text := req.Text
+	if text == "" && req.File != "" {
+		data, err := os.ReadFile(req.File)
+		if err != nil {
+			daemonWriter(w).ErrorWithCode("invalid_body", fmt.Sprintf("failed to read file %q: %v", req.File, err))
+			return
+		}
+		text = string(data)
+	}
+
+	if text == "" {
+		daemonWriter(w).ErrorWithCode("invalid_body", "text or file must be provided (and non-empty)")
+		return
+	}
+
+	if err := s.digestStore.SetPrompt(digest.PromptName(name), text); err != nil {
+		logger.Errorf("prompt set error: name=%s err=%v", name, err)
+		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to set prompt: %v", err))
+		return
+	}
+
+	logger.WithField("prompt_name", name).Info("prompt set via API")
+	daemonWriter(w).Success(map[string]interface{}{
+		"action": "set",
+		"name":   name,
+		"message": "prompt updated",
+	})
+}
+
+// handlePromptReset handles POST /api/prompt/reset/{name} — restores a built-in prompt to its default text.
+func (s *Server) handlePromptReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/api/prompt/reset/")
+	if name == "" {
+		daemonWriter(w).ErrorWithCode("prompt_not_found", "missing prompt name")
+		return
+	}
+
+	if err := s.digestStore.ResetPrompt(digest.PromptName(name)); err != nil {
+		if errors.Is(err, digest.ErrPromptNotFound) {
+			daemonWriter(w).ErrorWithCode("prompt_not_found", fmt.Sprintf("prompt %q has no default to reset to", name))
+		} else {
+			logger.Errorf("prompt reset error: name=%s err=%v", name, err)
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to reset prompt: %v", err))
+		}
+		return
+	}
+
+	// Read back the default text for the response
+	text, err := s.digestStore.GetPrompt(digest.PromptName(name))
+	if err != nil {
+		daemonWriter(w).Success(map[string]interface{}{
+			"action":  "reset",
+			"name":    name,
+			"message": "prompt reset to default",
+		})
+		return
+	}
+
+	logger.WithField("prompt_name", name).Info("prompt reset via API")
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":  "reset",
+		"name":    name,
+		"text":    text,
+		"message": "prompt reset to default",
+	})
+}
+
