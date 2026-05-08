@@ -897,6 +897,248 @@ func TestAddEndpoint_TextClassification(t *testing.T) {
 	}
 }
 
+// mockLLMBatchServer creates an httptest.Server that simulates the OpenAI chat completions API
+// returning multiple ClassifyResult entries as a JSON array.
+func mockLLMBatchServer(t *testing.T, results []llm.ClassifyResult) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		b, _ := json.Marshal(results)
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"content": string(b),
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+func TestAddEndpoint_TextMultiEvent(t *testing.T) {
+	// Mock LLM returns an array of 2 results
+	mockServer := mockLLMBatchServer(t, []llm.ClassifyResult{
+		{Type: "task", Title: "完成需求文档", Date: "2026-05-03"},
+		{Type: "meeting", Title: "项目评审会", Date: "2026-05-03", Time: "15:00"},
+	})
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"上午完成了需求文档，下午开了项目评审会"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Response should contain multiple JSONL lines: 2 records + 1 batch_add summary
+	lines := bytes.Split(bytes.TrimSpace(respBody), []byte("\n"))
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 JSONL lines (2 records + summary), got %d: %s", len(lines), respBody)
+	}
+
+	// First two lines should be individual records
+	recordTypes := make(map[string]int)
+	for i := 0; i < 2; i++ {
+		var record map[string]interface{}
+		if err := json.Unmarshal(lines[i], &record); err != nil {
+			t.Fatalf("invalid JSONL line %d: %s", i, lines[i])
+		}
+		if record["type"] != "result" {
+			t.Errorf("line %d: expected type=result, got %v", i, record["type"])
+		}
+		data, ok := record["data"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("line %d: data field missing", i)
+		}
+		typ, _ := data["type"].(string)
+		recordTypes[typ]++
+	}
+
+	if recordTypes["task"] != 1 {
+		t.Errorf("expected 1 task record, got %d", recordTypes["task"])
+	}
+	if recordTypes["meeting"] != 1 {
+		t.Errorf("expected 1 meeting record, got %d", recordTypes["meeting"])
+	}
+
+	// Last line should be batch_add summary
+	var summary map[string]interface{}
+	if err := json.Unmarshal(lines[len(lines)-1], &summary); err != nil {
+		t.Fatalf("invalid summary JSONL: %s", lines[len(lines)-1])
+	}
+	summaryData, ok := summary["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("summary data field missing")
+	}
+	action, _ := summaryData["action"].(string)
+	if action != "batch_add" {
+		t.Errorf("expected action=batch_add, got %q", action)
+	}
+	created, _ := summaryData["created"].(float64)
+	if created != 2 {
+		t.Errorf("expected created=2, got %v", created)
+	}
+
+	// Verify records were created (checked via JSONL response above).
+	// Also verify list endpoint returns both records.
+	req = httptest.NewRequest(http.MethodGet, "/api/list?date=2026-05-03", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+	var listResp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &listResp)
+	listData := listResp["data"].(map[string]interface{})
+	entries, _ := listData["entries"].([]interface{})
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries from list, got %d", len(entries))
+	}
+}
+
+func TestAddEndpoint_TextMultiEventWithCancel(t *testing.T) {
+	// Mock LLM returns 3 results: 2 actionable + 1 cancel_or_update
+	mockServer := mockLLMBatchServer(t, []llm.ClassifyResult{
+		{Type: "task", Title: "写周报", Date: "2026-05-04"},
+		{Type: "cancel_or_update", Title: "取消明天的会议", TargetID: "abc12345"},
+		{Type: "log", Title: "阅读技术文档", Date: "2026-05-04"},
+	})
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"写周报，取消明天的会议abc12345，阅读技术文档"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Response: 2 record lines + 1 batch_add summary with skipped info
+	lines := bytes.Split(bytes.TrimSpace(respBody), []byte("\n"))
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 JSONL lines, got %d: %s", len(lines), respBody)
+	}
+
+	// Summary should report skipped count and classifications
+	var summary map[string]interface{}
+	json.Unmarshal(lines[len(lines)-1], &summary)
+	summaryData := summary["data"].(map[string]interface{})
+	created, _ := summaryData["created"].(float64)
+	if created != 2 {
+		t.Errorf("expected created=2, got %v", created)
+	}
+	skipped, _ := summaryData["skipped"].(float64)
+	if skipped != 1 {
+		t.Errorf("expected skipped=1, got %v", skipped)
+	}
+	classifications, ok := summaryData["classifications"].([]interface{})
+	if !ok || len(classifications) != 1 {
+		t.Fatalf("expected 1 classification entry, got %v", summaryData["classifications"])
+	}
+	firstCancel := classifications[0].(map[string]interface{})
+	if firstCancel["type"] != "cancel_or_update" {
+		t.Errorf("expected cancel_or_update classification, got %v", firstCancel["type"])
+	}
+}
+
+func TestAddEndpoint_TextSingleEvent(t *testing.T) {
+	// Mock LLM returns a single object — backward compatibility test
+	mockServer := mockLLMServer(t, llm.ClassifyResult{
+		Type:  "reminder",
+		Title: "提交周报",
+		Date:  "2026-05-06",
+		Time:  "17:00",
+	})
+	defer mockServer.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Text: config.LLMProviderConfig{
+				APIBase: mockServer.URL,
+				APIKey:  "test-key",
+				Model:   "test-model",
+			},
+		},
+	}
+
+	srv, _ := newTestServer(t, cfg)
+	body := strings.NewReader(`{"text":"周五下午5点前提交周报"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/add", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	assertJSONLStatus(t, respBody, "success")
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
+		t.Fatalf("invalid JSONL: %s", respBody)
+	}
+	data, ok := record["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["type"] != "reminder" {
+		t.Errorf("expected type reminder, got %v", data["type"])
+	}
+	if data["title"] != "提交周报" {
+		t.Errorf("expected title 提交周报, got %v", data["title"])
+	}
+	if data["date"] != "2026-05-06" {
+		t.Errorf("expected date 2026-05-06, got %v", data["date"])
+	}
+
+	// Verify single JSONL line (not batch format)
+	lines := bytes.Split(bytes.TrimSpace(respBody), []byte("\n"))
+	if len(lines) != 1 {
+		t.Errorf("single event should return 1 JSONL line, got %d", len(lines))
+	}
+}
+
 func TestAddEndpoint_TextCancelOrUpdate(t *testing.T) {
 	mockServer := mockLLMServer(t, llm.ClassifyResult{
 		Type:     "cancel_or_update",

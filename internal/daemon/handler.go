@@ -222,92 +222,61 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		// cancel_or_update is informational — don't create a record
 		if result.Type == "cancel_or_update" {
 			daemonWriter(w).Success(map[string]interface{}{
-				"action":        "cancel_or_update",
-				"classification": result,
-			})
-			return
-		}
-
-		// Populate request fields from classification result
-		req.Type = result.Type
-		if req.Title == "" {
-			req.Title = result.Title
-		}
-		if req.Date == "" {
-			req.Date = result.Date
-		}
-		if req.Time == "" {
-			req.Time = result.Time
-		}
-		if req.Description == "" {
-			req.Description = result.Description
-		}
-		if req.Location == "" {
-			req.Location = result.Location
-		}
-		if req.RelatedPerson == "" {
-			req.RelatedPerson = result.RelatedPerson
-		}
-		if req.Priority == "" {
-			req.Priority = result.Priority
-		}
-		if req.RemindBefore == "" {
-			req.RemindBefore = result.RemindBefore
-		}
-		if req.Recurring == "" {
-			req.Recurring = result.Recurring
-		}
-
-		logger.Infof("add: source=llm type=%s title=%q image=%s", req.Type, req.Title, req.Image)
-		usedLLM = true
-	} else if req.Text != "" && req.Type == "" {
-		// Text classification (existing flow)
-		result, err := s.classifyText(w, req.Text)
-		if err != nil {
-			return // error already written by classifyText
-		}
-
-		// cancel_or_update is informational — don't create a record
-		if result.Type == "cancel_or_update" {
-			daemonWriter(w).Success(map[string]interface{}{
 				"action":         "cancel_or_update",
 				"classification": result,
 			})
 			return
 		}
 
-		// Populate request fields from classification result
-		req.Type = result.Type
-		if req.Title == "" {
-			req.Title = result.Title
-		}
-		if req.Date == "" {
-			req.Date = result.Date
-		}
-		if req.Time == "" {
-			req.Time = result.Time
-		}
-		if req.Description == "" {
-			req.Description = result.Description
-		}
-		if req.Location == "" {
-			req.Location = result.Location
-		}
-		if req.RelatedPerson == "" {
-			req.RelatedPerson = result.RelatedPerson
-		}
-		if req.Priority == "" {
-			req.Priority = result.Priority
-		}
-		if req.RemindBefore == "" {
-			req.RemindBefore = result.RemindBefore
-		}
-		if req.Recurring == "" {
-			req.Recurring = result.Recurring
+		populateRequestFromResult(&req, *result)
+		logger.Infof("add: source=llm type=%s title=%q image=%s", req.Type, req.Title, req.Image)
+		usedLLM = true
+	} else if req.Text != "" && req.Type == "" {
+		// Text classification — may return multiple results for multi-event input
+		results, err := s.classifyText(w, req.Text)
+		if err != nil {
+			return // error already written by classifyText
 		}
 
-		logger.Infof("add: source=llm type=%s title=%q", req.Type, req.Title)
-		usedLLM = true
+		// Separate cancel_or_update from actionable results
+		var actionable []llm.ClassifyResult
+		var cancels []llm.ClassifyResult
+		for _, r := range results {
+			if r.Type == "cancel_or_update" {
+				cancels = append(cancels, r)
+			} else {
+				actionable = append(actionable, r)
+			}
+		}
+
+		// All results are cancel_or_update — return early (backward compat)
+		if len(actionable) == 0 {
+			classification := cancels
+			if len(classification) == 1 {
+				daemonWriter(w).Success(map[string]interface{}{
+					"action":         "cancel_or_update",
+					"classification": classification[0],
+				})
+			} else {
+				daemonWriter(w).Success(map[string]interface{}{
+					"action":         "cancel_or_update",
+					"classification": classification,
+				})
+			}
+			return
+		}
+
+		// Single actionable result — use existing single-record flow
+		if len(actionable) == 1 {
+			populateRequestFromResult(&req, actionable[0])
+			logger.Infof("add: source=llm type=%s title=%q", req.Type, req.Title)
+			usedLLM = true
+			// Fall through to existing single-record creation below
+		} else {
+			// Multiple actionable results — batch create records
+			s.handleBatchAdd(w, actionable, cancels)
+			return
+		}
 	}
 
 	// Default date to today when not using LLM classification.
@@ -381,9 +350,9 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	daemonWriter(w).Success(result)
 }
 
-// classifyText performs LLM classification on the given text.
-// It writes an error response and returns a nil result on failure.
-func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.ClassifyResult, error) {
+// classifyText performs LLM batch classification on the given text.
+// It writes an error response and returns nil on failure.
+func (s *Server) classifyText(w http.ResponseWriter, text string) ([]llm.ClassifyResult, error) {
 	cfg := s.config
 	if cfg == nil || cfg.LLM.Text.APIKey == "" {
 		daemonWriter(w).ErrorWithCode("llm_not_configured", "LLM text classification is not configured (missing api_key in llm.text)")
@@ -395,7 +364,7 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 
 	client := llm.NewClient(cfg.LLM.Text.APIBase, cfg.LLM.Text.APIKey, cfg.LLM.Text.Model,
 		time.Duration(cfg.LLM.Text.Timeout)*time.Second)
-	result, err := llm.Classify(client, text, today, loc)
+	results, err := llm.ClassifyBatch(client, text, today, loc)
 	if err != nil {
 		logger.Errorf("classify error: api_base=%s model=%s error=%v",
 			cfg.LLM.Text.APIBase, cfg.LLM.Text.Model, err)
@@ -403,7 +372,121 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 		return nil, err
 	}
 
-	return result, nil
+	if len(results) == 0 {
+		daemonWriter(w).ErrorWithCode("llm_error", "LLM classification returned no results")
+		return nil, fmt.Errorf("llm returned empty results")
+	}
+
+	return results, nil
+}
+
+// populateRequestFromResult fills empty fields in req from the LLM classification result.
+// Fields already set in the request (e.g. by the user) are preserved.
+func populateRequestFromResult(req *addRequest, result llm.ClassifyResult) {
+	req.Type = result.Type
+	if req.Title == "" {
+		req.Title = result.Title
+	}
+	if req.Date == "" {
+		req.Date = result.Date
+	}
+	if req.Time == "" {
+		req.Time = result.Time
+	}
+	if req.Description == "" {
+		req.Description = result.Description
+	}
+	if req.Location == "" {
+		req.Location = result.Location
+	}
+	if req.RelatedPerson == "" {
+		req.RelatedPerson = result.RelatedPerson
+	}
+	if req.Priority == "" {
+		req.Priority = result.Priority
+	}
+	if req.RemindBefore == "" {
+		req.RemindBefore = result.RemindBefore
+	}
+	if req.Recurring == "" {
+		req.Recurring = result.Recurring
+	}
+}
+
+// handleBatchAdd creates multiple records from LLM classification results.
+// Each actionable result becomes an independent record. cancel_or_update results
+// are reported in a summary line appended after all records.
+func (s *Server) handleBatchAdd(w http.ResponseWriter, actionable []llm.ClassifyResult, cancels []llm.ClassifyResult) {
+	dw := daemonWriter(w)
+	created := 0
+
+	for _, result := range actionable {
+		addReq := addRequest{
+			Type:          result.Type,
+			Title:         result.Title,
+			Date:          result.Date,
+			Time:          result.Time,
+			Description:   result.Description,
+			Location:      result.Location,
+			RelatedPerson: result.RelatedPerson,
+			Priority:      result.Priority,
+			RemindBefore:  result.RemindBefore,
+			Recurring:     result.Recurring,
+		}
+
+		// Validate required fields
+		if addReq.Type == "" || !models.IsValidType(addReq.Type) {
+			logger.Warnf("add batch: skipping result with invalid type %q", addReq.Type)
+			continue
+		}
+		if addReq.Title == "" {
+			logger.Warnf("add batch: skipping result with empty title")
+			continue
+		}
+		if addReq.Date == "" {
+			loc := time.UTC
+			if s.config != nil {
+				loc = s.config.Location()
+			}
+			addReq.Date = time.Now().In(loc).Format("2006-01-02")
+		}
+
+		rec := buildRecord(addReq)
+		persisted, err := s.storage.AddRecord(rec)
+		if err != nil {
+			logger.Errorf("add batch: storage error: %v", err)
+			continue
+		}
+
+		cf := models.GetCommonFields(persisted)
+		logger.Infof("add batch: short_id=%s type=%s title=%q source=llm_batch", cf.ShortID, cf.Type, cf.Title)
+
+		if s.scheduler != nil {
+			if err := s.scheduler.Register(persisted); err != nil {
+				logger.Warnf("add batch: scheduler register warning: short_id=%s err=%v", cf.ShortID, err)
+			}
+		}
+
+		dw.Success(persisted)
+		created++
+	}
+
+	// Append summary if there were cancel_or_update entries
+	if len(cancels) > 0 {
+		dw.Success(map[string]interface{}{
+			"action":          "batch_add",
+			"created":         created,
+			"skipped":         len(cancels),
+			"classifications": cancels,
+		})
+	} else {
+		dw.Success(map[string]interface{}{
+			"action":  "batch_add",
+			"created": created,
+		})
+	}
+
+	logger.Infof("add batch complete: created=%d cancelled=%d", created, len(cancels))
 }
 
 // classifyImage performs vision LLM classification on the given image.
