@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,7 +27,7 @@ import (
 func newTestServer(t *testing.T, cfg ...*config.Config) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 	var c *config.Config
 	if len(cfg) > 0 && cfg[0] != nil {
 		c = cfg[0]
@@ -1621,7 +1620,7 @@ func (m *mockPushSender) Send(_ context.Context, _ scheduler.PushoverConfig, mes
 func newTestServerWithScheduler(t *testing.T) (*Server, *mockPushSender, string) {
 	t.Helper()
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Use a far-future timezone so entries don't trigger during the test
 	cfg := &config.Config{
@@ -1630,7 +1629,7 @@ func newTestServerWithScheduler(t *testing.T) (*Server, *mockPushSender, string)
 
 	mockPush := &mockPushSender{}
 	statePath := filepath.Join(dir, "scheduler-state.json")
-	sched := scheduler.NewScheduler(cfg, mockPush, statePath, log.New(io.Discard, "", 0))
+	sched := scheduler.NewScheduler(cfg, mockPush, statePath)
 	if err := sched.Start(); err != nil {
 		t.Fatalf("scheduler start: %v", err)
 	}

@@ -1,8 +1,6 @@
 package report
 
 import (
-	"io"
-	"log"
 	"strings"
 	"testing"
 	"time"
@@ -22,9 +20,9 @@ func addTestRecord(t *testing.T, store *storage.Storage, rec interface{}) {
 
 func TestGenerate_Empty(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -50,7 +48,7 @@ func TestGenerate_Empty(t *testing.T) {
 
 func TestGenerate_AllTypes(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Add one of each type
 	addTestRecord(t, store, &models.MeetingRecord{
@@ -85,7 +83,7 @@ func TestGenerate_AllTypes(t *testing.T) {
 		},
 	})
 
-	rpt, err := Generate(store, "2026-05-02", log.New(io.Discard, "", 0))
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -128,7 +126,7 @@ func TestGenerate_AllTypes(t *testing.T) {
 
 func TestGenerate_DateFilter(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Add records for two different dates
 	addTestRecord(t, store, &models.MeetingRecord{
@@ -146,7 +144,7 @@ func TestGenerate_DateFilter(t *testing.T) {
 		},
 	})
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -161,7 +159,7 @@ func TestGenerate_DateFilter(t *testing.T) {
 
 func TestGenerate_Markdown(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	addTestRecord(t, store, &models.MeetingRecord{
 		CommonFields: models.CommonFields{
@@ -183,7 +181,7 @@ func TestGenerate_Markdown(t *testing.T) {
 		},
 	})
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -219,7 +217,7 @@ func TestGenerate_Markdown(t *testing.T) {
 
 func TestGenerate_Markdown_EmptySections(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Only add a log — other sections should be absent from markdown
 	addTestRecord(t, store, &models.LogRecord{
@@ -230,7 +228,7 @@ func TestGenerate_Markdown_EmptySections(t *testing.T) {
 		},
 	})
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -248,7 +246,7 @@ func TestGenerate_Markdown_EmptySections(t *testing.T) {
 }
 
 func TestGenerate_NilStorage(t *testing.T) {
-	_, err := Generate(nil, "2026-05-02", nil)
+	_, err := Generate(nil, "2026-05-02")
 	if err == nil {
 		t.Fatal("expected error for nil storage")
 	}
@@ -259,7 +257,7 @@ func TestGenerate_NilStorage(t *testing.T) {
 
 func TestGenerateToday(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	loc := time.UTC
 	today := time.Now().In(loc).Format("2006-01-02")
@@ -272,7 +270,7 @@ func TestGenerateToday(t *testing.T) {
 		},
 	})
 
-	rpt, err := GenerateToday(store, loc, nil)
+	rpt, err := GenerateToday(store, loc)
 	if err != nil {
 		t.Fatalf("GenerateToday: %v", err)
 	}
@@ -287,7 +285,7 @@ func TestGenerateToday(t *testing.T) {
 
 func TestGenerate_SortingByTime(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Add meetings with different times (out of order).
 	// Use slight delays between AddRecord calls since filenames use second-precision
@@ -318,7 +316,7 @@ func TestGenerate_SortingByTime(t *testing.T) {
 		},
 	})
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -341,7 +339,7 @@ func TestGenerate_SortingByTime(t *testing.T) {
 
 func TestGenerate_MultipleRecordsPerType(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Add 3 tasks
 	for i := 0; i < 3; i++ {
@@ -354,7 +352,7 @@ func TestGenerate_MultipleRecordsPerType(t *testing.T) {
 		})
 	}
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -369,7 +367,7 @@ func TestGenerate_MultipleRecordsPerType(t *testing.T) {
 
 func TestGenerate_LogWithProgress(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// LogRecord has its own Priority field that shadows CommonFields.Priority.
 	// Set the type-specific Priority directly.
@@ -384,7 +382,7 @@ func TestGenerate_LogWithProgress(t *testing.T) {
 	}
 	addTestRecord(t, store, rec)
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -397,7 +395,7 @@ func TestGenerate_LogWithProgress(t *testing.T) {
 
 func TestGenerate_CompletedTaskStatus(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	addTestRecord(t, store, &models.TaskRecord{
 		CommonFields: models.CommonFields{
@@ -408,7 +406,7 @@ func TestGenerate_CompletedTaskStatus(t *testing.T) {
 		},
 	})
 
-	rpt, err := Generate(store, "2026-05-02", nil)
+	rpt, err := Generate(store, "2026-05-02")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -421,9 +419,9 @@ func TestGenerate_CompletedTaskStatus(t *testing.T) {
 
 func TestGenerateRange_EmptyRange(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
-	rr, err := GenerateRange(store, "2026-05-02", "2026-05-02", time.UTC, nil)
+	rr, err := GenerateRange(store, "2026-05-02", "2026-05-02", time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateRange: %v", err)
 	}
@@ -447,7 +445,7 @@ func TestGenerateRange_EmptyRange(t *testing.T) {
 
 func TestGenerateRange_SingleDay(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	addTestRecord(t, store, &models.TaskRecord{
 		CommonFields: models.CommonFields{
@@ -457,7 +455,7 @@ func TestGenerateRange_SingleDay(t *testing.T) {
 		},
 	})
 
-	rr, err := GenerateRange(store, "2026-05-02", "2026-05-02", time.UTC, nil)
+	rr, err := GenerateRange(store, "2026-05-02", "2026-05-02", time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateRange: %v", err)
 	}
@@ -478,7 +476,7 @@ func TestGenerateRange_SingleDay(t *testing.T) {
 
 func TestGenerateRange_MultiDay(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Day 1
 	addTestRecord(t, store, &models.MeetingRecord{
@@ -493,7 +491,7 @@ func TestGenerateRange_MultiDay(t *testing.T) {
 		CommonFields: models.CommonFields{Type: models.TypeLog, Title: "log-d3", Date: "2026-05-03"},
 	})
 
-	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC, nil)
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateRange: %v", err)
 	}
@@ -515,9 +513,9 @@ func TestGenerateRange_MultiDay(t *testing.T) {
 
 func TestGenerateRange_DateOrder(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
-	_, err := GenerateRange(store, "2026-05-05", "2026-05-01", time.UTC, nil)
+	_, err := GenerateRange(store, "2026-05-05", "2026-05-01", time.UTC)
 	if err == nil {
 		t.Fatal("expected error when from > to")
 	}
@@ -528,7 +526,7 @@ func TestGenerateRange_DateOrder(t *testing.T) {
 
 func TestGenerateRange_MergedSummary(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Two tasks on day 1
 	addTestRecord(t, store, &models.TaskRecord{
@@ -542,7 +540,7 @@ func TestGenerateRange_MergedSummary(t *testing.T) {
 		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t3", Date: "2026-05-02"},
 	})
 
-	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC, nil)
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateRange: %v", err)
 	}
@@ -560,14 +558,14 @@ func TestGenerateRange_MergedSummary(t *testing.T) {
 
 func TestGenerateWeek_Bounds(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	// Use a fixed "now" by choosing a known date's timezone-relative week.
 	// We can't mock time.Now directly, so we verify structural properties:
 	// - DaysCount should be 7
 	// - DateFrom should be a Monday
 	// - DateTo should be a Sunday
-	rr, err := GenerateWeek(store, time.UTC, nil)
+	rr, err := GenerateWeek(store, time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateWeek: %v", err)
 	}
@@ -594,7 +592,7 @@ func TestGenerateWeek_Bounds(t *testing.T) {
 
 func TestGenerateRange_Markdown(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
 	addTestRecord(t, store, &models.MeetingRecord{
 		CommonFields: models.CommonFields{
@@ -614,7 +612,7 @@ func TestGenerateRange_Markdown(t *testing.T) {
 		},
 	})
 
-	rr, err := GenerateRange(store, "2026-04-28", "2026-04-29", time.UTC, nil)
+	rr, err := GenerateRange(store, "2026-04-28", "2026-04-29", time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateRange: %v", err)
 	}
@@ -650,9 +648,9 @@ func TestGenerateRange_Markdown(t *testing.T) {
 
 func TestGenerateRange_Markdown_EmptyDays(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
-	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC, nil)
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC)
 	if err != nil {
 		t.Fatalf("GenerateRange: %v", err)
 	}
@@ -681,9 +679,9 @@ func TestGenerateRange_Markdown_EmptyDays(t *testing.T) {
 
 func TestGenerateRange_InvalidDate(t *testing.T) {
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 
-	_, err := GenerateRange(store, "not-a-date", "2026-05-02", time.UTC, nil)
+	_, err := GenerateRange(store, "not-a-date", "2026-05-02", time.UTC)
 	if err == nil {
 		t.Fatal("expected error for invalid from date")
 	}
@@ -691,7 +689,7 @@ func TestGenerateRange_InvalidDate(t *testing.T) {
 		t.Errorf("error = %v, want invalid from date", err)
 	}
 
-	_, err = GenerateRange(store, "2026-05-02", "bad", time.UTC, nil)
+	_, err = GenerateRange(store, "2026-05-02", "bad", time.UTC)
 	if err == nil {
 		t.Fatal("expected error for invalid to date")
 	}
@@ -701,7 +699,7 @@ func TestGenerateRange_InvalidDate(t *testing.T) {
 }
 
 func TestGenerateRange_NilStorage(t *testing.T) {
-	_, err := GenerateRange(nil, "2026-05-01", "2026-05-02", time.UTC, nil)
+	_, err := GenerateRange(nil, "2026-05-01", "2026-05-02", time.UTC)
 	if err == nil {
 		t.Fatal("expected error for nil storage")
 	}

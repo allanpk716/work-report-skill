@@ -19,7 +19,6 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"wr/internal/logger"
 	"wr/internal/models"
 )
 
@@ -36,17 +36,13 @@ import (
 // ShortID collisions.
 type Storage struct {
 	baseDir string
-	logger  *log.Logger
 	mu      sync.Mutex
 	seq     uint64 // monotonic counter for unique ShortID generation
 }
 
 // New creates a Storage rooted at baseDir (the work-records/ directory).
-func New(baseDir string, logger *log.Logger) *Storage {
-	if logger == nil {
-		logger = log.New(os.Stderr, "[storage] ", log.LstdFlags)
-	}
-	return &Storage{baseDir: baseDir, logger: logger}
+func New(baseDir string) *Storage {
+	return &Storage{baseDir: baseDir}
 }
 
 // AddRecord writes a record to the correct subdirectory, using a
@@ -93,7 +89,7 @@ func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
 		return nil, fmt.Errorf("storage: add: write %s: %w", path, err)
 	}
 
-	s.logger.Printf("add record: short_id=%s type=%s path=%s", shortID, cf.Type, path)
+	logger.WithField("short_id", shortID).WithField("type", string(cf.Type)).WithField("path", path).Info("add record")
 	return rec, nil
 }
 
@@ -242,10 +238,10 @@ func (s *Storage) CompleteRecord(shortID string) error {
 
 	// Remove old file
 	if err := os.Remove(oldPath); err != nil {
-		s.logger.Printf("warning: complete: could not remove old file %s: %v", oldPath, err)
+		logger.WithField("old_path", oldPath).Warnf("complete: could not remove old file: %v", err)
 	}
 
-	s.logger.Printf("complete record: short_id=%s type=%s from=%s to=%s", shortID, cf.Type, oldPath, newPath)
+	logger.WithField("short_id", shortID).WithField("type", string(cf.Type)).WithField("from", oldPath).WithField("to", newPath).Info("complete record")
 	return nil
 }
 
@@ -284,7 +280,7 @@ func (s *Storage) CancelRecord(shortID string) error {
 		return fmt.Errorf("storage: cancel: write %s: %w", path, err)
 	}
 
-	s.logger.Printf("cancel record: short_id=%s type=%s path=%s", shortID, cf.Type, path)
+	logger.WithField("short_id", shortID).WithField("type", string(cf.Type)).WithField("path", path).Info("cancel record")
 	return nil
 }
 
@@ -384,8 +380,7 @@ func (s *Storage) UpdateRecord(shortID string, fields map[string]interface{}) (i
 		return nil, fmt.Errorf("storage: update: write %s: %w", path, err)
 	}
 
-	s.logger.Printf("update record: short_id=%s type=%s fields=%v path=%s",
-		shortID, cf.Type, changedFields, path)
+	logger.WithField("short_id", shortID).WithField("type", string(cf.Type)).WithField("fields", changedFields).WithField("path", path).Info("update record")
 
 	return rec, nil
 }
@@ -640,7 +635,7 @@ func (s *Storage) scanDateTree(root string, rt models.RecordType, opts ListOptio
 
 		rec, err := s.readFile(fullPath)
 		if err != nil {
-			s.logger.Printf("warning: skipping corrupt file %s: %v", fullPath, err)
+			logger.WithField("file", fullPath).Warnf("skipping corrupt file: %v", err)
 			continue
 		}
 
@@ -679,7 +674,7 @@ func (s *Storage) scanFlatDir(dir string, rt models.RecordType, opts ListOptions
 
 		rec, err := s.readFile(fullPath)
 		if err != nil {
-			s.logger.Printf("warning: skipping corrupt file %s: %v", fullPath, err)
+			logger.WithField("file", fullPath).Warnf("skipping corrupt file: %v", err)
 			continue
 		}
 
@@ -1016,7 +1011,7 @@ func (s *Storage) ListFullRecords(opts ListOptions) ([]interface{}, error) {
 	for _, lr := range listed {
 		rec, err := s.readFile(lr.FilePath)
 		if err != nil {
-			s.logger.Printf("warning: ListFullRecords skip %s: %v", lr.FilePath, err)
+			logger.WithField("file", lr.FilePath).Warnf("ListFullRecords skip: %v", err)
 			continue
 		}
 		results = append(results, rec)

@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -60,7 +59,7 @@ func testScheduler(t *testing.T) (*Scheduler, *mockPushover, string) {
 		Timezone: "Asia/Shanghai",
 		Pushover: config.PushoverConfig{APIToken: "test-token", UserKey: "test-user"},
 	}
-	s := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test-scheduler] ", log.LstdFlags))
+	s := NewScheduler(cfg, mock, statePath)
 	return s, mock, statePath
 }
 

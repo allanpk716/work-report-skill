@@ -100,7 +100,7 @@ func runDaemon(suppressStartupMsg bool) error {
 	defer logger.Shutdown()
 
 	// Create storage layer
-	store := storage.New(dataDir, nil)
+	store := storage.New(dataDir)
 
 	srv := daemon.NewServer(port, store, cfg)
 
@@ -110,7 +110,7 @@ func runDaemon(suppressStartupMsg bool) error {
 	if err != nil {
 		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot determine scheduler state path: %v", err))
 	}
-	sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath, nil)
+	sched := scheduler.NewScheduler(cfg, &pushoverBridge{client: pushoverClient}, statePath)
 	srv.SetScheduler(sched)
 
 	dir, err := daemon.DefaultStateDir()

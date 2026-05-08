@@ -6,12 +6,11 @@ package report
 
 import (
 	"fmt"
-	"io"
-	"log"
 	"sort"
 	"strings"
 	"time"
 
+	"wr/internal/logger"
 	"wr/internal/models"
 	"wr/internal/storage"
 )
@@ -54,12 +53,9 @@ type Summary struct {
 
 // Generate builds a DailyReport by querying storage for all record types on
 // the given date (including completed records).
-func Generate(store *storage.Storage, date string, logger *log.Logger) (*DailyReport, error) {
+func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 	if store == nil {
 		return nil, fmt.Errorf("report: storage is nil")
-	}
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
 	}
 
 	meetings, err := listType(store, models.TypeMeeting, date)
@@ -98,17 +94,22 @@ func Generate(store *storage.Storage, date string, logger *log.Logger) (*DailyRe
 
 	rpt.Markdown = renderMarkdown(rpt)
 
-	logger.Printf("[report] date=%s meetings=%d tasks=%d reminders=%d logs=%d total=%d",
-		date, rpt.Summary.Meetings, rpt.Summary.Tasks,
-		rpt.Summary.Reminders, rpt.Summary.Logs, rpt.Summary.Total)
+	logger.WithFields(map[string]interface{}{
+		"date":     date,
+		"meetings": rpt.Summary.Meetings,
+		"tasks":    rpt.Summary.Tasks,
+		"reminders": rpt.Summary.Reminders,
+		"logs":     rpt.Summary.Logs,
+		"total":    rpt.Summary.Total,
+	}).Info("daily report generated")
 
 	return rpt, nil
 }
 
 // GenerateToday generates a report for today's date using the provided timezone.
-func GenerateToday(store *storage.Storage, loc *time.Location, logger *log.Logger) (*DailyReport, error) {
+func GenerateToday(store *storage.Storage, loc *time.Location) (*DailyReport, error) {
 	today := time.Now().In(loc).Format("2006-01-02")
-	return Generate(store, today, logger)
+	return Generate(store, today)
 }
 
 // listType queries storage for a single record type on the given date and
@@ -294,12 +295,9 @@ type RangeReport struct {
 
 // GenerateRange builds a RangeReport by generating a DailyReport for each date
 // in the inclusive range [from, to] and merging the results.
-func GenerateRange(store *storage.Storage, from, to string, loc *time.Location, logger *log.Logger) (*RangeReport, error) {
+func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) (*RangeReport, error) {
 	if store == nil {
 		return nil, fmt.Errorf("report: storage is nil")
-	}
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
 	}
 	if loc == nil {
 		loc = time.UTC
@@ -325,7 +323,7 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location, 
 	// Iterate each date in [from, to].
 	for d := fromTime; !d.After(toTime); d = d.AddDate(0, 0, 1) {
 		dateStr := d.Format("2006-01-02")
-		dr, err := Generate(store, dateStr, logger)
+		dr, err := Generate(store, dateStr)
 		if err != nil {
 			return nil, fmt.Errorf("report: generate %s: %w", dateStr, err)
 		}
@@ -346,16 +344,23 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location, 
 
 	rr.Markdown = renderRangeMarkdown(rr)
 
-	logger.Printf("[report] range: from=%s to=%s days=%d meetings=%d tasks=%d reminders=%d logs=%d total=%d",
-		from, to, rr.DaysCount, rr.Summary.Meetings, rr.Summary.Tasks,
-		rr.Summary.Reminders, rr.Summary.Logs, rr.Summary.Total)
+	logger.WithFields(map[string]interface{}{
+		"from":     from,
+		"to":       to,
+		"days":     rr.DaysCount,
+		"meetings": rr.Summary.Meetings,
+		"tasks":    rr.Summary.Tasks,
+		"reminders": rr.Summary.Reminders,
+		"logs":     rr.Summary.Logs,
+		"total":    rr.Summary.Total,
+	}).Info("range report generated")
 
 	return rr, nil
 }
 
 // GenerateWeek builds a RangeReport for the current week (Monday–Sunday)
 // using the provided timezone.
-func GenerateWeek(store *storage.Storage, loc *time.Location, logger *log.Logger) (*RangeReport, error) {
+func GenerateWeek(store *storage.Storage, loc *time.Location) (*RangeReport, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -373,7 +378,7 @@ func GenerateWeek(store *storage.Storage, loc *time.Location, logger *log.Logger
 	from := monday.Format("2006-01-02")
 	to := sunday.Format("2006-01-02")
 
-	return GenerateRange(store, from, to, loc, logger)
+	return GenerateRange(store, from, to, loc)
 }
 
 // renderRangeMarkdown produces a combined Markdown string for a RangeReport.

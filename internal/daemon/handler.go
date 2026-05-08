@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -852,7 +851,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	if date != "" {
 		// Single date
-		rpt, err := report.Generate(s.storage, date, log.Default())
+		rpt, err := report.Generate(s.storage, date)
 		if err != nil {
 			logger.Errorf("export markdown error: date=%s err=%v", date, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
@@ -862,7 +861,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		count = rpt.Summary.Total
 	} else if opts.DateFrom != "" && opts.DateTo != "" {
 		// Date range
-		rpt, err := report.GenerateRange(s.storage, opts.DateFrom, opts.DateTo, loc, log.Default())
+		rpt, err := report.GenerateRange(s.storage, opts.DateFrom, opts.DateTo, loc)
 		if err != nil {
 			logger.Errorf("export markdown error: from=%s to=%s err=%v", opts.DateFrom, opts.DateTo, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
@@ -873,7 +872,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// No date filter — use today's date
 		today := time.Now().In(loc).Format("2006-01-02")
-		rpt, err := report.Generate(s.storage, today, log.Default())
+		rpt, err := report.Generate(s.storage, today)
 		if err != nil {
 			logger.Errorf("export markdown error: date=%s err=%v", today, err)
 			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
@@ -907,7 +906,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		date = time.Now().In(loc).Format("2006-01-02")
 	}
 
-	rpt, err := report.Generate(s.storage, date, log.Default())
+	rpt, err := report.Generate(s.storage, date)
 	if err != nil {
 		logger.Errorf("report error: date=%s err=%v", date, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
@@ -932,7 +931,7 @@ func (s *Server) handleReportToday(w http.ResponseWriter, r *http.Request) {
 		loc = s.config.Location()
 	}
 
-	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
+	rpt, err := report.GenerateToday(s.storage, loc)
 	if err != nil {
 		logger.Errorf("report_today error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate today report: %v", err))
@@ -957,7 +956,7 @@ func (s *Server) handleReportPushToday(w http.ResponseWriter, r *http.Request) {
 		loc = s.config.Location()
 	}
 
-	rpt, err := report.GenerateToday(s.storage, loc, log.Default())
+	rpt, err := report.GenerateToday(s.storage, loc)
 	if err != nil {
 		logger.Errorf("report_push_today error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
@@ -979,7 +978,7 @@ func (s *Server) handleReportPushDate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rpt, err := report.Generate(s.storage, date, log.Default())
+	rpt, err := report.Generate(s.storage, date)
 	if err != nil {
 		logger.Errorf("report_push_date error: date=%s err=%v", date, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate report: %v", err))
@@ -1008,7 +1007,7 @@ func (s *Server) handleReportRange(w http.ResponseWriter, r *http.Request) {
 		loc = s.config.Location()
 	}
 
-	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
+	rpt, err := report.GenerateRange(s.storage, from, to, loc)
 	if err != nil {
 		logger.Errorf("report_range error: from=%s to=%s err=%v", from, to, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
@@ -1033,7 +1032,7 @@ func (s *Server) handleReportWeek(w http.ResponseWriter, r *http.Request) {
 		loc = s.config.Location()
 	}
 
-	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
+	rpt, err := report.GenerateWeek(s.storage, loc)
 	if err != nil {
 		logger.Errorf("report_week error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate week report: %v", err))
@@ -1066,7 +1065,7 @@ func (s *Server) handleReportPushRange(w http.ResponseWriter, r *http.Request) {
 		loc = s.config.Location()
 	}
 
-	rpt, err := report.GenerateRange(s.storage, from, to, loc, log.Default())
+	rpt, err := report.GenerateRange(s.storage, from, to, loc)
 	if err != nil {
 		logger.Errorf("report_push_range error: from=%s to=%s err=%v", from, to, err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate range report: %v", err))
@@ -1087,7 +1086,7 @@ func (s *Server) handleReportPushWeek(w http.ResponseWriter, r *http.Request) {
 		loc = s.config.Location()
 	}
 
-	rpt, err := report.GenerateWeek(s.storage, loc, log.Default())
+	rpt, err := report.GenerateWeek(s.storage, loc)
 	if err != nil {
 		logger.Errorf("report_push_week error: err=%v", err)
 		daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to generate week report: %v", err))

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"wr/internal/logger"
 	"wr/internal/models"
 )
 
@@ -76,7 +77,7 @@ func (s *Scheduler) CatchUp(records []interface{}) (*CatchUpResult, error) {
 		// Compute trigger time
 		triggerAt, err := computeTriggerTime(cf.Date, cf.Time, cf.RemindBefore, loc)
 		if err != nil {
-			s.logger.Printf("[scheduler] catchup: compute trigger for %s: %v", cf.ShortID, err)
+			logger.WithField("short_id", cf.ShortID).Warnf("catchup: compute trigger: %v", err)
 			result.Skipped++
 			continue
 		}
@@ -123,7 +124,7 @@ func (s *Scheduler) CatchUp(records []interface{}) (*CatchUpResult, error) {
 	for _, o := range outcomes {
 		p := pending[o.idx]
 		if o.err != nil {
-			s.logger.Printf("[scheduler] catchup: send failed short_id=%s err=%v", o.cf.ShortID, o.err)
+			logger.WithField("short_id", o.cf.ShortID).Errorf("catchup: send failed: %v", o.err)
 			if p.existing == nil {
 				s.state.AddEntry(&ScheduleEntry{
 					RecordShortID: o.cf.ShortID,
@@ -135,7 +136,7 @@ func (s *Scheduler) CatchUp(records []interface{}) (*CatchUpResult, error) {
 			s.state.MarkError(o.cf.ShortID, o.err.Error())
 			result.Errors++
 		} else {
-			s.logger.Printf("[scheduler] catchup: fired short_id=%s type=%s title=%s", o.cf.ShortID, o.cf.Type, o.cf.Title)
+			logger.WithField("short_id", o.cf.ShortID).WithField("type", string(o.cf.Type)).WithField("title", o.cf.Title).Info("catchup: fired")
 			if p.existing == nil {
 				s.state.AddEntry(&ScheduleEntry{
 					RecordShortID: o.cf.ShortID,
@@ -152,12 +153,17 @@ func (s *Scheduler) CatchUp(records []interface{}) (*CatchUpResult, error) {
 	// Persist state after all catch-up processing
 	if result.Fired > 0 || result.Errors > 0 {
 		if err := SaveState(s.stateMgr.path, s.state); err != nil {
-			s.logger.Printf("[scheduler] catchup: error saving state: %v", err)
+			logger.Warnf("catchup: error saving state: %v", err)
 		}
 	}
 
-	s.logger.Printf("[scheduler] catchup complete: scanned=%d skipped=%d fired=%d errors=%d recurring_skipped=%d",
-		result.Scanned, result.Skipped, result.Fired, result.Errors, result.RecurringSkipped)
+	logger.WithFields(map[string]interface{}{
+		"scanned":           result.Scanned,
+		"skipped":           result.Skipped,
+		"fired":             result.Fired,
+		"errors":            result.Errors,
+		"recurring_skipped": result.RecurringSkipped,
+	}).Info("catchup complete")
 	s.mu.Unlock()
 
 	return result, nil

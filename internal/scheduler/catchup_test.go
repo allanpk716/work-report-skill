@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,7 +40,7 @@ func TestCatchUp_OverdueReminder(t *testing.T) {
 
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	// Create an overdue reminder: yesterday at 10:00
 	yesterday := time.Now().In(cfg.Location()).AddDate(0, 0, -1).Format("2006-01-02")
@@ -107,7 +106,7 @@ func TestCatchUp_AlreadyFired(t *testing.T) {
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	// Pre-populate state with fired entry
 	yesterday := time.Now().In(cfg.Location()).AddDate(0, 0, -1).Format("2006-01-02")
@@ -156,7 +155,7 @@ func TestCatchUp_FutureReminder(t *testing.T) {
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	// Future reminder: tomorrow
 	tomorrow := time.Now().In(cfg.Location()).AddDate(0, 0, 1).Format("2006-01-02")
@@ -193,7 +192,7 @@ func TestCatchUp_PushoverFailure(t *testing.T) {
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 
 	mock := &failingPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	yesterday := time.Now().In(cfg.Location()).AddDate(0, 0, -1).Format("2006-01-02")
 	records := []interface{}{
@@ -245,7 +244,7 @@ func TestCatchUp_SkipsCompleted(t *testing.T) {
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	yesterday := time.Now().In(cfg.Location()).AddDate(0, 0, -1).Format("2006-01-02")
 	records := []interface{}{
@@ -294,7 +293,7 @@ func TestCatchUp_SkipsNonReminderWithoutRemindBefore(t *testing.T) {
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	yesterday := time.Now().In(cfg.Location()).AddDate(0, 0, -1).Format("2006-01-02")
 	records := []interface{}{
@@ -330,7 +329,7 @@ func TestCatchUp_TaskWithRemindBefore(t *testing.T) {
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	yesterday := time.Now().In(cfg.Location()).AddDate(0, 0, -1).Format("2006-01-02")
 	records := []interface{}{
@@ -363,7 +362,7 @@ func TestCatchUp_EmptyRecords(t *testing.T) {
 
 	cfg := &config.Config{Timezone: "Asia/Shanghai"}
 	mock := &catchupMockPushover{}
-	sched := NewScheduler(cfg, mock, statePath, log.New(os.Stderr, "[test] ", log.LstdFlags))
+	sched := NewScheduler(cfg, mock, statePath)
 
 	result, err := sched.CatchUp(nil)
 	if err != nil {

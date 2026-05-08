@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,7 +51,7 @@ func TestMain(m *testing.M) {
 func newTestDaemonServer(t *testing.T) *daemon.Server {
 	t.Helper()
 	dir := t.TempDir()
-	store := storage.New(dir, log.New(io.Discard, "", 0))
+	store := storage.New(dir)
 	return daemon.NewServer(0, store, nil)
 }
 

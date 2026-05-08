@@ -12,7 +12,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"wr/internal/config"
+	"wr/internal/logger"
 	"wr/internal/models"
 )
 
@@ -49,7 +49,6 @@ type Scheduler struct {
 	stateMgr *stateManager // internal wrapper for state path management
 	pushover PushoverSender
 	cfg      *config.Config
-	logger   *log.Logger
 	mu       sync.Mutex
 }
 
@@ -63,17 +62,13 @@ type SchedulerOption func(*Scheduler)
 
 // NewScheduler creates a new scheduler. The scheduler is not started; call
 // Start() to begin processing cron entries.
-func NewScheduler(cfg *config.Config, pushoverClient PushoverSender, statePath string, logger *log.Logger) *Scheduler {
-	if logger == nil {
-		logger = log.Default()
-	}
+func NewScheduler(cfg *config.Config, pushoverClient PushoverSender, statePath string) *Scheduler {
 	return &Scheduler{
 		cron:     cron.New(cron.WithSeconds(), cron.WithLocation(cfg.Location())),
 		state:    NewState(),
 		stateMgr: &stateManager{path: statePath},
 		pushover: pushoverClient,
 		cfg:      cfg,
-		logger:   logger,
 	}
 }
 
@@ -82,12 +77,12 @@ func (s *Scheduler) Start() error {
 	// Load existing state if available
 	loaded, err := LoadState(s.stateMgr.path)
 	if err != nil {
-		s.logger.Printf("[scheduler] state load: %v (starting fresh)", err)
+		logger.Warnf("state load: %v (starting fresh)", err)
 	} else {
 		s.state = loaded
 	}
 	s.cron.Start()
-	s.logger.Printf("[scheduler] started")
+	logger.Info("scheduler started")
 	return nil
 }
 
@@ -95,7 +90,7 @@ func (s *Scheduler) Start() error {
 func (s *Scheduler) Stop() {
 	ctx := s.cron.Stop()
 	<-ctx.Done()
-	s.logger.Printf("[scheduler] stopped")
+	logger.Info("scheduler stopped")
 }
 
 // State returns the current scheduler state (for inspection).
@@ -125,17 +120,17 @@ func (s *Scheduler) Register(rec interface{}) error {
 
 	// --- Skip conditions ---
 	if cf.Date == "" || cf.Time == "" {
-		s.logger.Printf("[scheduler] skip no date/time: short_id=%s type=%s", cf.ShortID, cf.Type)
+		logger.WithField("short_id", cf.ShortID).WithField("type", string(cf.Type)).Debug("skip: no date/time")
 		return nil
 	}
 	if cf.Status == models.StatusCompleted || cf.Status == models.StatusCancelled {
-		s.logger.Printf("[scheduler] skip completed: short_id=%s type=%s status=%s", cf.ShortID, cf.Type, cf.Status)
+		logger.WithField("short_id", cf.ShortID).WithField("type", string(cf.Type)).WithField("status", cf.Status).Debug("skip: completed/cancelled")
 		return nil
 	}
 
 	// Must be reminder type OR have remind_before
 	if cf.Type != models.TypeReminder && cf.RemindBefore == "" {
-		s.logger.Printf("[scheduler] skip non-reminder without remind_before: short_id=%s type=%s", cf.ShortID, cf.Type)
+		logger.WithField("short_id", cf.ShortID).WithField("type", string(cf.Type)).Debug("skip: non-reminder without remind_before")
 		return nil
 	}
 
@@ -152,7 +147,7 @@ func (s *Scheduler) Register(rec interface{}) error {
 	// Skip if trigger time is in the past
 	now := time.Now().In(loc)
 	if triggerAt.Before(now) && recurring == "" {
-		s.logger.Printf("[scheduler] skip past entry: short_id=%s type=%s trigger_at=%s", cf.ShortID, cf.Type, triggerAt.Format(time.RFC3339))
+		logger.WithField("short_id", cf.ShortID).WithField("type", string(cf.Type)).WithField("trigger_at", triggerAt.Format(time.RFC3339)).Debug("skip: past entry")
 		return nil
 	}
 
@@ -187,11 +182,10 @@ func (s *Scheduler) Register(rec interface{}) error {
 	}
 	s.state.AddEntry(entry)
 	if err := SaveState(s.stateMgr.path, s.state); err != nil {
-		s.logger.Printf("[scheduler] error saving state after register: %v", err)
+		logger.Warnf("error saving state after register: %v", err)
 	}
 
-	s.logger.Printf("[scheduler] register: short_id=%s type=%s trigger_at=%s recurring=%s cron_entry=%d",
-		cf.ShortID, cf.Type, triggerAt.Format(time.RFC3339), recurring, entryID)
+	logger.WithField("short_id", cf.ShortID).WithField("type", string(cf.Type)).WithField("trigger_at", triggerAt.Format(time.RFC3339)).WithField("recurring", recurring).WithField("cron_entry", entryID).Info("register")
 
 	return nil
 }
@@ -209,10 +203,10 @@ func (s *Scheduler) Unregister(shortID string) error {
 	s.cron.Remove(cron.EntryID(entry.CronEntryID))
 	s.state.RemoveEntry(shortID)
 	if err := SaveState(s.stateMgr.path, s.state); err != nil {
-		s.logger.Printf("[scheduler] error saving state after unregister: %v", err)
+		logger.Warnf("error saving state after unregister: %v", err)
 	}
 
-	s.logger.Printf("[scheduler] unregister: short_id=%s", shortID)
+	logger.WithField("short_id", shortID).Info("unregister")
 	return nil
 }
 
@@ -223,7 +217,7 @@ func (s *Scheduler) makeTriggerCallback(shortID, recordType, title, date, timeSt
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		s.logger.Printf("[scheduler] trigger: short_id=%s type=%s", shortID, recordType)
+		logger.WithField("short_id", shortID).WithField("type", recordType).Info("trigger")
 
 		// Build message
 		body := fmt.Sprintf("%s %s - %s", date, timeStr, title)
@@ -236,13 +230,13 @@ func (s *Scheduler) makeTriggerCallback(shortID, recordType, title, date, timeSt
 		err := s.pushover.Send(ctx, cfg, body, pushTitle, 0)
 		if err != nil {
 			s.state.MarkError(shortID, err.Error())
-			s.logger.Printf("[scheduler] error: short_id=%s type=%s err=%v", shortID, recordType, err)
+			logger.WithField("short_id", shortID).WithField("type", recordType).Errorf("trigger error: %v", err)
 		} else {
 			s.state.MarkFired(shortID, time.Now())
 		}
 
 		if err := SaveState(s.stateMgr.path, s.state); err != nil {
-			s.logger.Printf("[scheduler] error saving state after trigger: %v", err)
+			logger.Warnf("error saving state after trigger: %v", err)
 		}
 
 		// Auto-unregister one-time entries after firing

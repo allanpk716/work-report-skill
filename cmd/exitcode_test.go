@@ -433,7 +433,7 @@ func TestDaemonNotRunningNoStateExit4(t *testing.T) {
 func TestExitCodeWithDaemonRouter(t *testing.T) {
 	// Create temp storage
 	tmpDir := t.TempDir()
-	store := storage.New(tmpDir, nil)
+	store := storage.New(tmpDir)
 
 	cfg, _ := config.Load(filepath.Join(tmpDir, "nonexistent.json"))
 	srv := daemon.NewServer(0, store, cfg)

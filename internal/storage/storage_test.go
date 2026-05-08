@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +18,7 @@ import (
 func newTestStorage(t *testing.T) (*Storage, string) {
 	t.Helper()
 	dir := t.TempDir()
-	s := New(dir, log.New(os.Stderr, "[test-storage] ", log.LstdFlags))
+	s := New(dir)
 	return s, dir
 }
 
@@ -922,14 +920,11 @@ func TestReadRecordFile_Corrupt(t *testing.T) {
 	}
 }
 
-func TestStorage_NewWithNilLogger(t *testing.T) {
+func TestStorage_NewSimple(t *testing.T) {
 	dir := t.TempDir()
-	s := New(dir, nil)
+	s := New(dir)
 	if s == nil {
 		t.Error("New should return non-nil Storage")
-	}
-	if s.logger == nil {
-		t.Error("default logger should be set")
 	}
 }
 
@@ -964,7 +959,7 @@ func TestCompatibility_NanobotFormat(t *testing.T) {
 		t.Skip("sample work-records directory not found")
 	}
 
-	s := New(sampleBase, nil)
+	s := New(sampleBase)
 
 	// List logs
 	logs, err := s.ListRecords(ListOptions{RecordType: models.TypeLog})
@@ -2220,7 +2215,7 @@ func TestFindByContent_WrongDateNoMatch(t *testing.T) {
 
 func BenchmarkAddRecord(b *testing.B) {
 	dir := b.TempDir()
-	s := New(dir, log.New(io.Discard, "", 0))
+	s := New(dir)
 
 	for i := 0; i < b.N; i++ {
 		rec := newTestLog(
