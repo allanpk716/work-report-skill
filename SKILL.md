@@ -27,21 +27,23 @@ If you have scripts or workflows using the old paths, update them to include the
 ## Quick Start
 
 ```
-# 1. One-step init: create config with LLM key in a single call
-wr config init --llm-text-key sk-xxx --llm-text-model gpt-4o-mini
+# 1. Init config (minimal — no LLM key required)
+wr config init
 
 # 2. Ensure daemon is running (idempotent — starts if needed, succeeds if already running)
 wr agent daemon ensure-running
 
-# 3. Add a record
-wr add --type meeting --title "Standup" --date 2026-05-03 --time 10:00
+# 3. Add a record (--date defaults to today if omitted)
+wr add --type meeting --title "Standup" --time 10:00
 
-# 4. List records
-wr list --date 2026-05-03
+# 4. List records (defaults to today)
+wr list
 
 # 5. Generate a report
 wr report today
 ```
+
+> **LLM is optional.** Without an LLM key, you must provide `--type` and `--title` (and optionally `--date`). To enable natural-language classification, pass `--llm-text-key sk-xxx --llm-text-model gpt-4o-mini` to `config init`.
 
 ---
 
@@ -130,7 +132,7 @@ wr add [flags]
 |------|------|---------|-------------|
 | `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `log` |
 | `--title` | string | `""` | Entry title |
-| `--date` | string | `""` | Date in `YYYY-MM-DD` format |
+| `--date` | string | `""` | Date in `YYYY-MM-DD` format. Defaults to today (in configured timezone) if omitted. |
 | `--time` | string | `""` | Time in `HH:MM` format |
 | `--description` | string | `""` | Longer description |
 | `--tags` | string | `""` | Comma-separated tags (e.g. `"frontend,urgent"`) |
@@ -144,6 +146,8 @@ wr add [flags]
 | `--idempotency-key` | string | `""` | Idempotency key for deduplication. Retrying with the same key returns the existing record instead of creating a duplicate. |
 
 **Notes:**
+- `--type` and `--title` are required when not using LLM classification (no `--text`/`--image`).
+- `--date` defaults to today (in configured timezone) when omitted and not using LLM classification. When using `--text` or `--image`, the LLM provides the date.
 - If both `--text` (or `--image`) and `--type` are provided, the explicit flags take precedence over LLM classification.
 - If LLM classification returns `cancel_or_update` type, no record is created — the response has `type: "result"` with `data.action` set to `"cancel_or_update"`.
 
@@ -720,7 +724,7 @@ wr config <subcommand> [flags]
 
 #### wr config init
 
-Create `~/.work-report/config.json` with sensible defaults. Any provided flags override the defaults.
+Create `~/.work-report/config.json` with sensible defaults. All flags are optional — the tool works without any LLM key (manual mode). Any provided flags override the defaults.
 
 **Flags:**
 
@@ -835,7 +839,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `already_completed` | Attempted to update a completed record | Completed records cannot be modified. Use `wr list --status completed` to view them. |
 | `already_cancelled` | Attempted to update a cancelled record | Cancelled records cannot be modified. |
 | `storage_error` | Filesystem or storage layer error | Check data directory permissions and disk space. |
-| `llm_not_configured` | LLM API key is missing for the requested classification mode | Run `wr config set llm.text.api_key <key>` (or `llm.vision.api_key` for image). |
+| `llm_not_configured` | LLM API key is missing for the requested classification mode | LLM is optional. Either provide `--type` and `--title` explicitly, or run `wr config set llm.text.api_key <key>` to enable natural-language classification. |
 | `llm_error` | LLM API call failed | Check API key validity, network connectivity, and model name. Retry once. |
 | `pushover_not_configured` | Pushover credentials are missing | Run `wr config set pushover.api_token <token>` and `wr config set pushover.user_key <key>`. |
 | `push_error` | Pushover notification delivery failed | Check Pushover credentials and network. |
@@ -912,17 +916,21 @@ ShortIDs are deterministic from the filename but are not reversible. To find a r
 ### First-Time Setup
 
 ```bash
-# 1. One-step init: create config with all keys in a single call
-wr config init --llm-text-key sk-your-key --llm-text-model gpt-4o-mini
+# 1. Init config (minimal — no LLM key required)
+wr config init
 
-# 2. (Optional) Add Pushover for push notifications
+# 2. (Optional) Add LLM key for natural-language classification
+wr config set llm.text.api_key sk-your-key
+wr config set llm.text.model gpt-4o-mini
+
+# 3. (Optional) Add Pushover for push notifications
 wr config set pushover.api_token your-token
 wr config set pushover.user_key your-key
 
-# 3. Ensure daemon is running (idempotent)
+# 4. Ensure daemon is running (idempotent)
 wr agent daemon ensure-running
 
-# 4. Verify it's running
+# 5. Verify it's running
 wr status
 ```
 
@@ -932,19 +940,19 @@ wr status
 # Ensure daemon is running (safe to call repeatedly)
 wr agent daemon ensure-running
 
-# Add entries throughout the day
-wr add --type meeting --title "Sprint planning" --date 2026-05-03 --time 09:00 --participants "Alice,Bob"
-wr add --type task --title "Review PR #42" --date 2026-05-03 --priority high
-wr add --type log --title "Deployed v2.1 to staging" --date 2026-05-03
+# Add entries throughout the day (--date defaults to today if omitted)
+wr add --type meeting --title "Sprint planning" --time 09:00 --participants "Alice,Bob"
+wr add --type task --title "Review PR #42" --priority high
+wr add --type log --title "Deployed v2.1 to staging"
 
 # Add with idempotency key (safe in retry loops — no duplicates)
-wr add --type task --title "Daily standup" --date 2026-05-03 --idempotency-key "standup-2026-05-03"
+wr add --type task --title "Daily standup" --idempotency-key "standup-2026-05-03"
 
 # Check today's entries
-wr list --date 2026-05-03
+wr list
 
 # Complete a task by title instead of short_id
-wr complete --title "Review PR #42" --date 2026-05-03
+wr complete --title "Review PR #42"
 
 # Generate end-of-day report
 wr report today
@@ -992,7 +1000,9 @@ wr report push week
 wr report push range --from 2026-04-27 --to 2026-05-03
 ```
 
-### Using LLM Classification
+### Using LLM Classification (Optional)
+
+LLM classification is an optional feature. Configure an LLM key to use natural-language input; without it, use explicit flags.
 
 ```bash
 # Text classification — daemon auto-detects type, title, date, etc.
@@ -1128,7 +1138,7 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 5. **Completed/cancelled records are immutable.** You cannot update, complete, or cancel a record that is already completed or cancelled. Check status with `wr list --status all` first.
 
-6. **LLM classification makes type/title/date optional.** When using `--text` or `--image`, the LLM fills in `type`, `title`, and `date` automatically. Explicit flags (`--type`, `--title`, `--date`) take precedence over LLM results.
+6. **LLM classification is optional.** Without an LLM key, use `--type`, `--title`, and optionally `--date` (defaults to today). With `--text` or `--image`, the LLM fills in `type`, `title`, and `date` automatically. Explicit flags take precedence over LLM results.
 
 7. **`wr config set` validates before saving.** Invalid values (bad port, unknown timezone) are rejected before the config file is modified. The config is always in a valid state on disk.
 

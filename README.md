@@ -18,21 +18,23 @@ A CLI tool that helps you manage work reports through a local HTTP daemon. Built
 # Build
 go build -o wr .
 
-# Initialize config (one step)
-./wr config init --llm-text-key sk-xxx --llm-text-model gpt-4o-mini
+# Initialize config (minimal — no LLM key needed)
+./wr config init
 
 # Start the daemon
 ./wr agent daemon ensure-running
 
-# Add a record
-./wr add --type meeting --title "Sprint planning" --date 2026-05-03 --time 09:00
+# Add a record (--date defaults to today if omitted)
+./wr add --type meeting --title "Sprint planning" --time 09:00
 
 # Check today's entries
-./wr list --date 2026-05-03
+./wr list
 
 # Generate a report
 ./wr report today
 ```
+
+> **LLM is optional.** Without an LLM key, specify `--type` and `--title` manually (and optionally `--date`). To enable natural-language classification, add `--llm-text-key sk-xxx --llm-text-model gpt-4o-mini` to `config init`.
 
 ## Configuration
 
