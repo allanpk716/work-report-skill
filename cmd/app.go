@@ -155,6 +155,30 @@ func registerCommandMeta() {
 			Description:  "Ensure the daemon is running (start if needed) and return status",
 			IsIdempotent: true,
 		},
+		"digest": {
+			Description:  "Manage digest configurations",
+			IsIdempotent: false,
+		},
+		"digest add": {
+			Description:  "Create a new digest configuration",
+			IsIdempotent: false,
+		},
+		"digest list": {
+			Description:  "List all digest configurations",
+			IsIdempotent: true,
+		},
+		"digest remove": {
+			Description:  "Remove a digest configuration",
+			IsIdempotent: true,
+		},
+		"digest enable": {
+			Description:  "Enable a digest configuration",
+			IsIdempotent: true,
+		},
+		"digest disable": {
+			Description:  "Disable a digest configuration",
+			IsIdempotent: true,
+		},
 	}
 
 	for cmdPath, m := range meta {
