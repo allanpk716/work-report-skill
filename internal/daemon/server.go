@@ -15,8 +15,6 @@ import (
 	"wr/internal/storage"
 )
 
-const DefaultPort = 17530
-
 // Server is the HTTP daemon server.
 type Server struct {
 	port      int

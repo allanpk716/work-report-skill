@@ -77,7 +77,7 @@ func (s *Scheduler) Start() error {
 	// Load existing state if available
 	loaded, err := LoadState(s.stateMgr.path)
 	if err != nil {
-		logger.Warnf("state load: %v (starting fresh)", err)
+		logger.Debugf("state load: %v (starting fresh)", err)
 	} else {
 		s.state = loaded
 	}
