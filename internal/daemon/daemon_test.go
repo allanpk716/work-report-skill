@@ -17,6 +17,7 @@ import (
 	"wr/internal/config"
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 	"wr/internal/llm"
+	"wr/internal/logger"
 	"wr/internal/pushover"
 	"wr/internal/scheduler"
 	"wr/internal/storage"
@@ -4797,4 +4798,115 @@ func TestHandleUpdate_LookupAlreadyCompleted(t *testing.T) {
 
 	assertJSONLStatus(t, w.Body.Bytes(), "error")
 	assertJSONLCode(t, w.Body.Bytes(), "already_completed")
+}
+
+// ── Lifecycle logging tests (T02) ──
+
+// TestPanicRecovery_LogsToStructuredLogger verifies that the panicRecoveryMiddleware
+// logs the panic to the structured logger (in addition to returning a JSONL error).
+func TestPanicRecovery_LogsToStructuredLogger(t *testing.T) {
+	// Init logger to a temp dir so we can read the log file
+	logDir := t.TempDir()
+	if err := logger.Init(logDir); err != nil {
+		t.Fatalf("logger.Init: %v", err)
+	}
+	defer logger.Shutdown()
+
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv.panicRecoveryMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic for logging")
+	})))
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/test-path", "", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	// Verify the JSONL error response was returned
+	assertJSONLStatus(t, body, "error")
+	var record map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(body), &record)
+	if record["error_code"] != "FATAL_CRASH" {
+		t.Errorf("expected error_code=FATAL_CRASH, got %v", record["error_code"])
+	}
+
+	// Wait briefly for the log to flush, then read the log file
+	time.Sleep(100 * time.Millisecond)
+
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read log dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one log file")
+	}
+
+	logData, err := os.ReadFile(filepath.Join(logDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	logContent := string(logData)
+
+	if !strings.Contains(logContent, "handler panic") {
+		t.Errorf("expected log to contain 'handler panic', got: %s", logContent)
+	}
+	if !strings.Contains(logContent, "test panic for logging") {
+		t.Errorf("expected log to contain 'test panic for logging', got: %s", logContent)
+	}
+	if !strings.Contains(logContent, "/test-path") {
+		t.Errorf("expected log to contain '/test-path', got: %s", logContent)
+	}
+}
+
+// TestHandleStop_LogsShutdown verifies that the /api/stop handler logs
+// the stop request via the structured logger.
+func TestHandleStop_LogsShutdown(t *testing.T) {
+	logDir := t.TempDir()
+	if err := logger.Init(logDir); err != nil {
+		t.Fatalf("logger.Init: %v", err)
+	}
+	defer logger.Shutdown()
+
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv.router)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/stop", "", nil)
+	if err != nil {
+		t.Fatalf("POST /api/stop: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	assertJSONLStatus(t, respBody, "success")
+
+	// Wait briefly for the log to flush
+	time.Sleep(100 * time.Millisecond)
+
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read log dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one log file")
+	}
+
+	logData, err := os.ReadFile(filepath.Join(logDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	logContent := string(logData)
+
+	if !strings.Contains(logContent, "stop requested") {
+		t.Errorf("expected log to contain 'stop requested', got: %s", logContent)
+	}
+	if !strings.Contains(logContent, "http") {
+		t.Errorf("expected log to contain 'http' source field, got: %s", logContent)
+	}
+	if !strings.Contains(logContent, "daemon shutting down") {
+		t.Errorf("expected log to contain 'daemon shutting down', got: %s", logContent)
+	}
 }

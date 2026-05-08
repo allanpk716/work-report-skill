@@ -25,6 +25,7 @@ import (
 	"wr/internal/scheduler"
 	"wr/internal/storage"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -98,6 +99,9 @@ func runDaemon(suppressStartupMsg bool) error {
 		return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("cannot init logger: %v", err))
 	}
 	defer logger.Shutdown()
+	defer logger.Infof("daemon exiting")
+
+	logger.WithFields(logrus.Fields{"port": port, "pid": os.Getpid(), "data_dir": dataDir}).Infof("daemon started")
 
 	// Create storage layer
 	store := storage.New(dataDir)
@@ -148,6 +152,11 @@ func runDaemon(suppressStartupMsg bool) error {
 	// 35+ s; without async catchup the daemon would be unreachable during that
 	// window, breaking status checks and UAT tests.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.WithField("goroutine", "catchup").Errorf("panic recovered: %v", r)
+			}
+		}()
 		catchUpRecords, err := store.ListFullRecords(storage.ListOptions{
 			RecordType: models.TypeReminder,
 		})
@@ -186,8 +195,8 @@ func runDaemon(suppressStartupMsg bool) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		app.JSONL().Warning("daemon shutting down")
+		sig := <-sigCh
+		logger.WithField("signal", sig).Warnf("daemon received signal")
 		sched.Stop()
 		cancel()
 	}()

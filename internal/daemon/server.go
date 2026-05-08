@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
@@ -79,17 +77,11 @@ func (s *Server) Start(ctx context.Context, onReady func()) error {
 		Handler: s.panicRecoveryMiddleware(s.loggingMiddleware(s.router)),
 	}
 
-	// Graceful shutdown on context cancel or signals
+	// Graceful shutdown on context cancel.
+	// Signal handling is owned by the caller (cmd/agent_daemon.go), which
+	// cancels the context when SIGINT/SIGTERM is received.
 	go func() {
 		<-ctx.Done()
-		s.shutdown()
-	}()
-
-	// Signal handler for SIGINT/SIGTERM
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
 		s.shutdown()
 	}()
 
@@ -106,9 +98,13 @@ func (s *Server) Start(ctx context.Context, onReady func()) error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) shutdown() {
+	logger.Infof("daemon shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = s.http.Shutdown(ctx)
+	if s.http != nil {
+		_ = s.http.Shutdown(ctx)
+	}
+	logger.Infof("daemon shutdown complete")
 }
 
 // loggingMiddleware logs each HTTP request.
@@ -126,6 +122,7 @@ func (s *Server) panicRecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
+				logger.WithField("path", r.URL.Path).Errorf("handler panic: %v", err)
 				w.Header().Set("Content-Type", "application/jsonl")
 				w.WriteHeader(http.StatusOK)
 				agentsdk.NewWriter(w, "wr").ErrorWithCode("FATAL_CRASH", fmt.Sprintf("panic: %v", err))

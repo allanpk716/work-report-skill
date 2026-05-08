@@ -46,6 +46,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
 		return
 	}
+	logger.WithField("source", "http").Infof("stop requested")
 	daemonWriter(w).Success(map[string]interface{}{"message": "daemon shutting down"})
 	go s.shutdown()
 }
