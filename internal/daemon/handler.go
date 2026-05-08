@@ -1466,6 +1466,189 @@ func (s *Server) handleDigestDisable(w http.ResponseWriter, r *http.Request) {
 	daemonWriter(w).Success(updated)
 }
 
+// ── Digest Preview handler ──
+
+// handleDigestPreview handles GET /api/digest/preview/<id> — runs the digest
+// pipeline for a given digest config and returns the summary text directly
+// as JSONL (no Pushover). Used by "wr digest preview <id>".
+func (s *Server) handleDigestPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/digest/preview/")
+	if id == "" {
+		daemonWriter(w).ErrorWithCode("digest_not_found", "missing digest id")
+		return
+	}
+
+	cfg, err := s.digestStore.Get(id)
+	if err != nil {
+		logger.WithField("digest_id", id).Errorf("digest preview: get failed: %v", err)
+		if errors.Is(err, digest.ErrNotFound) {
+			daemonWriter(w).ErrorWithCode("digest_not_found", fmt.Sprintf("digest %q not found", id))
+		} else {
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to get digest: %v", err))
+		}
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	// Build adapters
+	storageAdapter := digest.NewStorageAdapter(s.storage, loc)
+	var llmCaller digest.LLMCaller
+	if s.config != nil && s.config.LLM.Text.APIKey != "" {
+		llmCaller = digest.NewLLMAdapter(
+			s.config.LLM.Text.APIBase,
+			s.config.LLM.Text.APIKey,
+			s.config.LLM.Text.Model,
+			time.Duration(s.config.LLM.Text.Timeout)*time.Second,
+		)
+	}
+
+	input := digest.SummarizeInput{
+		DigestID:   cfg.ID,
+		Scope:      cfg.Scope,
+		Direction:  cfg.Direction,
+		Loc:        loc,
+		Storage:    storageAdapter,
+		LLM:        llmCaller,
+	}
+
+	result, err := digest.GenerateSummary(r.Context(), input)
+	if err != nil {
+		logger.WithField("digest_id", id).Errorf("digest preview: generate failed: %v", err)
+		daemonWriter(w).ErrorWithCode("internal_error", fmt.Sprintf("summary generation failed: %v", err))
+		return
+	}
+
+	logger.WithField("digest_id", id).WithField("scope", string(cfg.Scope)).
+		WithField("direction", string(cfg.Direction)).WithField("llm_status", result.LLMStatus).
+		WithField("record_count", result.RecordCount).Info("[digest-preview] summary generated")
+
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":       "digest_preview",
+		"digest_id":    id,
+		"scope":        string(cfg.Scope),
+		"direction":    string(cfg.Direction),
+		"text":         result.Text,
+		"record_count": result.RecordCount,
+		"llm_status":   result.LLMStatus,
+		"title":        result.Title,
+	})
+}
+
+// ── Prompt Preview handler ──
+
+// handlePromptPreview handles GET /api/prompt/preview/<name> — runs the
+// digest pipeline for a named prompt with inferred direction and returns the
+// summary text directly as JSONL (no Pushover). Used by "wr prompt preview <name>".
+// Optional ?scope= query parameter (default "today").
+func (s *Server) handlePromptPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.digestStore == nil {
+		daemonWriter(w).ErrorWithCode("storage_error", "digest store not initialized")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/api/prompt/preview/")
+	if name == "" {
+		daemonWriter(w).ErrorWithCode("prompt_not_found", "missing prompt name")
+		return
+	}
+
+	promptName := digest.PromptName(name)
+
+	// Verify the prompt exists (has default or override)
+	promptText, err := s.digestStore.GetPrompt(promptName)
+	if err != nil {
+		if errors.Is(err, digest.ErrPromptNotFound) {
+			daemonWriter(w).ErrorWithCode("prompt_not_found", fmt.Sprintf("prompt %q not found (no default or override)", name))
+		} else {
+			logger.WithField("prompt_name", name).Errorf("prompt preview: get failed: %v", err)
+			daemonWriter(w).ErrorWithCode("storage_error", fmt.Sprintf("failed to get prompt: %v", err))
+		}
+		return
+	}
+
+	// Infer direction from prompt name
+	direction := digest.DirectionForPrompt(promptName)
+
+	// Parse optional scope query parameter (default "today")
+	scopeStr := r.URL.Query().Get("scope")
+	if scopeStr == "" {
+		scopeStr = "today"
+	}
+	scope, err := digest.ParseScope(scopeStr)
+	if err != nil {
+		daemonWriter(w).ErrorWithCode("invalid_scope", err.Error())
+		return
+	}
+
+	loc := time.UTC
+	if s.config != nil {
+		loc = s.config.Location()
+	}
+
+	// Build adapters
+	storageAdapter := digest.NewStorageAdapter(s.storage, loc)
+	var llmCaller digest.LLMCaller
+	if s.config != nil && s.config.LLM.Text.APIKey != "" {
+		llmCaller = digest.NewLLMAdapter(
+			s.config.LLM.Text.APIBase,
+			s.config.LLM.Text.APIKey,
+			s.config.LLM.Text.Model,
+			time.Duration(s.config.LLM.Text.Timeout)*time.Second,
+		)
+	}
+
+	input := digest.SummarizeInput{
+		DigestID:  "preview-" + name,
+		Scope:     scope,
+		Direction: direction,
+		Loc:       loc,
+		Storage:   storageAdapter,
+		LLM:       llmCaller,
+	}
+
+	result, err := digest.GenerateSummary(r.Context(), input)
+	if err != nil {
+		logger.WithField("prompt_name", name).Errorf("prompt preview: generate failed: %v", err)
+		daemonWriter(w).ErrorWithCode("internal_error", fmt.Sprintf("summary generation failed: %v", err))
+		return
+	}
+
+	logger.WithField("prompt_name", name).WithField("scope", string(scope)).
+		WithField("direction", string(direction)).WithField("llm_status", result.LLMStatus).
+		WithField("record_count", result.RecordCount).Info("[prompt-preview] summary generated")
+
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":       "prompt_preview",
+		"prompt_name":  name,
+		"prompt_text":  promptText,
+		"scope":        string(scope),
+		"direction":    string(direction),
+		"text":         result.Text,
+		"record_count": result.RecordCount,
+		"llm_status":   result.LLMStatus,
+		"title":        result.Title,
+	})
+}
+
 // ── Prompt CRUD handlers ──
 
 // handlePromptList handles GET /api/prompt/list — lists all prompts with their current text and default status.

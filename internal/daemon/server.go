@@ -201,4 +201,8 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/prompt/show/", s.handlePromptShow)
 	s.router.HandleFunc("/api/prompt/set/", s.handlePromptSet)
 	s.router.HandleFunc("/api/prompt/reset/", s.handlePromptReset)
+
+	// Preview endpoints
+	s.router.HandleFunc("/api/digest/preview/", s.handleDigestPreview)
+	s.router.HandleFunc("/api/prompt/preview/", s.handlePromptPreview)
 }

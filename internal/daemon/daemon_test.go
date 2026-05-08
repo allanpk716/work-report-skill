@@ -6408,3 +6408,225 @@ func TestDigestSchedulerInvalidCronRegistration(t *testing.T) {
 		t.Errorf("expected 0 entries with invalid cron, got %d", srv.DigestScheduler().RegisteredEntries())
 	}
 }
+
+// ── Digest Preview handler tests ──
+
+func TestDigestPreview_HappyPath(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	// Add a record so the digest has data to summarize
+	addBody := `{"type":"task","title":"preview test task","date":"2026-05-02"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Create a digest config
+	digestStore := digest.NewStore(filepath.Join(dir, "digests.json"))
+	cfg, err := digestStore.Add(digest.DigestConfig{
+		Schedule:  "0 8 * * *",
+		Scope:     digest.ScopeToday,
+		Direction: digest.DirectionSummary,
+	})
+	if err != nil {
+		t.Fatalf("create digest: %v", err)
+	}
+
+	// Call preview endpoint
+	req = httptest.NewRequest(http.MethodGet, "/api/digest/preview/"+cfg.ID, nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["action"] != "digest_preview" {
+		t.Errorf("action = %v, want digest_preview", data["action"])
+	}
+	if data["digest_id"] != cfg.ID {
+		t.Errorf("digest_id = %v, want %s", data["digest_id"], cfg.ID)
+	}
+	if data["scope"] != "today" {
+		t.Errorf("scope = %v, want today", data["scope"])
+	}
+	if data["direction"] != "summary" {
+		t.Errorf("direction = %v, want summary", data["direction"])
+	}
+	text, _ := data["text"].(string)
+	if text == "" {
+		t.Error("expected non-empty text in preview response")
+	}
+	// No LLM configured → fallback to raw markdown
+	llmStatus, _ := data["llm_status"].(string)
+	if llmStatus != "no_llm" {
+		t.Errorf("llm_status = %v, want no_llm (no LLM configured in test)", llmStatus)
+	}
+}
+
+func TestDigestPreview_NotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/digest/preview/nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "digest_not_found")
+}
+
+func TestDigestPreview_MissingID(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/digest/preview/", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "digest_not_found")
+}
+
+func TestDigestPreview_PostMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/digest/preview/some-id", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+// ── Prompt Preview handler tests ──
+
+func TestPromptPreview_HappyPath(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	// Add a record so the prompt preview has data
+	addBody := `{"type":"task","title":"prompt preview task","date":"2026-05-02"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	// Call prompt preview for "report" (built-in prompt)
+	req = httptest.NewRequest(http.MethodGet, "/api/prompt/preview/report", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["action"] != "prompt_preview" {
+		t.Errorf("action = %v, want prompt_preview", data["action"])
+	}
+	if data["prompt_name"] != "report" {
+		t.Errorf("prompt_name = %v, want report", data["prompt_name"])
+	}
+	if data["direction"] != "summary" {
+		t.Errorf("direction = %v, want summary (inferred from 'report')", data["direction"])
+	}
+	if data["scope"] != "today" {
+		t.Errorf("scope = %v, want today (default)", data["scope"])
+	}
+	text, _ := data["text"].(string)
+	if text == "" {
+		t.Error("expected non-empty text in preview response")
+	}
+	promptText, _ := data["prompt_text"].(string)
+	if promptText == "" {
+		t.Error("expected non-empty prompt_text in preview response")
+	}
+	llmStatus, _ := data["llm_status"].(string)
+	if llmStatus != "no_llm" {
+		t.Errorf("llm_status = %v, want no_llm", llmStatus)
+	}
+
+	_ = dir // dir used for storage context
+}
+
+func TestPromptPreview_AgendaDirection(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// "agenda" should infer DirectionAgenda
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/preview/agenda", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["direction"] != "agenda" {
+		t.Errorf("direction = %v, want agenda (inferred from 'agenda')", data["direction"])
+	}
+}
+
+func TestPromptPreview_ScopeParam(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Test with explicit scope=week
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/preview/report?scope=week", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	if data["scope"] != "week" {
+		t.Errorf("scope = %v, want week", data["scope"])
+	}
+}
+
+func TestPromptPreview_InvalidScope(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/preview/report?scope=invalid_scope", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "invalid_scope")
+}
+
+func TestPromptPreview_NotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/preview/nonexistent_prompt", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptPreview_MissingName(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt/preview/", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "prompt_not_found")
+}
+
+func TestPromptPreview_PostMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/prompt/preview/report", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}

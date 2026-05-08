@@ -50,4 +50,7 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("invalid_scope", validateParams, "无效的 digest 范围")
 	_ = app.RegisterErrorCode("invalid_schedule", validateParams, "无效的 cron 表达式")
 	_ = app.RegisterErrorCode("invalid_direction", validateParams, "无效的 digest 方向")
+
+	// Preview errors
+	_ = app.RegisterErrorCode("internal_error", fatal, "内部处理错误")
 }
