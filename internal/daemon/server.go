@@ -19,13 +19,14 @@ import (
 
 // Server is the HTTP daemon server.
 type Server struct {
-	port        int
-	router      *http.ServeMux
-	http        *http.Server
-	storage     *storage.Storage
-	config      *config.Config
-	scheduler   *scheduler.Scheduler
-	digestStore *digest.DigestStore
+	port            int
+	router          *http.ServeMux
+	http            *http.Server
+	storage         *storage.Storage
+	config          *config.Config
+	scheduler       *scheduler.Scheduler
+	digestStore     *digest.DigestStore
+	digestScheduler *digest.DigestScheduler
 }
 
 // NewServer creates a new daemon server bound to the given port with storage.
@@ -79,6 +80,25 @@ func (s *Server) Config() *config.Config {
 // DigestStore returns the server's digest store instance (may be nil if init failed).
 func (s *Server) DigestStore() *digest.DigestStore {
 	return s.digestStore
+}
+
+// SetDigestScheduler sets the digest scheduler instance for the server. Nil-safe.
+func (s *Server) SetDigestScheduler(ds *digest.DigestScheduler) {
+	s.digestScheduler = ds
+}
+
+// DigestScheduler returns the server's digest scheduler instance (may be nil).
+func (s *Server) DigestScheduler() *digest.DigestScheduler {
+	return s.digestScheduler
+}
+
+// SyncDigestScheduler triggers a sync on the digest scheduler (reloads all
+// enabled configs from the store and updates cron entries). No-op if the
+// scheduler is nil.
+func (s *Server) SyncDigestScheduler() {
+	if s.digestScheduler != nil {
+		s.digestScheduler.Sync()
+	}
 }
 
 // Router returns the underlying HTTP handler for testing.

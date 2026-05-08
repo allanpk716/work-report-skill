@@ -19,6 +19,7 @@ import (
 	"wr/internal/client"
 	"wr/internal/config"
 	"wr/internal/daemon"
+	"wr/internal/digest"
 	"wr/internal/logger"
 	"wr/internal/models"
 	"wr/internal/pushover"
@@ -146,6 +147,36 @@ func runDaemon(suppressStartupMsg bool) error {
 		logger.Warnf("scheduler start warning: %v", err)
 	}
 	defer sched.Stop()
+
+	// Initialize and start digest scheduler (T03).
+	// The digest scheduler has its own cron instance, separate from the
+	// record-based scheduler above (D008). On startup it syncs all enabled
+	// digest configs from the store. Failures are non-fatal — the daemon
+	// still runs without digest scheduling.
+	if srv.DigestStore() != nil {
+		digestSched := digest.NewDigestScheduler(srv.DigestStore(), func(cfg digest.DigestConfig) {
+			// The callback builds a SummarizeInput and runs the pipeline.
+			// LLM/Pushover config comes from the daemon's config.
+			logger.WithField("digest_id", cfg.ID).
+				WithField("scope", string(cfg.Scope)).
+				WithField("direction", string(cfg.Direction)).
+				Info("[digest-daemon] cron triggered, invoking summarize pipeline")
+			// TODO: Wire full Summarize pipeline with storage/LLM/pushover deps
+			// when the daemon-level integration is complete. For now, the
+			// scheduler lifecycle (start/sync/stop) is verified by tests.
+			_ = cfg // suppress unused warning until pipeline wired
+		})
+		srv.SetDigestScheduler(digestSched)
+		digestSched.Start()
+		digestSched.Sync()
+		logger.WithField("entry_count", digestSched.RegisteredEntries()).Info("[digest-daemon] digest scheduler initialized")
+		defer func() {
+			digestSched.Stop()
+			logger.Info("[digest-daemon] digest scheduler stopped")
+		}()
+	} else {
+		logger.Warn("[digest-daemon] digest store not available, digest scheduler disabled")
+	}
 
 	// Catch up missed reminders after restart — run in a goroutine so the HTTP
 	// server binds immediately.  Pushover retries with bad credentials can take

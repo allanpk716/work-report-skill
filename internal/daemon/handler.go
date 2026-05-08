@@ -1312,6 +1312,10 @@ func (s *Server) handleDigestAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.WithField("digest_id", added.ID).WithField("scope", string(added.Scope)).WithField("schedule", added.Schedule).Info("digest added via API")
+
+	// Sync digest scheduler so the new entry gets a cron registration.
+	s.SyncDigestScheduler()
+
 	daemonWriter(w).Success(added)
 }
 
@@ -1367,6 +1371,10 @@ func (s *Server) handleDigestRemove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.WithField("digest_id", id).Info("digest removed via API")
+
+	// Sync digest scheduler so the removed entry gets unregistered.
+	s.SyncDigestScheduler()
+
 	daemonWriter(w).Success(map[string]interface{}{
 		"action":  "remove",
 		"id":      id,
@@ -1409,6 +1417,10 @@ func (s *Server) handleDigestEnable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.WithField("digest_id", id).Info("digest enabled via API")
+
+	// Sync digest scheduler so the newly-enabled entry gets registered.
+	s.SyncDigestScheduler()
+
 	daemonWriter(w).Success(updated)
 }
 
@@ -1447,6 +1459,10 @@ func (s *Server) handleDigestDisable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.WithField("digest_id", id).Info("digest disabled via API")
+
+	// Sync digest scheduler so the disabled entry gets unregistered.
+	s.SyncDigestScheduler()
+
 	daemonWriter(w).Success(updated)
 }
 
