@@ -279,7 +279,7 @@ func TestPromptCommandRegistration(t *testing.T) {
 	}
 
 	// Verify subcommands exist
-	for _, sub := range []string{"list", "show", "set", "reset"} {
+	for _, sub := range []string{"list", "show", "set", "reset", "preview"} {
 		cmd, _, err := rootCmd.Find([]string{"prompt", sub})
 		if err != nil {
 			t.Errorf("prompt %s subcommand not registered: %v", sub, err)
@@ -293,5 +293,171 @@ func TestPromptCommandRegistration(t *testing.T) {
 				t.Errorf("expected prompt %s Use to start with %q, got %q", sub, sub, cmd.Use)
 			}
 		}
+	}
+}
+
+// --- Preview command tests ---
+
+// TestDigestPreviewSuccess verifies that "wr digest preview <id>" hits the
+// correct daemon endpoint and returns JSONL output.
+func TestDigestPreviewSuccess(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/digest/preview/abc123" {
+			t.Errorf("expected path /api/digest/preview/abc123, got %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+
+		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
+			"digest_id": "abc123",
+			"summary":   "Today you worked on implementing preview commands...",
+			"llm_status": "success",
+		})
+		b, _ := json.Marshal(env)
+		w.Header().Set("Content-Type", "application/jsonl")
+		w.Write(append(b, '\n'))
+	}))
+	defer srv.Close()
+
+	code, out := executeCmd("digest", "preview", "abc123")
+	if code != agentsdk.ExitSuccess {
+		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+	}
+
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	if lines[0]["type"] != "result" {
+		t.Errorf("expected type=result, got %v", lines[0]["type"])
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestDigestPreviewMissingArg verifies that "wr digest preview" without an ID
+// argument fails with a usage error (cobra validation).
+func TestDigestPreviewMissingArg(t *testing.T) {
+	_, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	code, _ := executeCmd("digest", "preview")
+	// Cobra reports ExactArgs(1) violation as exit code 1
+	if code == agentsdk.ExitSuccess {
+		t.Error("expected non-zero exit code for missing argument")
+	}
+}
+
+// TestPromptPreviewSuccess verifies that "wr prompt preview <name>" hits the
+// correct daemon endpoint with default scope=today.
+func TestPromptPreviewSuccess(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/prompt/preview/agenda" {
+			t.Errorf("expected path /api/prompt/preview/agenda, got %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		// Default scope should be "today"
+		scope := r.URL.Query().Get("scope")
+		if scope != "today" {
+			t.Errorf("expected scope=today, got %q", scope)
+		}
+
+		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
+			"prompt_name": "agenda",
+			"scope":       "today",
+			"preview":     "## Agenda Preview\n- Task 1\n- Task 2",
+			"llm_status":  "success",
+		})
+		b, _ := json.Marshal(env)
+		w.Header().Set("Content-Type", "application/jsonl")
+		w.Write(append(b, '\n'))
+	}))
+	defer srv.Close()
+
+	code, out := executeCmd("prompt", "preview", "agenda")
+	if code != agentsdk.ExitSuccess {
+		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+	}
+
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	if lines[0]["type"] != "result" {
+		t.Errorf("expected type=result, got %v", lines[0]["type"])
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestPromptPreviewWithScope verifies that "wr prompt preview <name> --scope week"
+// passes the scope as a query parameter.
+func TestPromptPreviewWithScope(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scope := r.URL.Query().Get("scope")
+		if scope != "week" {
+			t.Errorf("expected scope=week, got %q", scope)
+		}
+
+		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
+			"prompt_name": "report",
+			"scope":       "week",
+			"preview":     "Weekly summary preview...",
+			"llm_status":  "success",
+		})
+		b, _ := json.Marshal(env)
+		w.Header().Set("Content-Type", "application/jsonl")
+		w.Write(append(b, '\n'))
+	}))
+	defer srv.Close()
+
+	code, out := executeCmd("prompt", "preview", "report", "--scope", "week")
+	if code != agentsdk.ExitSuccess {
+		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestPromptPreviewMissingArg verifies that "wr prompt preview" without a name
+// argument fails with a usage error.
+func TestPromptPreviewMissingArg(t *testing.T) {
+	_, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	code, _ := executeCmd("prompt", "preview")
+	if code == agentsdk.ExitSuccess {
+		t.Error("expected non-zero exit code for missing argument")
+	}
+}
+
+// TestDigestPreviewRegistration verifies that the digest preview command is
+// properly registered.
+func TestDigestPreviewRegistration(t *testing.T) {
+	if app == nil {
+		InitApp()
+	}
+
+	cmd, _, err := rootCmd.Find([]string{"digest", "preview"})
+	if err != nil {
+		t.Fatalf("digest preview subcommand not registered: %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("digest preview command is nil")
+	}
+	if len(cmd.Use) < 7 || cmd.Use[:7] != "preview" {
+		t.Errorf("expected digest preview Use to start with 'preview', got %q", cmd.Use)
 	}
 }

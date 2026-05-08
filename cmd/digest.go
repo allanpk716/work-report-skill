@@ -75,12 +75,23 @@ var digestDisableCmd = &cobra.Command{
 	},
 }
 
+// digestPreviewCmd previews an LLM-generated digest summary for a configuration ID.
+var digestPreviewCmd = &cobra.Command{
+	Use:   "preview <id>",
+	Short: "Preview LLM digest summary in terminal",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return client.CallDaemonGet(os.Stdout, "/api/digest/preview/"+args[0])
+	},
+}
+
 func init() {
 	digestCmd.AddCommand(digestAddCmd)
 	digestCmd.AddCommand(digestListCmd)
 	digestCmd.AddCommand(digestRemoveCmd)
 	digestCmd.AddCommand(digestEnableCmd)
 	digestCmd.AddCommand(digestDisableCmd)
+	digestCmd.AddCommand(digestPreviewCmd)
 
 	digestAddCmd.Flags().StringVar(&digestSchedule, "schedule", "", "Cron expression (e.g. '0 8 * * *')")
 	digestAddCmd.Flags().StringVar(&digestScope, "scope", "", "Digest scope: today, yesterday, week, month, custom")

@@ -179,6 +179,10 @@ func registerCommandMeta() {
 			Description:  "Disable a digest configuration",
 			IsIdempotent: true,
 		},
+		"digest preview": {
+			Description:  "Preview LLM digest summary in terminal",
+			IsIdempotent: true,
+		},
 		"prompt": {
 			Description:  "Manage prompt templates",
 			IsIdempotent: false,
@@ -197,6 +201,10 @@ func registerCommandMeta() {
 		},
 		"prompt reset": {
 			Description:  "Reset prompt to default",
+			IsIdempotent: true,
+		},
+		"prompt preview": {
+			Description:  "Preview LLM prompt output in terminal",
 			IsIdempotent: true,
 		},
 	}

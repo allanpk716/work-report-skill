@@ -86,6 +86,7 @@ func resetConfigFlags() {
 
 	promptText = ""
 	promptFile = ""
+	promptPreviewScope = ""
 
 	// Reset Cobra's "visited" flag tracking so Changed() returns fresh results
 	configInitCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })

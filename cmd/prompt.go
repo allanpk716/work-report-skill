@@ -70,14 +70,32 @@ var promptResetCmd = &cobra.Command{
 	},
 }
 
+var promptPreviewScope string
+
+// promptPreviewCmd previews LLM prompt output using current data.
+var promptPreviewCmd = &cobra.Command{
+	Use:   "preview <name>",
+	Short: "Preview LLM prompt output in terminal",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		scope := promptPreviewScope
+		if scope == "" {
+			scope = "today"
+		}
+		return client.CallDaemonGet(os.Stdout, "/api/prompt/preview/"+args[0]+"?scope="+scope)
+	},
+}
+
 func init() {
 	promptCmd.AddCommand(promptListCmd)
 	promptCmd.AddCommand(promptShowCmd)
 	promptCmd.AddCommand(promptSetCmd)
 	promptCmd.AddCommand(promptResetCmd)
+	promptCmd.AddCommand(promptPreviewCmd)
 
 	promptSetCmd.Flags().StringVar(&promptText, "text", "", "Prompt text")
 	promptSetCmd.Flags().StringVar(&promptFile, "file", "", "Path to file containing prompt text")
+	promptPreviewCmd.Flags().StringVar(&promptPreviewScope, "scope", "", "Digest scope: today, yesterday, week, month, custom (default: today)")
 
 	rootCmd.AddCommand(promptCmd)
 }
