@@ -542,6 +542,111 @@ func TestSaveProducesValidJSON(t *testing.T) {
 	}
 }
 
+func TestConfigSetLLMTextTimeout(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.applyDefaults()
+
+	// Default timeout should be 30 after applyDefaults
+	if cfg.LLM.Text.Timeout != 30 {
+		t.Fatalf("default LLM.Text.Timeout = %d, want 30", cfg.LLM.Text.Timeout)
+	}
+
+	// Set a custom timeout
+	if err := cfg.SetByPath("llm.text.timeout", "60"); err != nil {
+		t.Fatalf("SetByPath llm.text.timeout: %v", err)
+	}
+	if cfg.LLM.Text.Timeout != 60 {
+		t.Errorf("LLM.Text.Timeout = %d, want 60", cfg.LLM.Text.Timeout)
+	}
+
+	// Roundtrip through save/load
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.LLM.Text.Timeout != 60 {
+		t.Errorf("roundtrip LLM.Text.Timeout = %d, want 60", loaded.LLM.Text.Timeout)
+	}
+}
+
+func TestConfigSetLLMVisionTimeout(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.applyDefaults()
+
+	// Default timeout should be 30 after applyDefaults
+	if cfg.LLM.Vision.Timeout != 30 {
+		t.Fatalf("default LLM.Vision.Timeout = %d, want 30", cfg.LLM.Vision.Timeout)
+	}
+
+	// Set a custom timeout
+	if err := cfg.SetByPath("llm.vision.timeout", "120"); err != nil {
+		t.Fatalf("SetByPath llm.vision.timeout: %v", err)
+	}
+	if cfg.LLM.Vision.Timeout != 120 {
+		t.Errorf("LLM.Vision.Timeout = %d, want 120", cfg.LLM.Vision.Timeout)
+	}
+
+	// Roundtrip through save/load
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.LLM.Vision.Timeout != 120 {
+		t.Errorf("roundtrip LLM.Vision.Timeout = %d, want 120", loaded.LLM.Vision.Timeout)
+	}
+}
+
+func TestConfigSetTimeoutNonInteger(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("llm.text.timeout", "not-a-number")
+	if err == nil {
+		t.Fatal("expected error for non-integer timeout")
+	}
+}
+
+func TestConfigSetTimeoutZero(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("llm.text.timeout", "0")
+	if err == nil {
+		t.Fatal("expected error for zero timeout")
+	}
+}
+
+func TestConfigSetTimeoutNegative(t *testing.T) {
+	cfg := defaultConfig()
+	err := cfg.SetByPath("llm.vision.timeout", "-5")
+	if err == nil {
+		t.Fatal("expected error for negative timeout")
+	}
+}
+
+func TestValidConfigPathsIncludesTimeout(t *testing.T) {
+	paths := ValidConfigPaths()
+
+	for _, p := range []string{"llm.text.timeout", "llm.vision.timeout"} {
+		found := false
+		for _, vp := range paths {
+			if vp == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ValidConfigPaths missing %q", p)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && searchString(s, sub)
 }

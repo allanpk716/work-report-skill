@@ -230,7 +230,7 @@ func TestClassifyImage_MeetingScreenshot(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -260,7 +260,7 @@ func TestClassifyImage_Task(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -316,7 +316,7 @@ func TestClassifyImage_WithTextContext(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -330,7 +330,7 @@ func TestClassifyImage_WithTextContext(t *testing.T) {
 }
 
 func TestClassifyImage_FileNotFound(t *testing.T) {
-	client := NewClient("http://localhost", "key", "model")
+	client := NewClient("http://localhost", "key", "model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -354,7 +354,7 @@ func TestClassifyImage_UnsupportedFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client := NewClient("http://localhost", "key", "model")
+	client := NewClient("http://localhost", "key", "model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -380,7 +380,7 @@ func TestClassifyImage_LLMError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -406,7 +406,7 @@ func TestClassifyImage_LLM401(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "bad-key", "gpt-4o")
+	client := NewClient(server.URL, "bad-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -430,7 +430,7 @@ func TestClassifyImage_ConnectionRefused(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -463,7 +463,7 @@ func TestClassifyImage_EmptyChoices(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -488,7 +488,7 @@ func TestClassifyImage_InvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "gpt-4o")
+	client := NewClient(server.URL, "test-key", "gpt-4o", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -509,7 +509,7 @@ func TestClassifyImage_VisionNotConfigured(t *testing.T) {
 	imgPath := createMinimalPNG(t, filepath.Join(t.TempDir(), "test.png"))
 
 	// Empty client — no server, but we test that ClassifyImage handles it gracefully.
-	client := NewClient("", "key", "model")
+	client := NewClient("", "key", "model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 

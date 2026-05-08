@@ -108,7 +108,7 @@ func TestClassify_MarkdownWrappedJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -137,7 +137,7 @@ func TestClassify_InvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -164,7 +164,7 @@ func TestClassify_Timeout(t *testing.T) {
 	// Close immediately so connections fail
 	server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
@@ -200,7 +200,7 @@ func TestClassify_Non200Status(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClient(server.URL, "test-key", "test-model")
+			client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 			today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 			loc := time.FixedZone("CST", 8*3600)
 
@@ -227,7 +227,7 @@ func TestClassify_Non200Status(t *testing.T) {
 }
 
 func TestClassify_EmptyText(t *testing.T) {
-	client := NewClient("http://localhost", "key", "model")
+	client := NewClient("http://localhost", "key", "model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -245,7 +245,7 @@ func TestClassify_EmptyText(t *testing.T) {
 }
 
 func TestClassify_EmptyWhitespace(t *testing.T) {
-	client := NewClient("http://localhost", "key", "model")
+	client := NewClient("http://localhost", "key", "model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -283,7 +283,7 @@ func TestClassify_UnknownType(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -493,7 +493,7 @@ func TestClassifyBatch_EmptyArray(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -526,7 +526,7 @@ func TestClassifyBatch_InvalidType(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -544,7 +544,7 @@ func TestClassifyBatch_InvalidType(t *testing.T) {
 }
 
 func TestClassifyBatch_EmptyText(t *testing.T) {
-	client := NewClient("http://localhost", "key", "model")
+	client := NewClient("http://localhost", "key", "model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -669,7 +669,7 @@ func mockClassify(t *testing.T, input string, want mockResponse) *ClassifyResult
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 
@@ -708,7 +708,7 @@ func mockClassifyBatch(t *testing.T, input string, wants []mockResponse) []Class
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-key", "test-model")
+	client := NewClient(server.URL, "test-key", "test-model", 30*time.Second)
 	today := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
 

@@ -54,14 +54,14 @@ type Client struct {
 }
 
 // NewClient creates a new Client targeting the given OpenAI-compatible API.
-// The HTTP client has a 30-second timeout.
-func NewClient(apiBase, apiKey, model string) *Client {
+// The HTTP client uses the given timeout for all requests.
+func NewClient(apiBase, apiKey, model string, timeout time.Duration) *Client {
 	return &Client{
 		apiBase: apiBase,
 		apiKey:  apiKey,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }

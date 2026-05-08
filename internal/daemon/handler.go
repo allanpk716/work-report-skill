@@ -393,7 +393,8 @@ func (s *Server) classifyText(w http.ResponseWriter, text string) (*llm.Classify
 	loc := cfg.Location()
 	today := time.Now().In(loc)
 
-	client := llm.NewClient(cfg.LLM.Text.APIBase, cfg.LLM.Text.APIKey, cfg.LLM.Text.Model)
+	client := llm.NewClient(cfg.LLM.Text.APIBase, cfg.LLM.Text.APIKey, cfg.LLM.Text.Model,
+		time.Duration(cfg.LLM.Text.Timeout)*time.Second)
 	result, err := llm.Classify(client, text, today, loc)
 	if err != nil {
 		logger.Errorf("classify error: api_base=%s model=%s error=%v",
@@ -418,7 +419,8 @@ func (s *Server) classifyImage(w http.ResponseWriter, imagePath string, textCont
 	loc := cfg.Location()
 	today := time.Now().In(loc)
 
-	client := llm.NewClient(cfg.LLM.Vision.APIBase, cfg.LLM.Vision.APIKey, cfg.LLM.Vision.Model)
+	client := llm.NewClient(cfg.LLM.Vision.APIBase, cfg.LLM.Vision.APIKey, cfg.LLM.Vision.Model,
+		time.Duration(cfg.LLM.Vision.Timeout)*time.Second)
 	result, err := llm.ClassifyImage(client, imagePath, textContext, today, loc)
 	if err != nil {
 		logger.Errorf("classify_image error: api_base=%s model=%s error=%v image=%s",

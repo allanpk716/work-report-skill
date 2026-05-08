@@ -44,6 +44,7 @@ type LLMProviderConfig struct {
 	APIKey   string `json:"api_key"`
 	APIBase  string `json:"api_base,omitempty"`
 	Model    string `json:"model"`
+	Timeout  int    `json:"timeout,omitempty"`
 }
 
 // DaemonConfig holds daemon-specific settings.
@@ -123,6 +124,12 @@ func (c *Config) applyDefaults() {
 			c.DataDir = dir
 		}
 	}
+	if c.LLM.Text.Timeout == 0 {
+		c.LLM.Text.Timeout = 30
+	}
+	if c.LLM.Vision.Timeout == 0 {
+		c.LLM.Vision.Timeout = 30
+	}
 }
 
 // Validate checks that required fields are present and values are in range.
@@ -172,12 +179,14 @@ func (c *Config) Redacted() *Config {
 			APIKey:   maskSecret(c.LLM.Text.APIKey),
 			APIBase:  c.LLM.Text.APIBase,
 			Model:    c.LLM.Text.Model,
+			Timeout:  c.LLM.Text.Timeout,
 		},
 		Vision: LLMProviderConfig{
 			Provider: c.LLM.Vision.Provider,
 			APIKey:   maskSecret(c.LLM.Vision.APIKey),
 			APIBase:  c.LLM.Vision.APIBase,
 			Model:    c.LLM.Vision.Model,
+			Timeout:  c.LLM.Vision.Timeout,
 		},
 	}
 	return &r
@@ -206,10 +215,12 @@ func ValidConfigPaths() []string {
 		"llm.text.api_key",
 		"llm.text.api_base",
 		"llm.text.model",
+		"llm.text.timeout",
 		"llm.vision.provider",
 		"llm.vision.api_key",
 		"llm.vision.api_base",
 		"llm.vision.model",
+		"llm.vision.timeout",
 		"data_dir",
 		"daemon.port",
 		"timezone",
@@ -259,6 +270,15 @@ func (c *Config) SetByPath(path string, value string) error {
 		c.LLM.Text.APIBase = value
 	case "llm.text.model":
 		c.LLM.Text.Model = value
+	case "llm.text.timeout":
+		var timeout int
+		if _, err := fmt.Sscanf(value, "%d", &timeout); err != nil {
+			return fmt.Errorf("config: llm.text.timeout must be an integer, got %q", value)
+		}
+		if timeout < 1 {
+			return fmt.Errorf("config: llm.text.timeout must be >= 1, got %d", timeout)
+		}
+		c.LLM.Text.Timeout = timeout
 	case "llm.vision.provider":
 		c.LLM.Vision.Provider = value
 	case "llm.vision.api_key":
@@ -267,6 +287,15 @@ func (c *Config) SetByPath(path string, value string) error {
 		c.LLM.Vision.APIBase = value
 	case "llm.vision.model":
 		c.LLM.Vision.Model = value
+	case "llm.vision.timeout":
+		var timeout int
+		if _, err := fmt.Sscanf(value, "%d", &timeout); err != nil {
+			return fmt.Errorf("config: llm.vision.timeout must be an integer, got %q", value)
+		}
+		if timeout < 1 {
+			return fmt.Errorf("config: llm.vision.timeout must be >= 1, got %d", timeout)
+		}
+		c.LLM.Vision.Timeout = timeout
 	case "data_dir":
 		c.DataDir = value
 	case "daemon.port":
