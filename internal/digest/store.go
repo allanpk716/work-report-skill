@@ -40,6 +40,56 @@ type DigestConfig struct {
 	UpdatedAt string    `json:"updated_at"`
 }
 
+// PromptName identifies a named prompt slot (e.g. "agenda", "report").
+type PromptName string
+
+const (
+	// PromptNameAgenda is the default prompt used for agenda-style digests.
+	PromptNameAgenda PromptName = "agenda"
+	// PromptNameReport is the default prompt used for report-style digests.
+	PromptNameReport PromptName = "report"
+)
+
+// PromptEntry stores a user-overridden prompt with metadata.
+type PromptEntry struct {
+	Text      string `json:"text"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// Default prompts used when no override is set.
+var (
+	DefaultPromptAgenda = `你是一个专业的工作助手。请根据以下工作记录，生成今日待办议程（Agenda）。
+
+要求：
+1. 按优先级排序，标注紧急程度
+2. 列出未完成的上期任务
+3. 识别潜在的阻塞问题
+4. 建议时间分配`
+
+	DefaultPromptReport = `你是一个专业的工作助手。请根据以下工作记录，生成工作日报（Report）。
+
+要求：
+1. 按项目/模块分类总结
+2. 标注完成状态（完成/进行中/待开始）
+3. 突出关键成果和里程碑
+4. 列出遇到的问题和解决方案`
+)
+
+// DefaultPrompts maps built-in prompt names to their default text.
+func DefaultPrompts() map[PromptName]string {
+	return map[PromptName]string{
+		PromptNameAgenda: DefaultPromptAgenda,
+		PromptNameReport: DefaultPromptReport,
+	}
+}
+
+// storeFile is the on-disk JSON structure for digests.json.
+// It wraps the digest list and prompt overrides in a single object.
+type storeFile struct {
+	Digests         []DigestConfig              `json:"digests"`
+	PromptOverrides map[PromptName]PromptEntry  `json:"prompt_overrides,omitempty"`
+}
+
 // DigestStore provides mutex-protected CRUD operations on a digests.json file.
 type DigestStore struct {
 	path string
@@ -213,31 +263,60 @@ func (s *DigestStore) setEnabled(id string, enabled bool) error {
 
 // --- internal helpers ---
 
-// read loads the JSON array from disk. Returns empty slice for ENOENT.
-func (s *DigestStore) read() ([]DigestConfig, error) {
+// readStore loads the full storeFile from disk. Returns an empty storeFile
+// for ENOENT. Handles backward compatibility: if the file contains a raw
+// []DigestConfig array (old format), it is transparently migrated.
+func (s *DigestStore) readStore() (*storeFile, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []DigestConfig{}, nil
+			return &storeFile{Digests: []DigestConfig{}, PromptOverrides: map[PromptName]PromptEntry{}}, nil
 		}
 		return nil, fmt.Errorf("digest: read %s: %w", s.path, err)
 	}
 
+	// Try new object format first.
+	var sf storeFile
+	if err := json.Unmarshal(data, &sf); err == nil && sf.Digests != nil {
+		if sf.PromptOverrides == nil {
+			sf.PromptOverrides = map[PromptName]PromptEntry{}
+		}
+		return &sf, nil
+	}
+
+	// Fallback: old format was a bare []DigestConfig array.
 	var digests []DigestConfig
 	if err := json.Unmarshal(data, &digests); err != nil {
 		return nil, fmt.Errorf("digest: parse %s: %w", s.path, err)
 	}
-	return digests, nil
+
+	if digests == nil {
+		digests = []DigestConfig{}
+	}
+
+	return &storeFile{
+		Digests:         digests,
+		PromptOverrides: map[PromptName]PromptEntry{},
+	}, nil
 }
 
-// write persists the JSON array to disk, creating parent dirs as needed.
-func (s *DigestStore) write(digests []DigestConfig) error {
+// read loads digests from disk (backward-compatible convenience wrapper).
+func (s *DigestStore) read() ([]DigestConfig, error) {
+	sf, err := s.readStore()
+	if err != nil {
+		return nil, err
+	}
+	return sf.Digests, nil
+}
+
+// writeStore persists the full storeFile to disk, creating parent dirs as needed.
+func (s *DigestStore) writeStore(sf *storeFile) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("digest: mkdir %s: %w", dir, err)
 	}
 
-	data, err := json.MarshalIndent(digests, "", "  ")
+	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return fmt.Errorf("digest: marshal: %w", err)
 	}
@@ -247,6 +326,154 @@ func (s *DigestStore) write(digests []DigestConfig) error {
 	}
 	return nil
 }
+
+// write persists the digests list to disk (convenience wrapper that preserves prompt overrides).
+func (s *DigestStore) write(digests []DigestConfig) error {
+	sf, err := s.readStore()
+	if err != nil {
+		return err
+	}
+	sf.Digests = digests
+	return s.writeStore(sf)
+}
+
+// --- Prompt methods ---
+
+// GetPrompt returns the effective prompt text for the given name.
+// If a user override exists, it is returned; otherwise the built-in default.
+// Returns ErrPromptNotFound if the name has no default.
+func (s *DigestStore) GetPrompt(name PromptName) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sf, err := s.readStore()
+	if err != nil {
+		return "", err
+	}
+
+	if entry, ok := sf.PromptOverrides[name]; ok {
+		return entry.Text, nil
+	}
+
+	def, ok := DefaultPrompts()[name]
+	if !ok {
+		return "", ErrPromptNotFound
+	}
+	return def, nil
+}
+
+// SetPrompt stores a user override for the named prompt.
+// The name does not need to be a built-in — any name is accepted.
+func (s *DigestStore) SetPrompt(name PromptName, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sf, err := s.readStore()
+	if err != nil {
+		return err
+	}
+
+	if sf.PromptOverrides == nil {
+		sf.PromptOverrides = map[PromptName]PromptEntry{}
+	}
+
+	sf.PromptOverrides[name] = PromptEntry{
+		Text:      text,
+		UpdatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	if err := s.writeStore(sf); err != nil {
+		return err
+	}
+
+	logger.WithField("prompt_name", string(name)).Info("prompt set")
+	return nil
+}
+
+// ResetPrompt removes a user override, restoring the built-in default.
+// Returns ErrPromptNotFound if the name has no default.
+// If the name has a default and no override, this is a no-op.
+func (s *DigestStore) ResetPrompt(name PromptName) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Verify the name has a default; otherwise there's nothing to reset to.
+	if _, ok := DefaultPrompts()[name]; !ok {
+		return ErrPromptNotFound
+	}
+
+	sf, err := s.readStore()
+	if err != nil {
+		return err
+	}
+
+	if _, hasOverride := sf.PromptOverrides[name]; hasOverride {
+		delete(sf.PromptOverrides, name)
+		if err := s.writeStore(sf); err != nil {
+			return err
+		}
+		logger.WithField("prompt_name", string(name)).Info("prompt reset to default")
+	}
+
+	return nil
+}
+
+// ListPrompts returns all prompt names with their effective text and whether
+// each is a user override or the built-in default.
+func (s *DigestStore) ListPrompts() (map[PromptName]PromptInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sf, err := s.readStore()
+	if err != nil {
+		return nil, err
+	}
+
+	defaults := DefaultPrompts()
+	result := make(map[PromptName]PromptInfo, len(defaults)+len(sf.PromptOverrides))
+
+	// Add all defaults first.
+	for name, defText := range defaults {
+		info := PromptInfo{
+			Name:    name,
+			Text:    defText,
+			IsDefault: true,
+		}
+		if entry, ok := sf.PromptOverrides[name]; ok {
+			info.Text = entry.Text
+			info.IsDefault = false
+			info.UpdatedAt = entry.UpdatedAt
+		}
+		result[name] = info
+	}
+
+	// Add any custom overrides that are not built-in names.
+	for name, entry := range sf.PromptOverrides {
+		if _, isBuiltIn := defaults[name]; !isBuiltIn {
+			result[name] = PromptInfo{
+				Name:      name,
+				Text:      entry.Text,
+				IsDefault: false,
+				UpdatedAt: entry.UpdatedAt,
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// PromptInfo describes a prompt's current state for listing.
+type PromptInfo struct {
+	Name      PromptName `json:"name"`
+	Text      string     `json:"text"`
+	IsDefault bool       `json:"is_default"`
+	UpdatedAt string     `json:"updated_at,omitempty"`
+}
+
+// ErrPromptNotFound is returned when a prompt name has no default and no override.
+var ErrPromptNotFound = fmt.Errorf("digest: prompt not found")
+
+// --- ID generation ---
 
 // generateID returns a unique digest ID in the format d_YYYYMMDD_<random6>.
 func generateID() string {
