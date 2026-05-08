@@ -161,10 +161,46 @@ func runDaemon(suppressStartupMsg bool) error {
 				WithField("scope", string(cfg.Scope)).
 				WithField("direction", string(cfg.Direction)).
 				Info("[digest-daemon] cron triggered, invoking summarize pipeline")
-			// TODO: Wire full Summarize pipeline with storage/LLM/pushover deps
-			// when the daemon-level integration is complete. For now, the
-			// scheduler lifecycle (start/sync/stop) is verified by tests.
-			_ = cfg // suppress unused warning until pipeline wired
+
+			// Construct adapters from daemon dependencies.
+			loc := srv.Config().Location()
+			storageAdapter := digest.NewStorageAdapter(srv.Storage(), loc)
+			if storageAdapter == nil {
+				logger.WithField("digest_id", cfg.ID).Error("[digest-daemon] storage adapter is nil, skipping digest")
+				return
+			}
+
+			llmCfg := srv.Config().LLM.Text
+			llmTimeout := time.Duration(llmCfg.Timeout) * time.Second
+			if llmTimeout == 0 {
+				llmTimeout = 60 * time.Second
+			}
+			llmAdapter := digest.NewLLMAdapter(llmCfg.APIBase, llmCfg.APIKey, llmCfg.Model, llmTimeout)
+
+			pushCfg := pushover.Config{
+				APIToken: srv.Config().Pushover.APIToken,
+				UserKey:  srv.Config().Pushover.UserKey,
+			}
+
+			input := digest.SummarizeInput{
+				DigestID:     cfg.ID,
+				Scope:        cfg.Scope,
+				Direction:    cfg.Direction,
+				CustomRange:  "", // cron-triggered digests use configured scope
+				Loc:          loc,
+				Storage:      storageAdapter,
+				LLM:          llmAdapter, // nil if config incomplete → raw markdown fallback
+				PushCfg:      pushCfg,
+				PushPriority: 0,
+			}
+
+			if err := digest.Summarize(context.Background(), input); err != nil {
+				logger.WithField("digest_id", cfg.ID).
+					WithField("error", err).
+					Error("[digest-daemon] summarize pipeline failed")
+			} else {
+				logger.WithField("digest_id", cfg.ID).Info("[digest-daemon] summarize pipeline complete")
+			}
 		})
 		srv.SetDigestScheduler(digestSched)
 		digestSched.Start()

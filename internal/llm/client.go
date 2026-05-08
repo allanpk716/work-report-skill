@@ -19,17 +19,21 @@ import (
 // chatRequest is the request body sent to the OpenAI chat completions endpoint.
 type chatRequest struct {
 	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
+	Messages    []ChatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
 }
 
-// chatMessage is a single message in the chat completions request.
+// ChatMessage is a single message in the chat completions request.
 // Content may be a plain string (text-only) or an array of content parts
 // (multimodal: text + image_url).
-type chatMessage struct {
+type ChatMessage struct {
 	Role    string      `json:"role"`
 	Content interface{} `json:"content"`
 }
+
+// chatMessage is an alias for internal use (kept for backward compatibility
+// within the llm package).
+type chatMessage = ChatMessage
 
 // chatResponse is the response body from the OpenAI chat completions endpoint.
 type chatResponse struct {
@@ -68,7 +72,7 @@ func NewClient(apiBase, apiKey, model string, timeout time.Duration) *Client {
 
 // CallChat sends a chat-completions request and returns the content of the
 // first choice.  The request is POSTed to {apiBase}/chat/completions.
-func (c *Client) CallChat(ctx context.Context, messages []chatMessage) (string, error) {
+func (c *Client) CallChat(ctx context.Context, messages []ChatMessage) (string, error) {
 	reqBody := chatRequest{
 		Model:       c.model,
 		Messages:    messages,

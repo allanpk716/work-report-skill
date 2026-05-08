@@ -15,6 +15,25 @@ import (
 // Log prefix for all pipeline messages.
 const summarizePrefix = "[digest-summarize]"
 
+// SummaryResult holds the output of a GenerateSummary call.
+// It can be consumed by Pushover (Summarize), printed to terminal (preview),
+// or stored for later retrieval.
+type SummaryResult struct {
+	// Text is the final summary text (LLM output or raw markdown fallback).
+	Text string
+	// RecordCount is the number of records in the queried date range.
+	RecordCount int
+	// LLMStatus is "success", "fallback" (LLM error, used raw markdown),
+	// "no_llm" (no LLM configured), or "error" (unexpected).
+	LLMStatus string
+	// DateStart is the inclusive start of the queried date range.
+	DateStart time.Time
+	// DateEnd is the inclusive end of the queried date range.
+	DateEnd time.Time
+	// Title is the notification title (e.g. "📋 Agenda 01-15").
+	Title string
+}
+
 // SummarizeInput holds all parameters needed for a single summarize run.
 // Dependencies are injected as interfaces for testability.
 type SummarizeInput struct {
@@ -48,7 +67,7 @@ type SummarizeInput struct {
 }
 
 // StorageProvider abstracts the report generation functions needed by the
-// summarize pipeline. Implemented by report.StorageQueryAdapter (or a mock
+// summarize pipeline. Implemented by digest.StorageQueryAdapter (or a mock
 // in tests).
 type StorageProvider interface {
 	// GenerateDay queries records for a single date string (YYYY-MM-DD)
@@ -84,17 +103,15 @@ func DefaultPushoverSender() PushoverSender {
 	return &realPushoverSender{}
 }
 
-// Summarize executes the full digest pipeline:
+// GenerateSummary executes steps 1-4 of the digest pipeline:
 //  1. Resolve date range from scope
 //  2. Query storage for report markdown
 //  3. Select prompt based on direction
 //  4. Call LLM for summary (fallback to raw markdown on failure per D010)
-//  5. Push summary via Pushover
 //
-// Returns an error if the pipeline cannot produce any output to push.
+// Returns a SummaryResult containing the summary text and metadata.
 // LLM failures are downgraded (raw markdown used) rather than fatal.
-// Pushover failures are returned as errors.
-func Summarize(ctx context.Context, input SummarizeInput) error {
+func GenerateSummary(ctx context.Context, input SummarizeInput) (*SummaryResult, error) {
 	logFields := map[string]interface{}{
 		"digest_id": input.DigestID,
 		"scope":     string(input.Scope),
@@ -107,7 +124,7 @@ func Summarize(ctx context.Context, input SummarizeInput) error {
 	if err != nil {
 		logger.WithFields(logFields).WithField("error", err).
 			Error(summarizePrefix + " date range resolution failed")
-		return fmt.Errorf("summarize: resolve date range: %w", err)
+		return nil, fmt.Errorf("summarize: resolve date range: %w", err)
 	}
 	logFields["date_start"] = start.Format("2006-01-02")
 	logFields["date_end"] = end.Format("2006-01-02")
@@ -128,7 +145,7 @@ func Summarize(ctx context.Context, input SummarizeInput) error {
 	if err != nil {
 		logger.WithFields(logFields).WithField("error", err).
 			Error(summarizePrefix + " storage query failed")
-		return fmt.Errorf("summarize: storage query: %w", err)
+		return nil, fmt.Errorf("summarize: storage query: %w", err)
 	}
 	logFields["record_count"] = recordCount
 	logStep(logFields, "storage query complete")
@@ -153,18 +170,52 @@ func Summarize(ctx context.Context, input SummarizeInput) error {
 			logStep(logFields, "LLM call succeeded")
 		}
 	} else {
+		llmStatus = "no_llm"
 		logger.WithFields(logFields).
 			Warn(summarizePrefix + " no LLM configured, using raw markdown")
 		summaryText = markdown
 	}
 	logFields["llm_status"] = llmStatus
 
-	// Step 5: Push via Pushover.
 	title := digestTitle(input.Direction, start, end)
-	logStep(logFields, "sending pushover notification")
 
+	logger.WithFields(logFields).Info(summarizePrefix + " summary generated")
+
+	return &SummaryResult{
+		Text:        summaryText,
+		RecordCount: recordCount,
+		LLMStatus:   llmStatus,
+		DateStart:   start,
+		DateEnd:     end,
+		Title:       title,
+	}, nil
+}
+
+// Summarize executes the full digest pipeline:
+//  1. Resolve date range from scope
+//  2. Query storage for report markdown
+//  3. Select prompt based on direction
+//  4. Call LLM for summary (fallback to raw markdown on failure per D010)
+//  5. Push summary via Pushover
+//
+// Returns an error if the pipeline cannot produce any output to push.
+// LLM failures are downgraded (raw markdown used) rather than fatal.
+// Pushover failures are returned as errors.
+func Summarize(ctx context.Context, input SummarizeInput) error {
+	result, err := GenerateSummary(ctx, input)
+	if err != nil {
+		return err
+	}
+
+	// Step 5: Push via Pushover.
+	logFields := map[string]interface{}{
+		"digest_id":  input.DigestID,
+		"llm_status": result.LLMStatus,
+	}
+
+	logStep(logFields, "sending pushover notification")
 	sender := DefaultPushoverSender()
-	pushErr := sender.Send(ctx, input.PushCfg, summaryText, title, input.PushPriority)
+	pushErr := sender.Send(ctx, input.PushCfg, result.Text, result.Title, input.PushPriority)
 	if pushErr != nil {
 		logFields["push_status"] = "failed"
 		logger.WithFields(logFields).WithField("error", pushErr).
@@ -186,6 +237,20 @@ func promptForDirection(d Direction) string {
 		return string(PromptNameReport)
 	default:
 		return string(PromptNameReport)
+	}
+}
+
+// DirectionForPrompt maps a prompt name back to a digest direction.
+// This is the reverse of promptForDirection, used by preview commands
+// and the daemon callback to reconstruct the direction from a prompt name.
+func DirectionForPrompt(name PromptName) Direction {
+	switch name {
+	case PromptNameAgenda:
+		return DirectionAgenda
+	case PromptNameReport:
+		return DirectionSummary
+	default:
+		return DirectionSummary
 	}
 }
 
