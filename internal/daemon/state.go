@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // DaemonState represents the daemon's runtime state written to disk.
@@ -114,6 +115,25 @@ func IsPortInUse(port int) bool {
 	}
 
 	return false
+}
+
+// WaitForPortRelease polls IsPortInUse every 200ms until the port is free or
+// the timeout expires. Returns true if the port was released within the
+// timeout, false otherwise.
+func WaitForPortRelease(port int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if !IsPortInUse(port) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		<-ticker.C
+	}
 }
 
 func readStateFile(path string) (DaemonState, error) {

@@ -293,30 +293,37 @@ func newDaemonStopCmd() *cobra.Command {
 				return writeExitErrorWithCode(agentsdk.ExitFatalError, "daemon_not_running", "daemon is not running (no state file found)")
 			}
 
-			// Try graceful shutdown via HTTP first
+			// Phase 1: Try graceful shutdown via HTTP POST /api/stop.
 			url := fmt.Sprintf("http://127.0.0.1:%d/api/stop", state.Port)
 			httpClient := &http.Client{Timeout: 3 * time.Second}
 			resp, err := httpClient.Post(url, "", nil)
 			if err == nil {
 				resp.Body.Close()
-				// Wait a moment for graceful shutdown
-				time.Sleep(500 * time.Millisecond)
+				logger.Infof("stop: http stop sent to port %d", state.Port)
 			}
 
-			// If still running, force kill
+			// Phase 2: If port still in use after HTTP stop, send SIGTERM.
 			if daemon.IsPortInUse(state.Port) {
 				proc, err := os.FindProcess(state.PID)
 				if err == nil {
 					_ = proc.Signal(syscall.SIGTERM)
-					time.Sleep(500 * time.Millisecond)
+					logger.Infof("stop: sigterm sent to pid %d", state.PID)
 				}
-				if daemon.IsPortInUse(state.Port) {
+
+				// Phase 3: Poll for port release with 5s timeout.
+				if daemon.WaitForPortRelease(state.Port, 5*time.Second) {
+					logger.Infof("stop: port %d released after sigterm", state.Port)
+				} else {
+					// Phase 4: Port still occupied after 5s — SIGKILL as last resort.
+					logger.Warnf("stop: port %d not released after 5s, sending sigkill to pid %d", state.Port, state.PID)
 					_ = proc.Kill()
-					time.Sleep(300 * time.Millisecond)
+					time.Sleep(100 * time.Millisecond)
 				}
+			} else {
+				logger.Infof("stop: port %d released after http stop", state.Port)
 			}
 
-			// Always clean up state file
+			// Always clean up state file.
 			_ = daemon.RemoveState(dir)
 
 			return app.JSONL().Success(fmt.Sprintf("daemon stopped (was pid=%d, port=%d)", state.PID, state.Port))
