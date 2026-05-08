@@ -664,6 +664,364 @@ Writes the response directly to `output.json`. No stdout output on success.
 
 ---
 
+### wr digest
+
+Manage digest configurations. Digests are scheduled batch summaries of work records, processed by LLM and optionally pushed via Pushover. This is a command group with subcommands.
+
+**Usage:**
+
+```
+wr digest <subcommand>
+```
+
+#### wr digest add
+
+Create a new digest configuration with a cron schedule, time scope, and output direction.
+
+```
+wr digest add --schedule <cron> --scope <scope> --direction <direction>
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--schedule` | string | `""` | Cron expression (required). Standard 5-field format (min hour dom month dow). |
+| `--scope` | string | `""` | Digest time scope (required): `today`, `yesterday`, `week`, `month`, or custom date range `YYYY-MM-DD:YYYY-MM-DD`. |
+| `--direction` | string | `""` | Output direction (required): `agenda` (forward-looking) or `summary` (retrospective). |
+
+**Notes:**
+- All three flags are required.
+- The cron expression uses standard 5-field format (not 6-field with seconds).
+- The daemon registers the cron schedule immediately after creation. Existing digests are re-synced.
+- Auto-generated ID format: `d_YYYYMMDD_<random6>` (e.g. `d_20260503_a1b2c3`).
+
+**Example:**
+
+```bash
+wr digest add --schedule "0 8 * * 1-5" --scope today --direction agenda
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T08:00:00Z","data":{"id":"d_20260503_a1b2c3","schedule":"0 8 * * 1-5","scope":"today","direction":"agenda","enabled":true,"created_at":"2026-05-03T08:00:00Z","updated_at":"2026-05-03T08:00:00Z"}}
+```
+
+**Error codes:** `invalid_scope`, `invalid_schedule`, `invalid_direction`, `invalid_body`, `storage_error`, `daemon_not_running`
+
+---
+
+#### wr digest list
+
+List all digest configurations.
+
+```
+wr digest list
+```
+
+**Flags:** None.
+
+**Example:**
+
+```bash
+wr digest list
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"list","count":2,"digests":[{"id":"d_20260501_abc123","schedule":"0 8 * * 1-5","scope":"today","direction":"agenda","enabled":true,"created_at":"2026-05-01T08:00:00Z","updated_at":"2026-05-01T08:00:00Z"},{"id":"d_20260502_def456","schedule":"0 18 * * 5","scope":"week","direction":"summary","enabled":false,"created_at":"2026-05-02T10:00:00Z","updated_at":"2026-05-02T12:00:00Z"}]}}
+```
+
+**Error codes:** `storage_error`, `daemon_not_running`
+
+---
+
+#### wr digest remove
+
+Remove a digest configuration by ID.
+
+```
+wr digest remove <id>
+```
+
+**Arguments:** Exactly one — the digest ID.
+
+**Example:**
+
+```bash
+wr digest remove d_20260501_abc123
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"remove","id":"d_20260501_abc123","message":"digest removed"}}
+```
+
+**Error codes:** `digest_not_found`, `daemon_not_running`
+
+---
+
+#### wr digest enable
+
+Enable a digest configuration by ID. The cron schedule is re-registered.
+
+```
+wr digest enable <id>
+```
+
+**Arguments:** Exactly one — the digest ID.
+
+**Example:**
+
+```bash
+wr digest enable d_20260502_def456
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"id":"d_20260502_def456","schedule":"0 18 * * 5","scope":"week","direction":"summary","enabled":true,"created_at":"2026-05-02T10:00:00Z","updated_at":"2026-05-03T10:00:00Z"}}
+```
+
+**Error codes:** `digest_not_found`, `daemon_not_running`
+
+---
+
+#### wr digest disable
+
+Disable a digest configuration by ID. The cron schedule is unregistered.
+
+```
+wr digest disable <id>
+```
+
+**Arguments:** Exactly one — the digest ID.
+
+**Example:**
+
+```bash
+wr digest disable d_20260502_def456
+```
+
+**Output:** Same shape as `wr digest enable` with `"enabled":false`.
+
+**Error codes:** `digest_not_found`, `daemon_not_running`
+
+---
+
+#### wr digest preview
+
+Preview an LLM-generated digest summary in the terminal for a given digest configuration. Does not send via Pushover.
+
+```
+wr digest preview <id>
+```
+
+**Arguments:** Exactly one — the digest ID.
+
+**Notes:**
+- Runs the full digest pipeline (fetch records by scope → generate LLM summary).
+- If LLM is not configured, falls back to raw markdown report.
+- Output includes `llm_status` field: `"success"` (LLM used) or `"fallback"` (raw markdown).
+
+**Example:**
+
+```bash
+wr digest preview d_20260501_abc123
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"digest_preview","digest_id":"d_20260501_abc123","scope":"today","direction":"agenda","text":"## 今日待办议程\n\n1. **Review PR #42** [高优先级]\n2. **Sprint planning** [09:00]","record_count":3,"llm_status":"success","title":"今日待办议程"}}
+```
+
+**Error codes:** `digest_not_found`, `internal_error`, `storage_error`, `daemon_not_running`
+
+---
+
+### wr prompt
+
+Manage prompt templates used by the digest LLM pipeline. This is a command group with subcommands.
+
+**Usage:**
+
+```
+wr prompt <subcommand>
+```
+
+**Built-in prompts:** `agenda` (for agenda-style digests), `report` (for report-style digests). Both have Chinese default text. You can override any built-in or create custom prompts.
+
+#### wr prompt list
+
+List all prompts with their current text and default status.
+
+```
+wr prompt list
+```
+
+**Flags:** None.
+
+**Example:**
+
+```bash
+wr prompt list
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"list","count":2,"prompts":[{"name":"agenda","text":"你是一个专业的工作助手...","is_default":true},{"name":"report","text":"你是一个专业的工作助手...","is_default":true,"updated_at":"2026-05-02T15:00:00Z"}]}}
+```
+
+`is_default` is `true` when the prompt text is the built-in default, `false` when it has been overridden.
+
+**Error codes:** `storage_error`, `daemon_not_running`
+
+---
+
+#### wr prompt show
+
+Show the effective prompt text for a named prompt (returns default text if no override is set).
+
+```
+wr prompt show <name>
+```
+
+**Arguments:** Exactly one — the prompt name.
+
+**Example:**
+
+```bash
+wr prompt show agenda
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"show","name":"agenda","text":"你是一个专业的工作助手。请根据以下工作记录，生成今日待办议程（Agenda）。\n\n要求：\n1. 按优先级排序，标注紧急程度\n2. 列出未完成的上期任务\n3. 识别潜在的阻塞问题\n4. 建议时间分配","is_default":true}}
+```
+
+**Error codes:** `prompt_not_found`, `storage_error`, `daemon_not_running`
+
+---
+
+#### wr prompt set
+
+Set a custom prompt text for a named prompt. At least one of `--text` or `--file` is required.
+
+```
+wr prompt set <name> --text <text>
+wr prompt set <name> --file <path>
+```
+
+**Arguments:** Exactly one — the prompt name.
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--text` | string | `""` | Prompt text directly |
+| `--file` | string | `""` | Path to a file containing the prompt text |
+
+**Notes:**
+- At least one of `--text` or `--file` is required. If both are provided, `--text` takes precedence.
+- Any prompt name is accepted (not limited to built-ins). Custom names can be used for specialized prompts.
+- Overriding a built-in prompt does not delete the default — use `wr prompt reset` to restore it.
+
+**Example (text):**
+
+```bash
+wr prompt set agenda --text "Generate a concise bullet-point agenda from the following records."
+```
+
+**Example (file):**
+
+```bash
+wr prompt set agenda --file /tmp/my-agenda-prompt.txt
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"set","name":"agenda","message":"prompt updated"}}
+```
+
+**Error codes:** `prompt_not_found`, `invalid_params` (neither `--text` nor `--file` provided), `invalid_body`, `storage_error`, `daemon_not_running`
+
+---
+
+#### wr prompt reset
+
+Restore a built-in prompt to its default text. Only works for built-in prompt names (`agenda`, `report`).
+
+```
+wr prompt reset <name>
+```
+
+**Arguments:** Exactly one — the prompt name (must be a built-in name).
+
+**Notes:**
+- Returns `prompt_not_found` if the name is not a built-in prompt (no default to restore to).
+- If the prompt is already at its default (no override exists), this is a no-op and still returns success.
+
+**Example:**
+
+```bash
+wr prompt reset agenda
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"reset","name":"agenda","text":"你是一个专业的工作助手。请根据以下工作记录，生成今日待办议程（Agenda）。\n\n要求：\n1. 按优先级排序，标注紧急程度\n2. 列出未完成的上期任务\n3. 识别潜在的阻塞问题\n4. 建议时间分配","message":"prompt reset to default"}}
+```
+
+**Error codes:** `prompt_not_found`, `storage_error`, `daemon_not_running`
+
+---
+
+#### wr prompt preview
+
+Preview LLM prompt output using current data. Runs the digest pipeline with the named prompt's text and current records.
+
+```
+wr prompt preview <name> [--scope <scope>]
+```
+
+**Arguments:** Exactly one — the prompt name.
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--scope` | string | `""` (defaults to `today`) | Digest scope: `today`, `yesterday`, `week`, `month`, or custom `YYYY-MM-DD:YYYY-MM-DD`. |
+
+**Notes:**
+- Default scope is `today`.
+- The direction is inferred from the prompt name: `agenda` → `agenda`, `report` → `summary`. For custom prompt names, defaults to `summary`.
+- If LLM is not configured, falls back to raw markdown report.
+
+**Example:**
+
+```bash
+wr prompt preview agenda
+wr prompt preview report --scope week
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T10:00:00Z","data":{"action":"prompt_preview","prompt_name":"agenda","prompt_text":"你是一个专业的工作助手...","scope":"today","direction":"agenda","text":"## 今日待办议程\n\n1. **Review PR #42** [高优先级]","record_count":3,"llm_status":"success","title":"今日待办议程"}}
+```
+
+**Error codes:** `internal_error`, `invalid_scope`, `prompt_not_found`, `storage_error`, `daemon_not_running`
+
+---
+
 ### wr agent daemon
 
 Manage the wr agent daemon process. This is a command group.
@@ -899,6 +1257,12 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `invalid_params` | Missing or unsupported command parameter (e.g., `--format`) | Check the command's required flags. For export, `--format` must be `json` or `markdown`. |
 | `multiple_matches` | Content-based lookup (`--title` + `--date`) matched more than one active record | Narrow the query with a more specific title, or use `wr list` to find the exact `short_id` and use that instead. |
 | `daemon_start_timeout` | Daemon failed to start within 10 seconds | Check for port conflicts, filesystem permissions on `~/.work-report/`, or zombie daemon processes. Kill stale processes and retry. |
+| `digest_not_found` | No digest configuration matches the given ID | List digests with `wr digest list` to find the correct ID. |
+| `invalid_scope` | Invalid digest scope value | Scope must be one of: `today`, `yesterday`, `week`, `month`, or `YYYY-MM-DD:YYYY-MM-DD`. |
+| `invalid_schedule` | Invalid cron expression for digest schedule | Check the cron syntax (5-field format: min hour dom month dow). |
+| `invalid_direction` | Invalid digest direction value | Direction must be `agenda` or `summary`. |
+| `prompt_not_found` | Prompt name has no default and no override (for reset/show/preview) | Only built-in names (`agenda`, `report`) can be reset. Use `wr prompt list` to see available prompts. |
+| `internal_error` | Digest/prompt preview pipeline failure (LLM or data error) | Check LLM configuration and available records for the given scope. Retry once. |
 
 ---
 

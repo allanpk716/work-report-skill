@@ -4639,7 +4639,8 @@ func TestIntegration_ExportMarkdownRoundTrip(t *testing.T) {
 }
 
 func TestHandleExport_MarkdownNoDateFilter(t *testing.T) {
-	srv, _ := newTestServer(t)
+	loc := time.Now().Location()
+	srv, _ := newTestServer(t, &config.Config{Timezone: loc.String()})
 
 	today := time.Now().Format("2006-01-02")
 	addRecord(t, srv, "log", "today log", "", today)
