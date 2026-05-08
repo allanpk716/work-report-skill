@@ -86,10 +86,12 @@ wr config init --pushover-token your-app-token --pushover-key your-user-key
 | `llm.text.api_key` | Text LLM API key |
 | `llm.text.model` | Text LLM model name (e.g. `gpt-4o-mini`) |
 | `llm.text.api_base` | Text LLM API base URL (for custom endpoints) |
+| `llm.text.timeout` | Text LLM HTTP request timeout in seconds (default: 30) |
 | `llm.vision.provider` | Vision LLM provider name |
 | `llm.vision.api_key` | Vision LLM API key |
 | `llm.vision.model` | Vision LLM model name |
 | `llm.vision.api_base` | Vision LLM API base URL |
+| `llm.vision.timeout` | Vision LLM HTTP request timeout in seconds (default: 30) |
 
 ## Push Notifications & Reminders
 
@@ -146,6 +148,9 @@ wr report push today
 | `wr config init` | Create config with defaults |
 | `wr config set` | Set a config value |
 | `wr config show` | Display config (secrets redacted) |
+| `wr agent daemon start` | Start the wr daemon (add `--detach` for background) |
+| `wr agent daemon stop` | Stop the wr daemon |
+| `wr agent daemon status` | Show daemon status |
 | `wr agent daemon ensure-running` | Start daemon if not running |
 
 ## Development
