@@ -42,6 +42,9 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("unknown", fatal, "未知错误")
 	_ = app.RegisterErrorCode("daemon_start_timeout", fatal, "daemon 启动超时")
 
+	// Prompt errors
+	_ = app.RegisterErrorCode("prompt_not_found", validateParams, "prompt 未找到")
+
 	// Digest errors
 	_ = app.RegisterErrorCode("digest_not_found", fatal, "digest 配置未找到")
 	_ = app.RegisterErrorCode("invalid_scope", validateParams, "无效的 digest 范围")

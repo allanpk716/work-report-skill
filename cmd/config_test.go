@@ -84,6 +84,9 @@ func resetConfigFlags() {
 	configDaemonPort = 0
 	configTimezone = ""
 
+	promptText = ""
+	promptFile = ""
+
 	// Reset Cobra's "visited" flag tracking so Changed() returns fresh results
 	configInitCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 }

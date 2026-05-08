@@ -179,6 +179,26 @@ func registerCommandMeta() {
 			Description:  "Disable a digest configuration",
 			IsIdempotent: true,
 		},
+		"prompt": {
+			Description:  "Manage prompt templates",
+			IsIdempotent: false,
+		},
+		"prompt list": {
+			Description:  "List all prompts",
+			IsIdempotent: true,
+		},
+		"prompt show": {
+			Description:  "Show prompt text",
+			IsIdempotent: true,
+		},
+		"prompt set": {
+			Description:  "Set prompt text",
+			IsIdempotent: false,
+		},
+		"prompt reset": {
+			Description:  "Reset prompt to default",
+			IsIdempotent: true,
+		},
 	}
 
 	for cmdPath, m := range meta {
