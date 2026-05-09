@@ -47,6 +47,9 @@ type LLMProviderConfig struct {
 	Timeout  int    `json:"timeout,omitempty"`
 }
 
+// DefaultDaemonPort is the default port the daemon listens on.
+const DefaultDaemonPort = 18080
+
 // DaemonConfig holds daemon-specific settings.
 type DaemonConfig struct {
 	Port int `json:"port"`
@@ -116,7 +119,7 @@ func (c *Config) applyDefaults() {
 		c.Timezone = "Asia/Shanghai"
 	}
 	if c.Daemon.Port == 0 {
-		c.Daemon.Port = 18080
+		c.Daemon.Port = DefaultDaemonPort
 	}
 	if c.DataDir == "" {
 		dir, err := DefaultDataDir()
@@ -159,7 +162,7 @@ func defaultConfig() *Config {
 	return &Config{
 		Timezone: "Asia/Shanghai",
 		Daemon: DaemonConfig{
-			Port: 18080,
+			Port: DefaultDaemonPort,
 		},
 		DataDir: dir,
 	}

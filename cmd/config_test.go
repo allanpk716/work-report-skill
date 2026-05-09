@@ -153,8 +153,8 @@ func TestConfigInitDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot load created config: %v", err)
 	}
-	if cfg.Daemon.Port != 18080 {
-		t.Errorf("expected default port 18080, got %d", cfg.Daemon.Port)
+	if cfg.Daemon.Port != config.DefaultDaemonPort {
+		t.Errorf("expected default port config.DefaultDaemonPort, got %d", cfg.Daemon.Port)
 	}
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("expected default timezone Asia/Shanghai, got %s", cfg.Timezone)
@@ -390,8 +390,8 @@ func TestConfigShowBeforeInit(t *testing.T) {
 
 	data, _ := lines[0]["data"].(map[string]interface{})
 	daemon, _ := data["daemon"].(map[string]interface{})
-	if daemon["port"] != float64(18080) {
-		t.Errorf("expected default port 18080, got %v", daemon["port"])
+	if daemon["port"] != float64(config.DefaultDaemonPort) {
+		t.Errorf("expected default port config.DefaultDaemonPort, got %v", daemon["port"])
 	}
 }
 

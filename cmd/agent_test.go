@@ -364,7 +364,7 @@ func TestAgentConfigList(t *testing.T) {
 				Model:    "gpt-4",
 			},
 		},
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -452,7 +452,7 @@ func TestAgentConfigList_NoSecretsLeaked(t *testing.T) {
 				APIKey: "sk-vision-key-999",
 			},
 		},
-		Daemon: config.DaemonConfig{Port: 18080},
+		Daemon: config.DaemonConfig{Port: config.DefaultDaemonPort},
 	})
 
 	output := captureAgentOutput(func() {
@@ -477,7 +477,7 @@ func TestAgentConfigSet_ValidPath(t *testing.T) {
 
 	// Write initial config
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -517,7 +517,7 @@ func TestAgentConfigSet_InvalidPath(t *testing.T) {
 
 	// Write initial config
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -546,7 +546,7 @@ func TestAgentConfigSet_InvalidPath_ExitCode(t *testing.T) {
 	defer cleanup()
 
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -573,7 +573,7 @@ func TestAgentConfigSet_ReadRoundtrip(t *testing.T) {
 
 	// Write initial config
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -606,7 +606,7 @@ func TestAgentConfigSet_InvalidTimezone(t *testing.T) {
 	defer cleanup()
 
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -670,7 +670,7 @@ func TestAgentConfigList_EnvelopeValid(t *testing.T) {
 	defer cleanup()
 
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 
@@ -694,7 +694,7 @@ func TestAgentConfigSet_EnvelopeValid(t *testing.T) {
 	defer cleanup()
 
 	writeTestConfig(t, tmpHome, &config.Config{
-		Daemon:   config.DaemonConfig{Port: 18080},
+		Daemon:   config.DaemonConfig{Port: config.DefaultDaemonPort},
 		Timezone: "UTC",
 	})
 

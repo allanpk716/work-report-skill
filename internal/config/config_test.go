@@ -99,8 +99,8 @@ func TestLoadDefaultsOnMissingFile(t *testing.T) {
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("default Timezone = %q, want Asia/Shanghai", cfg.Timezone)
 	}
-	if cfg.Daemon.Port != 18080 {
-		t.Errorf("default Daemon.Port = %d, want 18080", cfg.Daemon.Port)
+	if cfg.Daemon.Port != DefaultDaemonPort {
+		t.Errorf("default Daemon.Port = %d, want DefaultDaemonPort", cfg.Daemon.Port)
 	}
 	if cfg.DataDir == "" {
 		t.Error("default DataDir should not be empty")
@@ -114,8 +114,8 @@ func TestLoadDefaultsOnEmptyObject(t *testing.T) {
 		t.Fatalf("Load empty config: %v", err)
 	}
 
-	if cfg.Daemon.Port != 18080 {
-		t.Errorf("Daemon.Port = %d, want 18080", cfg.Daemon.Port)
+	if cfg.Daemon.Port != DefaultDaemonPort {
+		t.Errorf("Daemon.Port = %d, want DefaultDaemonPort", cfg.Daemon.Port)
 	}
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("Timezone = %q", cfg.Timezone)
@@ -304,7 +304,7 @@ func TestSaveCreatesDirsAndWritesJSON(t *testing.T) {
 			UserKey:  "key456",
 		},
 		Timezone: "Asia/Shanghai",
-		Daemon:   DaemonConfig{Port: 18080},
+		Daemon:   DaemonConfig{Port: DefaultDaemonPort},
 		DataDir:  "/tmp/data",
 	}
 
@@ -328,8 +328,8 @@ func TestSaveCreatesDirsAndWritesJSON(t *testing.T) {
 	if loaded.Timezone != "Asia/Shanghai" {
 		t.Errorf("roundtrip Timezone = %q", loaded.Timezone)
 	}
-	if loaded.Daemon.Port != 18080 {
-		t.Errorf("roundtrip Port = %d, want 18080", loaded.Daemon.Port)
+	if loaded.Daemon.Port != DefaultDaemonPort {
+		t.Errorf("roundtrip Port = %d, want DefaultDaemonPort", loaded.Daemon.Port)
 	}
 }
 

@@ -2,11 +2,14 @@ package backup
 
 import (
 	"archive/zip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"wr/internal/config"
 )
 
 // setupDataDir creates a temporary directory that mimics ~/.work-report/
@@ -16,7 +19,7 @@ func setupDataDir(t *testing.T) string {
 	dir := t.TempDir()
 
 	// config.json
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"daemon":{"port":18080}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(fmt.Sprintf(`{"daemon":{"port":%d}}`, config.DefaultDaemonPort)), 0644); err != nil {
 		t.Fatal(err)
 	}
 
