@@ -25,6 +25,8 @@ type RetentionPolicy struct {
 type BackupConfig struct {
 	Retention RetentionPolicy `json:"retention"`
 	OutputDir string          `json:"output_dir"` // absolute path; defaults to ~/.work-report/backups
+	Schedule  string          `json:"schedule"`   // 6-field cron expression (sec min hour dom month dow); empty = disabled
+	Enabled   bool            `json:"enabled"`    // master switch for scheduled backups
 }
 
 // DefaultRetention returns sensible defaults: 7 daily, 4 weekly, 6 monthly.
