@@ -59,4 +59,5 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("backup_failed", fatal, "备份创建失败")
 	_ = app.RegisterErrorCode("rotation_failed", fatal, "GFS 轮转清理失败")
 	_ = app.RegisterErrorCode("config_not_found", agentsdk.ExitNotFound, "备份配置不存在")
+	_ = app.RegisterErrorCode("backup_sync_failed", netError, "daemon 备份同步失败")
 }

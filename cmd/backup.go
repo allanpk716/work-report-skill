@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"wr/internal/backup"
+	"wr/internal/client"
 )
 
 var backupOutputDir string
@@ -195,16 +198,96 @@ var backupConfigShowCmd = &cobra.Command{
 	},
 }
 
+// backup config set flags
+var (
+	backupSetSchedule     string
+	backupSetOutputDir    string
+	backupSetRetentionDly int
+	backupSetRetentionWk  int
+	backupSetRetentionMo  int
+	backupSetEnabled      bool
+)
+
+// backupConfigSetCmd updates the backup configuration and syncs with the daemon.
+var backupConfigSetCmd = &cobra.Command{
+	Use:   "set [--schedule <cron>] [--output-dir <dir>] [--retention-daily <n>] [--retention-weekly <n>] [--retention-monthly <n>] [--enabled]",
+	Short: "Update backup configuration and sync with daemon",
+	Long: `Update backup configuration stored in ~/.work-report/backup-config.json.
+Any flag provided will overwrite the corresponding field; omitted flags keep the
+current value. After saving, the command attempts to sync the new configuration
+with the running daemon (best-effort; succeeds even if daemon is not running).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath, err := backup.ConfigPath()
+		if err != nil {
+			return writeExitError(agentsdk.ExitFatalError, err.Error())
+		}
+
+		// Load existing config or defaults.
+		cfg, err := backup.LoadConfig(cfgPath)
+		if err != nil {
+			return writeExitError(agentsdk.ExitFatalError, err.Error())
+		}
+
+		// Apply flag overrides.
+		if cmd.Flags().Changed("schedule") {
+			cfg.Schedule = backupSetSchedule
+		}
+		if cmd.Flags().Changed("output-dir") {
+			cfg.OutputDir = backupSetOutputDir
+		}
+		if cmd.Flags().Changed("retention-daily") {
+			cfg.Retention.Daily = backupSetRetentionDly
+		}
+		if cmd.Flags().Changed("retention-weekly") {
+			cfg.Retention.Weekly = backupSetRetentionWk
+		}
+		if cmd.Flags().Changed("retention-monthly") {
+			cfg.Retention.Monthly = backupSetRetentionMo
+		}
+		if cmd.Flags().Changed("enabled") {
+			cfg.Enabled = backupSetEnabled
+		}
+
+		// Persist config to disk.
+		if err := backup.SaveConfig(cfg, cfgPath); err != nil {
+			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("failed to save config: %v", err))
+		}
+
+		// Best-effort daemon sync — discard daemon response, log warning on failure.
+		// CallDaemonPost writes a JSONL line to its writer; we use /dev/null so
+		// it doesn't pollute our output when daemon is not running.
+		if syncErr := client.CallDaemonPost(io.Discard, "/api/backup/sync", nil); syncErr != nil {
+			log.Printf("[backup] daemon sync failed (non-fatal): %v", syncErr)
+		}
+
+		return app.JSONL().Success(map[string]interface{}{
+			"config":      cfg,
+			"config_path": cfgPath,
+			"saved":       true,
+		})
+	},
+}
+
 func init() {
 	backupCmd.AddCommand(backupCreateCmd)
 	backupCmd.AddCommand(backupListCmd)
 	backupCmd.AddCommand(backupCleanupCmd)
 
 	backupConfigCmd.AddCommand(backupConfigShowCmd)
+	backupConfigCmd.AddCommand(backupConfigSetCmd)
 	backupCmd.AddCommand(backupConfigCmd)
 
 	// Global --output flag on parent backup command, accessible by all sub-commands.
 	backupCmd.PersistentFlags().StringVar(&backupOutputDir, "output", "", "Override backup output directory")
+
+	// backup config set flags.
+	backupConfigSetCmd.Flags().StringVar(&backupSetSchedule, "schedule", "", "Cron expression for scheduled backups (6-field: sec min hour dom month dow)")
+	backupConfigSetCmd.Flags().StringVar(&backupSetOutputDir, "output-dir", "", "Backup output directory")
+	backupConfigSetCmd.Flags().IntVar(&backupSetRetentionDly, "retention-daily", 0, "Number of daily backups to keep")
+	backupConfigSetCmd.Flags().IntVar(&backupSetRetentionWk, "retention-weekly", 0, "Number of weekly backups to keep")
+	backupConfigSetCmd.Flags().IntVar(&backupSetRetentionMo, "retention-monthly", 0, "Number of monthly backups to keep")
+	backupConfigSetCmd.Flags().BoolVar(&backupSetEnabled, "enabled", false, "Enable or disable scheduled backups")
 
 	rootCmd.AddCommand(backupCmd)
 }

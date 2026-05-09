@@ -355,3 +355,160 @@ func TestBackupCreateAndList(t *testing.T) {
 		t.Fatalf("backup file not found at %s", createdPath)
 	}
 }
+
+// ---------- backup config set ----------
+
+func TestBackupConfigSetSchedule(t *testing.T) {
+	_, cleanup := setupConfigEnv(t)
+	defer cleanup()
+
+	out := runBackupCmd("backup", "config", "set", "--schedule", "0 0 2 * * *")
+	assertValidJSONLEnvelope(t, out)
+	lines := parseJSONL(out)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 JSONL line, got %d (output: %s)", len(lines), string(out))
+	}
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0])
+	}
+
+	data, _ := lines[0]["data"].(map[string]interface{})
+	saved, _ := data["saved"].(bool)
+	if !saved {
+		t.Error("expected saved=true")
+	}
+
+	// Verify config file was created on disk.
+	cfgPath, _ := data["config_path"].(string)
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		t.Fatalf("config file not created at %s", cfgPath)
+	}
+
+	// Reload and verify schedule was persisted.
+	cfg, err := backup.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	if cfg.Schedule != "0 0 2 * * *" {
+		t.Errorf("expected schedule='0 0 2 * * *', got %s", cfg.Schedule)
+	}
+}
+
+func TestBackupConfigSetMultipleFlags(t *testing.T) {
+	_, cleanup := setupConfigEnv(t)
+	defer cleanup()
+
+	out := runBackupCmd("backup", "config", "set",
+		"--schedule", "0 30 3 * * *",
+		"--retention-daily", "14",
+		"--retention-weekly", "8",
+		"--retention-monthly", "12",
+		"--enabled",
+	)
+	assertValidJSONLEnvelope(t, out)
+	lines := parseJSONL(out)
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0])
+	}
+
+	data, _ := lines[0]["data"].(map[string]interface{})
+	saved, _ := data["saved"].(bool)
+	if !saved {
+		t.Error("expected saved=true")
+	}
+
+	// Reload and verify all fields.
+	cfgPath, _ := data["config_path"].(string)
+	cfg, err := backup.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	if cfg.Schedule != "0 30 3 * * *" {
+		t.Errorf("expected schedule='0 30 3 * * *', got %s", cfg.Schedule)
+	}
+	if cfg.Retention.Daily != 14 {
+		t.Errorf("expected daily=14, got %d", cfg.Retention.Daily)
+	}
+	if cfg.Retention.Weekly != 8 {
+		t.Errorf("expected weekly=8, got %d", cfg.Retention.Weekly)
+	}
+	if cfg.Retention.Monthly != 12 {
+		t.Errorf("expected monthly=12, got %d", cfg.Retention.Monthly)
+	}
+	if !cfg.Enabled {
+		t.Error("expected enabled=true")
+	}
+}
+
+func TestBackupConfigSetDaemonNotRunning(t *testing.T) {
+	_, cleanup := setupConfigEnv(t)
+	defer cleanup()
+
+	// No daemon running — command should still succeed and save config.
+	out := runBackupCmd("backup", "config", "set", "--schedule", "0 0 4 * * *")
+	assertValidJSONLEnvelope(t, out)
+	lines := parseJSONL(out)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 JSONL line, got %d (output: %s)", len(lines), string(out))
+	}
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result (success despite no daemon), got %v", lines[0])
+	}
+
+	// Verify config was persisted.
+	data, _ := lines[0]["data"].(map[string]interface{})
+	saved, _ := data["saved"].(bool)
+	if !saved {
+		t.Error("expected saved=true even when daemon is not running")
+	}
+
+	cfgPath, _ := data["config_path"].(string)
+	cfg, err := backup.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	if cfg.Schedule != "0 0 4 * * *" {
+		t.Errorf("expected schedule='0 0 4 * * *', got %s", cfg.Schedule)
+	}
+}
+
+func TestBackupConfigSetPreservesExistingValues(t *testing.T) {
+	tmpHome, cleanup := setupConfigEnv(t)
+	defer cleanup()
+
+	// First, set multiple values.
+	runBackupCmd("backup", "config", "set",
+		"--schedule", "0 0 1 * * *",
+		"--retention-daily", "10",
+		"--output-dir", filepath.Join(tmpHome, "my-backups"),
+	)
+
+	// Then, change only schedule — other values should be preserved.
+	out := runBackupCmd("backup", "config", "set", "--schedule", "0 0 5 * * *")
+	assertValidJSONLEnvelope(t, out)
+	lines := parseJSONL(out)
+	if lines[0]["type"] != "result" {
+		t.Fatalf("expected type=result, got %v", lines[0])
+	}
+
+	cfgPath, _ := lines[0]["data"].(map[string]interface{})["config_path"].(string)
+	cfg, err := backup.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	// Schedule changed.
+	if cfg.Schedule != "0 0 5 * * *" {
+		t.Errorf("expected schedule='0 0 5 * * *', got %s", cfg.Schedule)
+	}
+	// Daily retention preserved from previous set.
+	if cfg.Retention.Daily != 10 {
+		t.Errorf("expected daily=10 (preserved), got %d", cfg.Retention.Daily)
+	}
+	// Output dir preserved from previous set.
+	expectedDir := filepath.ToSlash(filepath.Join(tmpHome, "my-backups"))
+	actualDir := filepath.ToSlash(cfg.OutputDir)
+	if actualDir != expectedDir {
+		t.Errorf("expected output_dir=%s (preserved), got %s", expectedDir, actualDir)
+	}
+}
