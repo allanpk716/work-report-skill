@@ -1034,15 +1034,23 @@ wr agent daemon <subcommand>
 
 #### wr agent daemon start
 
-Start the daemon. This is a foreground process — it blocks until stopped with SIGINT/SIGTERM. Run in the background with `&` or a process manager.
+Start the daemon. By default this is a foreground process — it blocks until stopped with SIGINT/SIGTERM. Use `--detach` to run in the background (the command returns immediately after the daemon is ready).
 
 ```bash
-wr agent daemon start > /dev/null 2>&1 &
+# Foreground (blocks terminal)
+wr agent daemon start
+
+# Background (recommended for scripts and agents)
+wr agent daemon start --detach
 ```
 
-**Flags:** None.
+**Flags:**
 
-**Behavior:**
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--detach` | bool | `false` | Start daemon in background and return immediately |
+
+**Behavior (foreground, default):**
 - Loads config from `~/.work-report/config.json`
 - Creates data directory if it doesn't exist
 - Writes daemon state to a state file (port, PID)
@@ -1051,12 +1059,19 @@ wr agent daemon start > /dev/null 2>&1 &
 - Cleans up state file on shutdown
 - Sends an async Pushover startup notification after the HTTP server is ready (see below)
 
+**Behavior (`--detach`):**
+- Spawns the daemon as a background child process
+- Polls until the port is bound (up to 10 seconds)
+- Returns a JSONL success response with `status`, `pid`, and `port` once the daemon is ready
+- Errors if the daemon is already running (use `ensure-running` for idempotent behavior)
+
 **Startup notification:** When Pushover is configured (`pushover.api_token` and `pushover.user_key` are both non-empty), the daemon sends a notification titled "wr daemon 已上线" containing the hostname, port, and PID. This runs in a goroutine so it never blocks the daemon startup. If Pushover is not configured, the notification is silently skipped (logged at debug level). If the push fails (network error, bad credentials), the error is logged as a warning but does not affect daemon operation. All startup notification log messages use the `[startup-notify]` prefix.
 
 **Notes:**
 - The daemon listens on `127.0.0.1:<port>` (default port `18080`).
 - All daemon log messages go to stderr, not stdout.
 - The daemon version is `0.1.0`.
+- `--detach` errors if the daemon is already running. Use `wr agent daemon ensure-running` instead for idempotent startup.
 
 #### wr agent daemon ensure-running
 
@@ -1087,6 +1102,54 @@ wr agent daemon ensure-running
 Same structure as above, with `"source":"started"` instead of `"source":"already_running"`. The output includes full daemon diagnostics (config, datetime, records, scheduler) regardless of whether the daemon was just started or was already running.
 
 **Error codes:** `daemon_start_timeout`, `daemon_not_running`, `invalid_body`
+
+---
+
+### wr agent doctor
+
+Run health checks on daemon, LLM, and Pushover configuration. This is a diagnostic command provided by the agent SDK.
+
+```bash
+wr agent doctor
+```
+
+**Flags:** None.
+
+**Behavior:**
+Runs three independent health checks and reports the result for each:
+
+| Check | Pass condition | Fail / Warning |
+|-------|---------------|----------------|
+| `daemon` | State file exists, port is listening | No state file, or stale state (port not in use) |
+| `llm` | `llm.text.api_key` is set | Warns (not fails) if missing — LLM is optional |
+| `pushover` | Both `api_token` and `user_key` are set | Fails if either is missing |
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"checks":[{"name":"daemon","status":"pass","message":"daemon running on port 18080 (pid=12345)"},{"name":"llm","status":"warn","message":"llm.text.api_key is not set — LLM features will be unavailable"},{"name":"pushover","status":"pass","message":"pushover credentials are configured"}]}}
+```
+
+Status values: `pass`, `fail`, `warn`.
+
+---
+
+### wr agent (SDK commands)
+
+The `wr agent` namespace includes commands provided by the agent SDK in addition to `daemon` and `doctor`:
+
+| Command | Description |
+|---------|-------------|
+| `wr agent daemon` | Daemon management (start / stop / status / ensure-running) |
+| `wr agent doctor` | Health checks for daemon, LLM, and Pushover |
+| `wr agent schema` | Print the JSONL schema for all commands (useful for agent integration) |
+| `wr agent errors` | Print the error code registry (all `error_code` values and exit codes) |
+| `wr agent config list` | List all config values (wr-specific config via provider) |
+| `wr agent config set` | Set a config value (delegates to `wr config set`) |
+| `wr agent debug` | Print debug information (version, build, environment) |
+| `wr agent cache` | Manage the agent response cache |
+
+These are low-level commands primarily useful for agent integration and debugging. Most users only need `wr agent daemon` and `wr agent doctor`.
 
 ---
 
@@ -1553,8 +1616,8 @@ wr config set pushover.user_key your-key
 # 4. Ensure daemon is running (idempotent)
 wr agent daemon ensure-running
 
-# 5. Verify it's running
-wr status
+# 5. Verify everything is configured correctly
+wr agent doctor
 ```
 
 ### Daily Usage
@@ -1797,12 +1860,16 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 18. **`ensure-running` is preferred over `start` for agent workflows.** Unlike `wr agent daemon start` (which errors if already running) or `start --detach`, `ensure-running` is idempotent. It returns success whether the daemon was just started or already running, with a `source` field ("started" or "already_running") to disambiguate.
 
-19. **Backup config is separate from main config.** Backup settings live in `~/.work-report/backup-config.json`, not in the main `config.json`. This keeps concerns separate — backup retention, output directory, and schedule don't mix with daemon/LLM/Pushover config. Use `wr backup config show` to view and `wr backup config set` to modify.
+19. **Use `--detach` for non-interactive daemon startup.** `wr agent daemon start --detach` spawns the daemon as a background child process, polls until the port is bound (up to 10s), and returns a JSONL response with `pid` and `port`. It errors if the daemon is already running — use `ensure-running` if you need idempotent behavior.
 
-20. **`wr backup` commands are local-only (no daemon needed).** `wr backup create`, `wr backup list`, `wr backup cleanup`, and `wr backup config` commands work entirely through local filesystem operations. They do not require the daemon to be running. The only daemon interaction is `wr backup config set` which does a best-effort sync (non-fatal if daemon is unavailable).
+20. **Backup config is separate from main config.** Backup settings live in `~/.work-report/backup-config.json`, not in the main `config.json`. This keeps concerns separate — backup retention, output directory, and schedule don't mix with daemon/LLM/Pushover config. Use `wr backup config show` to view and `wr backup config set` to modify.
 
-21. **GFS rotation uses a distinct-bucket strategy.** For each time granularity (daily/weekly/monthly), the rotation algorithm keeps the newest backup per distinct calendar bucket until the retention count is reached. Rules are unioned — a backup protected by ANY rule is retained. Example: with `daily:7, weekly:4, monthly:6`, a backup from 3 weeks ago is kept if it's the newest in its ISO week, even if there are already 7+ daily backups.
+21. **`wr backup` commands are local-only (no daemon needed).** `wr backup create`, `wr backup list`, `wr backup cleanup`, and `wr backup config` commands work entirely through local filesystem operations. They do not require the daemon to be running. The only daemon interaction is `wr backup config set` which does a best-effort sync (non-fatal if daemon is unavailable).
 
-22. **`wr backup config set --enabled` requires explicit bool.** Use `--enabled=true` or `--enabled=false` — it is not a toggle. Omitting `--enabled` entirely leaves the current enabled state unchanged (same as all other `config set` flags).
+22. **GFS rotation uses a distinct-bucket strategy.** For each time granularity (daily/weekly/monthly), the rotation algorithm keeps the newest backup per distinct calendar bucket until the retention count is reached. Rules are unioned — a backup protected by ANY rule is retained. Example: with `daily:7, weekly:4, monthly:6`, a backup from 3 weeks ago is kept if it's the newest in its ISO week, even if there are already 7+ daily backups.
 
-23. **Daemon sends a Pushover startup notification.** After `wr agent daemon start` (or `ensure-running`), if Pushover is configured, you'll receive a push notification titled "wr daemon 已上线" with the hostname, port, and PID. This is non-blocking and failures are silent. If you don't want this notification, simply don't configure Pushover credentials.
+23. **`wr backup config set --enabled` requires explicit bool.** Use `--enabled=true` or `--enabled=false` — it is not a toggle. Omitting `--enabled` entirely leaves the current enabled state unchanged (same as all other `config set` flags).
+
+24. **Daemon sends a Pushover startup notification.** After `wr agent daemon start` (or `ensure-running`), if Pushover is configured, you'll receive a push notification titled "wr daemon 已上线" with the hostname, port, and PID. This is non-blocking and failures are silent. If you don't want this notification, simply don't configure Pushover credentials.
+
+25. **Use `wr agent doctor` to diagnose configuration issues.** Runs three health checks (daemon, LLM, Pushover) and reports pass/fail/warn for each. LLM missing key is a warning (not a failure) since LLM is optional. Pushover fails if either credential is missing. Useful for quick troubleshooting before filing issues.

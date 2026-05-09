@@ -12,6 +12,7 @@ A CLI tool that helps you manage work reports through a local HTTP daemon. Built
 - **Reminder scheduler** — Get notified before meetings and tasks via Pushover
 - **Idempotent adds** — Retry-safe record creation with idempotency keys
 - **Data backup** — Timestamped zip backups with Grandfather-Father-Son rotation and scheduled cron support
+- **Health checks** — `wr agent doctor` verifies daemon, LLM, and Pushover configuration
 
 ## Quick Start
 
@@ -28,6 +29,9 @@ go build -o wr .
 
 # Start the daemon
 ./wr agent daemon ensure-running
+
+# (Optional) Verify daemon, LLM, and Pushover are configured
+./wr agent doctor
 
 # Add a record (--date defaults to today if omitted)
 ./wr add --type meeting --title "Sprint planning" --time 09:00
@@ -212,7 +216,9 @@ wr backup config show
 | `wr agent daemon start` | Start the wr daemon (add `--detach` for background) |
 | `wr agent daemon stop` | Stop the wr daemon |
 | `wr agent daemon status` | Show daemon status |
-| `wr agent daemon ensure-running` | Start daemon if not running |
+| `wr agent daemon ensure-running` | Start daemon if not running (idempotent) |
+| `wr agent doctor` | Run health checks (daemon, LLM, Pushover) |
+| `wr agent schema` | Print the JSONL schema for all commands |
 | `wr backup create` | Create a zip backup immediately |
 | `wr backup list` | List all backups with metadata |
 | `wr backup cleanup` | Run GFS rotation to remove old backups |
