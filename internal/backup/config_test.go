@@ -131,3 +131,24 @@ func TestLoadConfigJSONRoundTrip(t *testing.T) {
 		t.Errorf("retention mismatch: %+v", loaded.Retention)
 	}
 }
+
+func TestSaveConfigUnwritableDir(t *testing.T) {
+	// On Unix, use a path under /proc to get an unwritable directory.
+	// On Windows, use a clearly invalid path with a null byte or a deeply
+	// nested nonexistent path where MkdirAll will fail due to permissions.
+	// We use a path under a read-only root to trigger the MkdirAll error.
+	//
+	// The most portable approach: write to a path whose parent is a file
+	// (not a directory), so MkdirAll fails.
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "afile")
+	if err := os.WriteFile(filePath, []byte("not a dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(filePath, "nested", "backup-config.json")
+
+	err := SaveConfig(DefaultConfig(), configPath)
+	if err == nil {
+		t.Fatal("expected error when saving to path under a file")
+	}
+}

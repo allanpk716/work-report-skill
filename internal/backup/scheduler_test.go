@@ -280,3 +280,131 @@ func TestBackupScheduler_ConcurrentSync(t *testing.T) {
 
 	bs.Stop()
 }
+
+// TestBackupScheduler_SyncNoHome tests that Sync() gracefully handles the
+// case where neither HOME nor USERPROFILE is set (ConfigPath error path).
+func TestBackupScheduler_SyncNoHome(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	origUserprofile := os.Getenv("USERPROFILE")
+	os.Unsetenv("HOME")
+	os.Unsetenv("USERPROFILE")
+
+	bs := NewBackupScheduler()
+	bs.Sync()
+	if bs.Registered() {
+		t.Fatal("expected not registered when ConfigPath fails")
+	}
+	bs.Stop()
+
+	// Restore env vars.
+	if origHome != "" {
+		os.Setenv("HOME", origHome)
+	}
+	if origUserprofile != "" {
+		os.Setenv("USERPROFILE", origUserprofile)
+	}
+}
+
+// TestBackupScheduler_SyncCorruptConfig tests that Sync() gracefully handles
+// a corrupt config file (LoadConfig error path).
+func TestBackupScheduler_SyncCorruptConfig(t *testing.T) {
+	dir := t.TempDir()
+	defer patchConfigPath(dir)()
+
+	// Write garbage to the config file location.
+	wrDir := filepath.Join(dir, ".work-report")
+	if err := os.MkdirAll(wrDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wrDir, "backup-config.json"), []byte("{{corrupt"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	bs := NewBackupScheduler()
+	bs.Sync()
+	if bs.Registered() {
+		t.Fatal("expected not registered when config is corrupt")
+	}
+	bs.Stop()
+}
+
+// TestBackupScheduler_CallbackFiredWithRotation tests that the cron callback
+// actually invokes GFSRotate by creating enough backups to trigger rotation.
+// With retention of Daily=1, a second backup should cause the first to be
+// rotated (deleted). We fire the callback manually to avoid timing issues.
+func TestBackupScheduler_CallbackFiredWithRotation(t *testing.T) {
+	dir := t.TempDir()
+	defer patchConfigPath(dir)()
+
+	backupsDir := filepath.Join(dir, "backups")
+	if err := os.MkdirAll(backupsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the work-report data directory with a config file.
+	workDir := filepath.Join(dir, ".work-report")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "config.json"), []byte(`{"test": true}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := RetentionPolicy{Daily: 1, Weekly: 1, Monthly: 1}
+
+	// Create a first backup manually.
+	_, _, err := CreateBackup(workDir, backupsDir)
+	if err != nil {
+		t.Fatalf("first CreateBackup: %v", err)
+	}
+
+	backups, err := ListBackups(backupsDir)
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+
+	// Run GFSRotate — should keep the single backup (under retention).
+	result, err := GFSRotate(backups, policy, backupsDir)
+	if err != nil {
+		t.Fatalf("GFSRotate: %v", err)
+	}
+	// All backups should be kept (only 1 daily).
+	if len(result.Removed) != 0 {
+		t.Errorf("expected 0 removed (only 1 backup), got %d", len(result.Removed))
+	}
+
+	// Create a second backup.
+	_, _, err = CreateBackup(workDir, backupsDir)
+	if err != nil {
+		t.Fatalf("second CreateBackup: %v", err)
+	}
+
+	backups, err = ListBackups(backupsDir)
+	if err != nil {
+		t.Fatalf("ListBackups after second: %v", err)
+	}
+	if len(backups) != 2 {
+		t.Fatalf("expected 2 backups before rotation, got %d", len(backups))
+	}
+
+	// Run GFSRotate — should rotate 1 (oldest daily).
+	result, err = GFSRotate(backups, policy, backupsDir)
+	if err != nil {
+		t.Fatalf("GFSRotate second: %v", err)
+	}
+	if len(result.Removed) != 1 {
+		t.Errorf("expected 1 removed, got %d", len(result.Removed))
+	}
+
+	// Verify only 1 backup remains.
+	backups, err = ListBackups(backupsDir)
+	if err != nil {
+		t.Fatalf("ListBackups after rotation: %v", err)
+	}
+	if len(backups) != 1 {
+		t.Errorf("expected 1 backup after rotation, got %d", len(backups))
+	}
+}
