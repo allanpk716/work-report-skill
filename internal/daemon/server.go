@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
@@ -29,6 +30,7 @@ type Server struct {
 	digestStore     *digest.DigestStore
 	digestScheduler *digest.DigestScheduler
 	backupScheduler *backup.BackupScheduler
+	shutdownOnce    sync.Once
 }
 
 // NewServer creates a new daemon server bound to the given port with storage.
@@ -154,15 +156,18 @@ func (s *Server) Start(ctx context.Context, onReady func()) error {
 	return nil
 }
 
-// Shutdown gracefully shuts down the server.
+// Shutdown gracefully shuts down the server. Safe to call multiple times —
+// only the first call executes; subsequent calls are no-ops thanks to sync.Once.
 func (s *Server) shutdown() {
-	logger.Infof("daemon shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if s.http != nil {
-		_ = s.http.Shutdown(ctx)
-	}
-	logger.Infof("daemon shutdown complete")
+	s.shutdownOnce.Do(func() {
+		logger.Infof("[daemon-shutdown] daemon shutting down")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if s.http != nil {
+			_ = s.http.Shutdown(ctx)
+		}
+		logger.Infof("[daemon-shutdown-complete] daemon shutdown complete")
+	})
 }
 
 // loggingMiddleware logs each HTTP request.

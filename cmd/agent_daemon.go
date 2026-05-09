@@ -407,25 +407,30 @@ func newDaemonStopCmd() *cobra.Command {
 				logger.Infof("stop: http stop sent to port %d", state.Port)
 			}
 
-			// Phase 2: If port still in use after HTTP stop, send SIGTERM.
-			if daemon.IsPortInUse(state.Port) {
-				proc, err := os.FindProcess(state.PID)
-				if err == nil {
-					_ = proc.Signal(syscall.SIGTERM)
-					logger.Infof("stop: sigterm sent to pid %d", state.PID)
-				}
-
-				// Phase 3: Poll for port release with 5s timeout.
-				if daemon.WaitForPortRelease(state.Port, 5*time.Second) {
-					logger.Infof("stop: port %d released after sigterm", state.Port)
-				} else {
-					// Phase 4: Port still occupied after 5s — SIGKILL as last resort.
-					logger.Warnf("stop: port %d not released after 5s, sending sigkill to pid %d", state.Port, state.PID)
-					_ = proc.Kill()
-					time.Sleep(100 * time.Millisecond)
-				}
-			} else {
+			// Wait for graceful HTTP shutdown to complete before escalating.
+			// Without this gap, the port check almost always fires because
+			// http.Shutdown() hasn't finished closing connections yet.
+			if daemon.WaitForPortRelease(state.Port, 5*time.Second) {
 				logger.Infof("stop: port %d released after http stop", state.Port)
+			} else {
+				// Phase 2: Port still in use after HTTP stop + wait — send SIGTERM.
+				if daemon.IsPortInUse(state.Port) {
+					proc, err := os.FindProcess(state.PID)
+					if err == nil {
+						_ = proc.Signal(syscall.SIGTERM)
+						logger.Infof("stop: sigterm sent to pid %d", state.PID)
+					}
+
+					// Phase 3: Poll for port release with 5s timeout.
+					if daemon.WaitForPortRelease(state.Port, 5*time.Second) {
+						logger.Infof("stop: port %d released after sigterm", state.Port)
+					} else {
+						// Phase 4: Port still occupied after 5s — SIGKILL as last resort.
+						logger.Warnf("stop: port %d not released after 5s, sending sigkill to pid %d", state.Port, state.PID)
+						_ = proc.Kill()
+						time.Sleep(100 * time.Millisecond)
+					}
+				}
 			}
 
 			// Always clean up state file.

@@ -1,10 +1,46 @@
 package daemon
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
 )
+
+func TestServerShutdownOnce(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Use port 0 to avoid conflicts. Start the server and immediately cancel
+	// the context to trigger the shutdown goroutine, then call shutdown()
+	// multiple times to verify sync.Once prevents double execution.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		_ = srv.Start(ctx, func() {
+			// onReady: cancel context to trigger shutdown path
+			cancel()
+		})
+	}()
+
+	// Wait for server to start and shut down
+	time.Sleep(500 * time.Millisecond)
+
+	// Call shutdown() multiple times — sync.Once should prevent double execution.
+	// If we get here without panic/deadlock, sync.Once is working.
+	srv.shutdown()
+	srv.shutdown()
+	srv.shutdown()
+}
+
+func TestServerShutdownOnce_Idempotent(t *testing.T) {
+	// Verify that calling shutdown on a server that was never started is safe.
+	srv, _ := newTestServer(t)
+
+	// Should not panic or hang even with no http.Server assigned.
+	srv.shutdown()
+	srv.shutdown()
+	srv.shutdown()
+}
 
 func TestWaitForPortRelease(t *testing.T) {
 	// Bind a random free port

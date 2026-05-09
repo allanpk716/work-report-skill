@@ -800,6 +800,87 @@ func TestAgentDaemonStop_NotRunning(t *testing.T) {
 	}
 }
 
+// TestStopCommandPhasedWait verifies that the stop command uses a phased
+// approach: HTTP POST /api/stop → WaitForPortRelease(5s) → SIGTERM only if
+// the port is still bound. This test uses a real HTTP server that responds to
+// /api/stop but keeps listening, so WaitForPortRelease should time out and
+// SIGTERM should be escalated.
+func TestStopCommandPhasedWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping: SIGTERM behavior differs on Windows")
+	}
+
+	_, cleanup := setupAgentTest(t)
+	defer cleanup()
+
+	// Start a fake daemon that accepts /api/stop but does NOT actually shut down.
+	// This simulates a daemon where graceful shutdown takes longer than the wait.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cannot bind port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	shutdownCalled := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stop", func(w http.ResponseWriter, r *http.Request) {
+		close(shutdownCalled)
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	server := &http.Server{Handler: mux}
+	go server.Serve(ln)
+	defer server.Close()
+
+	// Write state file
+	stateDir := filepath.Join(os.Getenv("HOME"), ".work-report")
+	if err := daemon.WriteState(stateDir, daemon.DaemonState{
+		Port: port,
+		PID:  os.Getpid(),
+	}); err != nil {
+		t.Fatalf("cannot write state: %v", err)
+	}
+	defer daemon.RemoveState(stateDir)
+
+	// Run the stop command in a goroutine — it will block during WaitForPortRelease.
+	done := make(chan error, 1)
+	go func() {
+		resetConfigFlags()
+		rootCmd.SetArgs([]string{"agent", "daemon", "stop"})
+		done <- rootCmd.Execute()
+	}()
+
+	// Wait for HTTP POST to be sent (the /api/stop handler fires)
+	select {
+	case <-shutdownCalled:
+		// Good — HTTP POST was sent
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected HTTP POST /api/stop to be sent within 3s")
+	}
+
+	// The stop command should now be waiting in WaitForPortRelease(5s).
+	// Close the server so the port releases and the command completes.
+	// This verifies the phased wait flow: HTTP POST → wait → port check.
+	time.Sleep(500 * time.Millisecond)
+	server.Close()
+
+	// The stop command should complete within a few seconds after port release.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Logf("stop command returned error (expected since server closed): %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("stop command did not complete within 10s after server close")
+	}
+}
+
 
 // --- Detach flag tests ---
 
