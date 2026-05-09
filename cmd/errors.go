@@ -53,4 +53,10 @@ func registerErrorCodes() {
 
 	// Preview errors
 	_ = app.RegisterErrorCode("internal_error", fatal, "内部处理错误")
+
+	// Backup errors
+	_ = app.RegisterErrorCode("data_dir_not_found", agentsdk.ExitNotFound, "数据目录不存在")
+	_ = app.RegisterErrorCode("backup_failed", fatal, "备份创建失败")
+	_ = app.RegisterErrorCode("rotation_failed", fatal, "GFS 轮转清理失败")
+	_ = app.RegisterErrorCode("config_not_found", agentsdk.ExitNotFound, "备份配置不存在")
 }

@@ -207,6 +207,30 @@ func registerCommandMeta() {
 			Description:  "Preview LLM prompt output in terminal",
 			IsIdempotent: true,
 		},
+		"backup": {
+			Description:  "Manage data backups with GFS rotation",
+			IsIdempotent: false,
+		},
+		"backup create": {
+			Description:  "Create a zip backup immediately",
+			IsIdempotent: false,
+		},
+		"backup list": {
+			Description:  "List all backups with metadata",
+			IsIdempotent: true,
+		},
+		"backup cleanup": {
+			Description:  "Run GFS rotation to remove old backups",
+			IsIdempotent: true,
+		},
+		"backup config": {
+			Description:  "Manage backup configuration",
+			IsIdempotent: false,
+		},
+		"backup config show": {
+			Description:  "Display backup configuration",
+			IsIdempotent: true,
+		},
 	}
 
 	for cmdPath, m := range meta {
