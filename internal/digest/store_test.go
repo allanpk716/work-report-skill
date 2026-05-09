@@ -121,16 +121,118 @@ func TestAdd_InvalidSchedule(t *testing.T) {
 	dir := tempDir(t)
 	s := NewStore(filepath.Join(dir, "digests.json"))
 
-	// Empty schedule
-	_, err := s.Add(DigestConfig{Schedule: "", Scope: ScopeToday})
-	if err == nil {
-		t.Error("expected error for empty schedule")
+	invalidCases := []struct {
+		name string
+		sched string
+	}{
+		{"empty", ""},
+		{"too short", "ab"},
+		{"4 fields", "0 8 * *"},
+		{"6 fields with seconds", "0 0 8 * * *"},
+		{"nonsense text", "abc def ghi jkl mno"},
+		{"invalid minute", "60 8 * * *"},
+		{"invalid hour", "0 25 * * *"},
+		{"invalid month", "0 0 1 13 *"},
+		{"invalid day-of-week", "0 0 * * 8"},
 	}
 
-	// Too short
-	_, err = s.Add(DigestConfig{Schedule: "ab", Scope: ScopeToday})
-	if err == nil {
-		t.Error("expected error for too-short schedule")
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.Add(DigestConfig{Schedule: tc.sched, Scope: ScopeToday})
+			if err == nil {
+				t.Errorf("expected error for schedule %q (%s), got nil", tc.sched, tc.name)
+			}
+		})
+	}
+
+	// Valid schedules should succeed
+	validCases := []struct {
+		name string
+		sched string
+	}{
+		{"daily 8am", "0 8 * * *"},
+		{"every 5 min", "*/5 * * * *"},
+		{"monthly 1st", "0 0 1 * *"},
+		{"monday 9:30", "30 9 * * 1"},
+		{"weekday 8am", "0 8 * * 1-5"},
+	}
+
+	for _, tc := range validCases {
+		t.Run("valid_"+tc.name, func(t *testing.T) {
+			_, err := s.Add(DigestConfig{Schedule: tc.sched, Scope: ScopeToday})
+			if err != nil {
+				t.Errorf("expected success for schedule %q (%s), got error: %v", tc.sched, tc.name, err)
+			}
+		})
+	}
+}
+
+// TestValidateSchedule_ValidCronExpressions tests that validateSchedule accepts
+// a comprehensive set of valid 5-field cron expressions.
+func TestValidateSchedule_ValidCronExpressions(t *testing.T) {
+	validCases := []struct {
+		name string
+		sched string
+	}{
+		{"every minute", "* * * * *"},
+		{"daily at 8am", "0 8 * * *"},
+		{"daily at midnight", "0 0 * * *"},
+		{"every 5 minutes", "*/5 * * * *"},
+		{"every 15 minutes", "*/15 * * * *"},
+		{"monthly 1st at midnight", "0 0 1 * *"},
+		{"monthly last day", "0 0 28-31 * *"},
+		{"monday at 9:30", "30 9 * * 1"},
+		{"friday at 17:00", "0 17 * * 5"},
+		{"weekday 8am", "0 8 * * 1-5"},
+		{"weekend noon", "0 12 * * 0,6"},
+		{"range hours", "0 9-17 * * *"},
+		{"list months", "0 0 1 1,6,12 *"},
+		{"specific day", "30 14 15 * *"},
+		{"step day of month", "0 0 */2 * *"},
+		{"comma doy", "0 8 * * 1,3,5"},
+		{"range+dow", "0 8 1-15 * 1-5"},
+	}
+
+	for _, tc := range validCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSchedule(tc.sched)
+			if err != nil {
+				t.Errorf("validateSchedule(%q) returned unexpected error: %v", tc.sched, err)
+			}
+		})
+	}
+}
+
+// TestValidateSchedule_InvalidCronExpressions tests that validateSchedule rejects
+// various malformed cron expressions with descriptive errors.
+func TestValidateSchedule_InvalidCronExpressions(t *testing.T) {
+	invalidCases := []struct {
+		name string
+		sched string
+	}{
+		{"empty string", ""},
+		{"single char", "a"},
+		{"too short", "ab"},
+		{"3 fields", "0 8 *"},
+		{"4 fields", "0 8 * *"},
+		{"6 fields with seconds", "0 0 8 * * *"},
+		{"7 fields", "0 0 0 8 * * *"},
+		{"nonsense words", "abc def ghi jkl mno"},
+		{"invalid minute 60", "60 0 * * *"},
+		{"invalid hour 25", "0 25 * * *"},
+		{"invalid month 13", "0 0 1 13 *"},
+		{"invalid dow 8", "0 0 * * 8"},
+		{"negative minute", "-1 0 * * *"},
+		{"spaces only", "     "},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSchedule(tc.sched)
+			if err == nil {
+				t.Errorf("validateSchedule(%q) expected error, got nil", tc.sched)
+			}
+		})
 	}
 }
 
