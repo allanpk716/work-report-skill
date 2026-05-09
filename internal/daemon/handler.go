@@ -1843,3 +1843,31 @@ func (s *Server) handlePromptReset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── Backup scheduler handler ──
+
+// handleBackupSync handles POST /api/backup/sync — triggers a sync on the
+// backup scheduler (reloads the backup config from disk and registers or
+// unregisters the cron entry). Used by "wr backup config set" to notify the
+// running daemon that the schedule has changed.
+func (s *Server) handleBackupSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		daemonWriter(w).ErrorWithCode("method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.backupScheduler == nil {
+		daemonWriter(w).ErrorWithCode("scheduler_not_initialized", "backup scheduler is not initialized")
+		return
+	}
+
+	s.backupScheduler.Sync()
+
+	registered := s.backupScheduler.Registered()
+	logger.WithField("registered", registered).Info("[backup-daemon] sync complete via API")
+
+	daemonWriter(w).Success(map[string]interface{}{
+		"action":     "backup_sync",
+		"registered": registered,
+	})
+}
+

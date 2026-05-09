@@ -10,6 +10,7 @@ import (
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
+	"wr/internal/backup"
 	"wr/internal/config"
 	"wr/internal/digest"
 	"wr/internal/logger"
@@ -27,6 +28,7 @@ type Server struct {
 	scheduler       *scheduler.Scheduler
 	digestStore     *digest.DigestStore
 	digestScheduler *digest.DigestScheduler
+	backupScheduler *backup.BackupScheduler
 }
 
 // NewServer creates a new daemon server bound to the given port with storage.
@@ -98,6 +100,25 @@ func (s *Server) DigestScheduler() *digest.DigestScheduler {
 func (s *Server) SyncDigestScheduler() {
 	if s.digestScheduler != nil {
 		s.digestScheduler.Sync()
+	}
+}
+
+// SetBackupScheduler sets the backup scheduler instance for the server. Nil-safe.
+func (s *Server) SetBackupScheduler(bs *backup.BackupScheduler) {
+	s.backupScheduler = bs
+}
+
+// BackupScheduler returns the server's backup scheduler instance (may be nil).
+func (s *Server) BackupScheduler() *backup.BackupScheduler {
+	return s.backupScheduler
+}
+
+// SyncBackupScheduler triggers a sync on the backup scheduler (reloads the
+// backup config from disk and registers/unregisters the cron entry). No-op if
+// the scheduler is nil.
+func (s *Server) SyncBackupScheduler() {
+	if s.backupScheduler != nil {
+		s.backupScheduler.Sync()
 	}
 }
 
@@ -205,4 +226,7 @@ func (s *Server) registerRoutes() {
 	// Preview endpoints
 	s.router.HandleFunc("/api/digest/preview/", s.handleDigestPreview)
 	s.router.HandleFunc("/api/prompt/preview/", s.handlePromptPreview)
+
+	// Backup scheduler endpoint
+	s.router.HandleFunc("/api/backup/sync", s.handleBackupSync)
 }

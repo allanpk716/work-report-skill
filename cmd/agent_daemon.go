@@ -16,6 +16,7 @@ import (
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
+	"wr/internal/backup"
 	"wr/internal/client"
 	"wr/internal/config"
 	"wr/internal/daemon"
@@ -212,6 +213,23 @@ func runDaemon(suppressStartupMsg bool) error {
 		}()
 	} else {
 		logger.Warn("[digest-daemon] digest store not available, digest scheduler disabled")
+	}
+
+	// Initialize and start backup scheduler (S02).
+	// The backup scheduler has its own cron instance, separate from both the
+	// record scheduler and the digest scheduler. On startup it syncs the backup
+	// config from disk and registers a cron entry if scheduling is enabled.
+	// Failures are non-fatal — the daemon still runs without backup scheduling.
+	{
+		backupSched := backup.NewBackupScheduler()
+		srv.SetBackupScheduler(backupSched)
+		backupSched.Start()
+		backupSched.Sync()
+		logger.WithField("registered", backupSched.Registered()).Info("[backup-daemon] backup scheduler initialized")
+		defer func() {
+			backupSched.Stop()
+			logger.Info("[backup-daemon] backup scheduler stopped")
+		}()
 	}
 
 	// Catch up missed reminders after restart — run in a goroutine so the HTTP

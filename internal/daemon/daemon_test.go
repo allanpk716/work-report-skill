@@ -17,6 +17,7 @@ import (
 
 	"wr/internal/config"
 	"wr/internal/digest"
+	"wr/internal/backup"
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 	"wr/internal/llm"
 	"wr/internal/logger"
@@ -6630,4 +6631,110 @@ func TestPromptPreview_PostMethod(t *testing.T) {
 
 	assertJSONLStatus(t, w.Body.Bytes(), "error")
 	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+// ── Backup scheduler tests ──
+
+func TestBackupScheduler_NilByDefault(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if srv.BackupScheduler() != nil {
+		t.Error("expected BackupScheduler to be nil by default")
+	}
+}
+
+func TestBackupScheduler_SetAndGet(t *testing.T) {
+	srv, _ := newTestServer(t)
+	bs := backup.NewBackupScheduler()
+	srv.SetBackupScheduler(bs)
+	if srv.BackupScheduler() != bs {
+		t.Error("expected BackupScheduler to be the instance that was set")
+	}
+}
+
+func TestBackupScheduler_SetNil(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.SetBackupScheduler(backup.NewBackupScheduler())
+	srv.SetBackupScheduler(nil)
+	if srv.BackupScheduler() != nil {
+		t.Error("expected BackupScheduler to be nil after setting nil")
+	}
+}
+
+func TestBackupScheduler_SyncBackupScheduler_Nil(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// Should not panic when scheduler is nil
+	srv.SyncBackupScheduler()
+}
+
+func TestBackupSyncEndpoint_NotInitialized(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// No backup scheduler set — should return error
+	req := httptest.NewRequest(http.MethodPost, "/api/backup/sync", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "scheduler_not_initialized")
+}
+
+func TestBackupSyncEndpoint_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/backup/sync", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "error")
+	assertJSONLCode(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+func TestBackupSyncEndpoint_Success(t *testing.T) {
+	srv, dir := newTestServer(t)
+	bs := backup.NewBackupScheduler()
+	srv.SetBackupScheduler(bs)
+
+	// Write a backup config to the default path so Sync() picks it up.
+	// ConfigPath() returns ~/.work-report/backup-config.json — we set HOME
+	// to the temp dir so the test doesn't touch the real config.
+	homeDir := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(homeDir, ".work-report"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configPath := filepath.Join(homeDir, ".work-report", "backup-config.json")
+	// Use forward slashes in JSON to avoid escape issues on Windows.
+	outputDir := filepath.ToSlash(filepath.Join(dir, "backups"))
+	configData := `{"schedule": "0 0 3 * * *", "enabled": true, "output_dir": "` + outputDir + `", "retention": {"daily": 7, "weekly": 4, "monthly": 6}}`
+	if err := os.WriteFile(configPath, []byte(configData), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir) // Windows
+
+	// Start the scheduler so cron is running
+	bs.Start()
+	defer bs.Stop()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/backup/sync", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	assertJSONLStatus(t, w.Body.Bytes(), "success")
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(w.Body.Bytes()), &resp); err != nil {
+		t.Fatalf("invalid JSONL: %s", w.Body.Bytes())
+	}
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data field missing")
+	}
+	if data["action"] != "backup_sync" {
+		t.Errorf("action = %v, want backup_sync", data["action"])
+	}
+	registered, ok := data["registered"].(bool)
+	if !ok {
+		t.Fatal("registered field missing or wrong type")
+	}
+	if !registered {
+		t.Error("expected registered to be true after sync with valid schedule")
+	}
 }
