@@ -11,6 +11,7 @@ A CLI tool that helps you manage work reports through a local HTTP daemon. Built
 - **Data import/export** — Bulk import from JSON, export to JSON or Markdown
 - **Reminder scheduler** — Get notified before meetings and tasks via Pushover
 - **Idempotent adds** — Retry-safe record creation with idempotency keys
+- **Data backup** — Timestamped zip backups with Grandfather-Father-Son rotation and scheduled cron support
 
 ## Quick Start
 
@@ -131,6 +132,66 @@ wr add --type reminder --title "Weekly 1:1" --date 2026-05-10 --time 14:00 --rec
 wr report push today
 ```
 
+## Data Backup
+
+The `wr backup` command creates timestamped zip archives of your `~/.work-report/` data with automatic Grandfather-Father-Son (GFS) rotation.
+
+### What gets backed up
+
+`config.json`, `work-records/`, `digests.json`, `scheduler-state.json`, `logs/`
+
+### Backup location and naming
+
+- **Default directory:** `~/.work-report/backups/`
+- **Filename format:** `wr-backup-YYYYMMDD-HHMMSS.zip`
+- Config stored separately at `~/.work-report/backup-config.json`
+
+### GFS rotation
+
+Backups are automatically classified by age and pruned according to a retention policy:
+
+| Tier | Default retention | Description |
+|------|-------------------|-------------|
+| Daily | 7 | Last 7 daily backups |
+| Weekly | 4 | Last 4 weekly backups (one per week) |
+| Monthly | 6 | Last 6 monthly backups (one per month) |
+
+Run `wr backup cleanup` to apply rotation and remove backups that exceed the policy.
+
+### Backup configuration
+
+Backup settings live in `~/.work-report/backup-config.json` (independent from the main `config.json`).
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `output_dir` | `~/.work-report/backups` | Backup output directory |
+| `schedule` | *(empty)* | 6-field cron expression (sec min hour dom month dow) |
+| `enabled` | `false` | Master switch for scheduled backups |
+| `retention.daily` | `7` | Daily backups to keep |
+| `retention.weekly` | `4` | Weekly backups to keep |
+| `retention.monthly` | `6` | Monthly backups to keep |
+
+### Quick examples
+
+```bash
+# Create a backup
+wr backup create
+
+# List all backups
+wr backup list
+
+# Run GFS rotation cleanup
+wr backup cleanup
+
+# Configure scheduled backups (6-field cron)
+wr backup config set --schedule "0 0 2 * * *" --enabled
+
+# View backup config
+wr backup config show
+```
+
+> **Scheduling note:** The `--schedule` flag accepts a 6-field cron expression (seconds precision). When `--enabled` is set, the daemon triggers backups automatically. Without a daemon running, use `wr backup create` for manual backups.
+
 ## Command Overview
 
 | Command | Description |
@@ -152,6 +213,11 @@ wr report push today
 | `wr agent daemon stop` | Stop the wr daemon |
 | `wr agent daemon status` | Show daemon status |
 | `wr agent daemon ensure-running` | Start daemon if not running |
+| `wr backup create` | Create a zip backup immediately |
+| `wr backup list` | List all backups with metadata |
+| `wr backup cleanup` | Run GFS rotation to remove old backups |
+| `wr backup config show` | Display backup configuration |
+| `wr backup config set` | Update backup configuration and sync with daemon |
 
 ## Development
 
