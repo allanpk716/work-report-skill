@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -243,8 +244,9 @@ func TestResolveDateRange_Timezone(t *testing.T) {
 	startSH, _, _ := ResolveDateRange(ScopeToday, shanghai)
 	startUTC, _, _ := ResolveDateRange(ScopeToday, utc)
 
-	// The start times should differ by 8 hours (Asia/Shanghai = UTC+8)
-	diff := startSH.Sub(startUTC).Hours()
+	// The start times should differ by 8 hours (Asia/Shanghai = UTC+8).
+	// Shanghai midnight is 8h before UTC midnight in absolute time, so use Abs.
+	diff := math.Abs(startSH.Sub(startUTC).Hours())
 	// Allow some tolerance for the rare case where the test runs right at midnight
 	if diff < 7.9 || diff > 8.1 {
 		// Only check if both are on the same UTC day, otherwise the difference
