@@ -1219,6 +1219,205 @@ Secrets are redacted as `secr****` (first 4 chars shown, rest masked).
 
 ---
 
+### wr backup
+
+Manage data backups with Grandfather-Father-Son (GFS) rotation. All backup commands are **local-only** — they do not require the daemon to be running. This is a command group with subcommands.
+
+**Usage:**
+
+```
+wr backup <subcommand> [flags]
+```
+
+**Persistent flag:** `--output <dir>` (string) — Override backup output directory. Available on all backup subcommands (create, list, cleanup). When omitted, the output directory from backup config is used.
+
+#### wr backup create
+
+Create a timestamped zip backup immediately.
+
+```
+wr backup create [--output <dir>]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--output` | string | `""` | Override backup output directory (persistent on parent) |
+
+**Notes:**
+- Local-only (no daemon required).
+- Zips config.json, work-records/, digests.json, scheduler-state.json, and logs/.
+- Filename: `wr-backup-YYYYMMDD-HHMMSS.zip` with incrementing suffix on collision (`-1`, `-2`, ...).
+- Missing optional files (e.g. scheduler-state.json) are silently skipped — the backup still succeeds.
+- Output directory is created automatically if it doesn't exist.
+
+**Example:**
+
+```bash
+wr backup create
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"path":"/home/user/.work-report/backups/wr-backup-20260503-140000.zip","size_bytes":12345,"output_dir":"/home/user/.work-report/backups"}}
+```
+
+**Error codes:** `data_dir_not_found`, `backup_failed`
+
+---
+
+#### wr backup list
+
+List all existing backups, sorted newest first.
+
+```
+wr backup list [--output <dir>]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--output` | string | `""` | Override backup output directory (persistent on parent) |
+
+**Notes:**
+- Sorted newest first. Empty directory returns empty array.
+- Only files matching `wr-backup-*.zip` pattern are listed.
+
+**Example:**
+
+```bash
+wr backup list
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"backups":[{"filename":"wr-backup-20260503-140000.zip","size":12345,"created_at":"2026-05-03T14:00:00Z"},{"filename":"wr-backup-20260502-090000.zip","size":10200,"created_at":"2026-05-02T09:00:00Z"}],"output_dir":"/home/user/.work-report/backups","count":2}}
+```
+
+**Error codes:** none specific (generic fatal on config/load error)
+
+---
+
+#### wr backup cleanup
+
+Run GFS rotation to remove old backups based on retention policy.
+
+```
+wr backup cleanup [--output <dir>]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--output` | string | `""` | Override backup output directory (persistent on parent) |
+
+**Notes:**
+- Runs Grandfather-Father-Son (GFS) rotation based on backup-config.json retention policy.
+- Three rules are evaluated: daily (newest per calendar day), weekly (newest per ISO week), monthly (newest per calendar month).
+- Rules are **unioned** — a backup protected by ANY rule is retained.
+- Unprotected backups are removed from disk.
+- Deletion errors are logged but do not cause the command to fail.
+
+**Example:**
+
+```bash
+wr backup cleanup
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"kept":[{"filename":"wr-backup-20260503-140000.zip","size":12345,"created_at":"2026-05-03T14:00:00Z"}],"removed":[{"filename":"wr-backup-20260425-090000.zip","size":9800,"created_at":"2026-04-25T09:00:00Z"}],"kept_count":1,"removed_count":1}}
+```
+
+**Error codes:** `rotation_failed`
+
+---
+
+#### wr backup config show
+
+Display the current backup configuration.
+
+```
+wr backup config show
+```
+
+**Flags:** None.
+
+**Notes:**
+- If no backup config file exists, returns defaults with `"source": "defaults"`.
+- If the config file exists, returns its content with `"source": "file"`.
+- Default retention: 7 daily, 4 weekly, 6 monthly.
+- Default output directory: `~/.work-report/backups`.
+
+**Example:**
+
+```bash
+wr backup config show
+```
+
+**Output (config file exists):**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"retention":{"daily":7,"weekly":4,"monthly":6},"output_dir":"/home/user/.work-report/backups","schedule":"","enabled":false},"config_path":"/home/user/.work-report/backup-config.json","source":"file"}}
+```
+
+**Output (no config file — returns defaults):**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"retention":{"daily":7,"weekly":4,"monthly":6},"output_dir":"/home/user/.work-report/backups","schedule":"","enabled":false},"config_path":"/home/user/.work-report/backup-config.json","source":"defaults"}}
+```
+
+**Error codes:** none specific
+
+---
+
+#### wr backup config set
+
+Update backup configuration. Only explicitly-provided flags are updated — omitted flags keep their current values. Best-effort daemon sync after save.
+
+```
+wr backup config set [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--schedule` | string | `""` | Cron expression for scheduled backups (6-field: sec min hour dom month dow) |
+| `--output-dir` | string | `""` | Backup output directory |
+| `--retention-daily` | int | `0` | Number of daily backups to keep |
+| `--retention-weekly` | int | `0` | Number of weekly backups to keep |
+| `--retention-monthly` | int | `0` | Number of monthly backups to keep |
+| `--enabled` | bool | `false` | Enable or disable scheduled backups |
+
+**Notes:**
+- Only explicitly-set flags are updated (uses `Flags().Changed` internally). Omitted flags retain their current values.
+- Config is stored at `~/.work-report/backup-config.json` (separate from main `config.json`).
+- Best-effort daemon sync after save — the command succeeds even if the daemon is not running. If daemon sync fails, the config is still saved to disk.
+- `--enabled` requires explicit bool value: `--enabled=true` or `--enabled=false` (not a toggle).
+
+**Example:**
+
+```bash
+wr backup config set --schedule "0 30 2 * * *" --retention-daily 14 --enabled=true
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"retention":{"daily":14,"weekly":4,"monthly":6},"output_dir":"/home/user/.work-report/backups","schedule":"0 30 2 * * *","enabled":true},"config_path":"/home/user/.work-report/backup-config.json","saved":true}}
+```
+
+**Error codes:** `backup_sync_failed` (daemon sync failure — config is still saved to disk)
+
+---
+
 ### wr --version
 
 Print the wr version. This is the only command that outputs plain text instead of JSONL.
@@ -1263,6 +1462,11 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `invalid_direction` | Invalid digest direction value | Direction must be `agenda` or `summary`. |
 | `prompt_not_found` | Prompt name has no default and no override (for reset/show/preview) | Only built-in names (`agenda`, `report`) can be reset. Use `wr prompt list` to see available prompts. |
 | `internal_error` | Digest/prompt preview pipeline failure (LLM or data error) | Check LLM configuration and available records for the given scope. Retry once. |
+| `data_dir_not_found` | `~/.work-report/` data directory does not exist | Run `wr config init` first to create the data directory. |
+| `backup_failed` | Zip creation failed (disk space, permissions, or I/O error) | Check disk space and write permissions on the backup output directory. |
+| `rotation_failed` | GFS rotation failed during backup cleanup | Check backup directory permissions. The rotation may have partially completed — inspect with `wr backup list`. |
+| `config_not_found` | Backup config file not found | Should not occur in normal usage — defaults are used when the file is missing. If this error appears, check filesystem permissions on `~/.work-report/`. |
+| `backup_sync_failed` | Daemon sync failed after backup config save | Config is still saved to disk. Start the daemon with `wr agent daemon ensure-running` and retry. |
 
 ---
 
@@ -1470,11 +1674,21 @@ wr export --format json --status completed --type task
 ### Backup and Restore
 
 ```bash
-# Export all records for backup
-wr export --format json --file backup.json
+# 1. Create an immediate backup (local-only, no daemon needed)
+wr backup create
 
-# Restore from backup on another machine
-wr import --file backup.json
+# 2. Verify the backup was created
+wr backup list
+
+# 3. Configure scheduled backups (optional, requires daemon for cron)
+wr backup config set --schedule "0 30 2 * * *" --enabled=true
+
+# 4. Manually run GFS rotation to clean up old backups
+wr backup cleanup
+
+# 5. For selective record transfer between machines, use export/import
+wr export --format json --from 2026-05-01 --to 2026-05-07 --file transfer.json
+wr import --file transfer.json
 ```
 
 ---
@@ -1579,3 +1793,11 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 17. **Use idempotency keys for retry-safe adds.** Pass `--idempotency-key <unique-key>` on `wr add` to deduplicate. If the same key is used again, the existing record is returned without creating a duplicate. Ideal for cron jobs, retry loops, or any workflow where the same add might execute twice.
 
 18. **`ensure-running` is preferred over `start` for agent workflows.** Unlike `wr agent daemon start` (which errors if already running) or `start --detach`, `ensure-running` is idempotent. It returns success whether the daemon was just started or already running, with a `source` field ("started" or "already_running") to disambiguate.
+
+19. **Backup config is separate from main config.** Backup settings live in `~/.work-report/backup-config.json`, not in the main `config.json`. This keeps concerns separate — backup retention, output directory, and schedule don't mix with daemon/LLM/Pushover config. Use `wr backup config show` to view and `wr backup config set` to modify.
+
+20. **`wr backup` commands are local-only (no daemon needed).** `wr backup create`, `wr backup list`, `wr backup cleanup`, and `wr backup config` commands work entirely through local filesystem operations. They do not require the daemon to be running. The only daemon interaction is `wr backup config set` which does a best-effort sync (non-fatal if daemon is unavailable).
+
+21. **GFS rotation uses a distinct-bucket strategy.** For each time granularity (daily/weekly/monthly), the rotation algorithm keeps the newest backup per distinct calendar bucket until the retention count is reached. Rules are unioned — a backup protected by ANY rule is retained. Example: with `daily:7, weekly:4, monthly:6`, a backup from 3 weeks ago is kept if it's the newest in its ISO week, even if there are already 7+ daily backups.
+
+22. **`wr backup config set --enabled` requires explicit bool.** Use `--enabled=true` or `--enabled=false` — it is not a toggle. Omitting `--enabled` entirely leaves the current enabled state unchanged (same as all other `config set` flags).
