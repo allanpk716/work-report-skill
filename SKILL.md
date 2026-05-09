@@ -1049,6 +1049,9 @@ wr agent daemon start > /dev/null 2>&1 &
 - Starts the scheduler for reminder notifications
 - Performs catch-up for missed reminders on startup
 - Cleans up state file on shutdown
+- Sends an async Pushover startup notification after the HTTP server is ready (see below)
+
+**Startup notification:** When Pushover is configured (`pushover.api_token` and `pushover.user_key` are both non-empty), the daemon sends a notification titled "wr daemon 已上线" containing the hostname, port, and PID. This runs in a goroutine so it never blocks the daemon startup. If Pushover is not configured, the notification is silently skipped (logged at debug level). If the push fails (network error, bad credentials), the error is logged as a warning but does not affect daemon operation. All startup notification log messages use the `[startup-notify]` prefix.
 
 **Notes:**
 - The daemon listens on `127.0.0.1:<port>` (default port `18080`).
@@ -1801,3 +1804,5 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 21. **GFS rotation uses a distinct-bucket strategy.** For each time granularity (daily/weekly/monthly), the rotation algorithm keeps the newest backup per distinct calendar bucket until the retention count is reached. Rules are unioned — a backup protected by ANY rule is retained. Example: with `daily:7, weekly:4, monthly:6`, a backup from 3 weeks ago is kept if it's the newest in its ISO week, even if there are already 7+ daily backups.
 
 22. **`wr backup config set --enabled` requires explicit bool.** Use `--enabled=true` or `--enabled=false` — it is not a toggle. Omitting `--enabled` entirely leaves the current enabled state unchanged (same as all other `config set` flags).
+
+23. **Daemon sends a Pushover startup notification.** After `wr agent daemon start` (or `ensure-running`), if Pushover is configured, you'll receive a push notification titled "wr daemon 已上线" with the hostname, port, and PID. This is non-blocking and failures are silent. If you don't want this notification, simply don't configure Pushover credentials.

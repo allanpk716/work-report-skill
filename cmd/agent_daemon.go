@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -301,6 +302,16 @@ func runDaemon(suppressStartupMsg bool) error {
 		if err := daemon.WriteState(dir, state); err != nil {
 			logger.Warnf("warning: cannot write state: %v", err)
 		}
+
+		// Send async Pushover startup notification so the user knows the
+		// daemon is alive. Runs in a goroutine so the onReady callback
+		// returns immediately — Pushover retries with bad credentials can
+		// take 35+ seconds.
+		hostname, _ := os.Hostname()
+		go sendStartupNotification(hostname, port, os.Getpid(), pushover.Config{
+			APIToken: cfg.Pushover.APIToken,
+			UserKey:  cfg.Pushover.UserKey,
+		}, logger.GetLogger())
 	})
 }
 
@@ -561,6 +572,31 @@ func proxyStatusWithSource(source string, state daemon.DaemonState) error {
 	data["port"] = state.Port
 
 	return app.JSONL().Success(data)
+}
+
+// sendStartupNotification sends an async Pushover notification to let the user
+// know the daemon is alive. It runs in a goroutine so the caller is not blocked
+// by Pushover retries.  Errors are non-fatal and logged, not returned.
+func sendStartupNotification(hostname string, port int, pid int, pushCfg pushover.Config, log *logrus.Logger) {
+	sendStartupNotificationCtx(context.Background(), hostname, port, pid, pushCfg, log)
+}
+
+// sendStartupNotificationCtx is the testable core of sendStartupNotification.
+// It accepts a context for cancellation control in tests.
+func sendStartupNotificationCtx(ctx context.Context, hostname string, port int, pid int, pushCfg pushover.Config, log *logrus.Logger) {
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	msg := fmt.Sprintf("主机: %s\n端口: %d\nPID: %d", hostname, port, pid)
+	if err := pushover.Send(ctx, pushCfg, msg, "wr daemon 已上线", 0); err != nil {
+		if errors.Is(err, pushover.ErrNotConfigured) {
+			log.Debugf("[startup-notify] Pushover not configured, skipping startup notification")
+		} else {
+			log.Warnf("[startup-notify] failed to send startup notification: %v", err)
+		}
+		return
+	}
+	log.Infof("[startup-notify] startup notification sent")
 }
 
 
