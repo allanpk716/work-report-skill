@@ -15,7 +15,7 @@ builds:
     ldflags:
       - -s
       - -w
-      - -X cmd.version={{.Version}}
+      - -X wr/cmd.version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
