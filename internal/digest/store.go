@@ -483,17 +483,16 @@ func generateID() string {
 	return fmt.Sprintf("d_%s_%x", now.Format("20060102"), b)
 }
 
-// validateSchedule performs a basic format check on the cron expression.
-// A full cron parser is out of scope for the data layer — the scheduler
-// (S03) will do complete validation at registration time.
+// validateSchedule validates the cron expression using the cron parser.
+// This catches malformed expressions at add-time instead of deferring to
+// the scheduler's sync loop where they are silently skipped.
 func validateSchedule(schedule string) error {
 	if schedule == "" {
 		return fmt.Errorf("digest: schedule must not be empty")
 	}
-	// Basic sanity: reject obviously wrong input (too short, no spaces).
-	// Real cron validation happens in the scheduler layer.
-	if len(schedule) < 5 {
-		return fmt.Errorf("digest: invalid schedule %q: too short", schedule)
+	_, err := cronParser.Parse(schedule)
+	if err != nil {
+		return fmt.Errorf("digest: invalid cron expression %q: %w", schedule, err)
 	}
 	return nil
 }

@@ -7,8 +7,8 @@ import (
 	"wr/internal/logger"
 )
 
-// cronParser validates 6-field cron expressions (with seconds).
-var cronParser = cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+// cronParser validates standard 5-field cron expressions (minute hour day month weekday).
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 // DigestCallback is the function signature called when a cron entry fires.
 // It receives the DigestConfig that triggered, so the summarize pipeline
@@ -34,7 +34,7 @@ type DigestScheduler struct {
 // The callback is invoked on each cron trigger with the matching DigestConfig.
 func NewDigestScheduler(store *DigestStore, cb DigestCallback) *DigestScheduler {
 	return &DigestScheduler{
-		cron:     cron.New(cron.WithSeconds()),
+		cron:     cron.New(),
 		store:    store,
 		callback: cb,
 		entries:  make(map[string]cron.EntryID),

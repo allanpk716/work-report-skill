@@ -6037,9 +6037,9 @@ func TestDigestSchedulerLifecycle(t *testing.T) {
 		t.Errorf("expected 0 entries initially, got %d", ds.RegisteredEntries())
 	}
 
-	// Add a digest config via the store (6-field cron: sec min hour dom month dow).
+	// Add a digest config via the store (5-field cron (minute hour day month weekday)).
 	_, err := srv.DigestStore().Add(digest.DigestConfig{
-		Schedule:  "0 0 8 * * *",
+		Schedule:  "0 8 * * *",
 		Scope:     digest.ScopeToday,
 		Direction: digest.DirectionAgenda,
 	})
@@ -6068,7 +6068,7 @@ func TestDigestSchedulerSyncOnAdd(t *testing.T) {
 	defer cleanup()
 
 	// Add a digest via HTTP.
-	body := `{"schedule": "0 0 8 * * *", "scope": "today", "direction": "agenda"}`
+	body := `{"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -6094,7 +6094,7 @@ func TestDigestSchedulerSyncOnRemove(t *testing.T) {
 	defer cleanup()
 
 	// Add a digest.
-	body := `{"schedule": "0 0 8 * * *", "scope": "today", "direction": "agenda"}`
+	body := `{"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -6134,7 +6134,7 @@ func TestDigestSchedulerSyncOnDisable(t *testing.T) {
 	defer cleanup()
 
 	// Add a digest.
-	body := `{"schedule": "0 0 8 * * *", "scope": "today", "direction": "agenda"}`
+	body := `{"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -6172,7 +6172,7 @@ func TestDigestSchedulerSyncOnEnable(t *testing.T) {
 	defer cleanup()
 
 	// Add a digest (enabled by default).
-	body := `{"schedule": "0 0 8 * * *", "scope": "today", "direction": "agenda"}`
+	body := `{"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -6207,42 +6207,31 @@ func TestDigestSchedulerSyncOnEnable(t *testing.T) {
 	}
 }
 
-// TestDigestSchedulerCronTrigger verifies that when a cron schedule fires,
-// the callback is invoked with the correct DigestConfig. Uses a schedule
-// that fires immediately ("* * * * * *" = every second).
+// TestDigestSchedulerCronTrigger verifies that when a digest is added and synced,
+// the scheduler registers the cron entry correctly. With 5-field cron (minimum
+// granularity = 1 minute), we verify registration rather than waiting for fire.
 func TestDigestSchedulerCronTrigger(t *testing.T) {
-	srv, cb, _, cleanup := withDigestScheduler(t)
+	srv, _, _, cleanup := withDigestScheduler(t)
 	defer cleanup()
 
-	// Add a digest with a schedule that fires every second.
-	body := `{"schedule": "* * * * * *", "scope": "today", "direction": "agenda"}`
+	// Add a digest with a valid 5-field schedule.
+	body := `{"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Router().ServeHTTP(w, req)
 
-	// Wait for the cron to fire (up to 3 seconds).
-	deadline := time.After(3 * time.Second)
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 
-	for {
-		select {
-		case <-ticker.C:
-			if cb.count() > 0 {
-				// Verify the callback received the correct config.
-				configs := cb.configs()
-				if configs[0].Scope != digest.ScopeToday {
-					t.Errorf("expected scope=today, got %s", configs[0].Scope)
-				}
-				if configs[0].Direction != digest.DirectionAgenda {
-					t.Errorf("expected direction=agenda, got %s", configs[0].Direction)
-				}
-				return
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for cron trigger to fire")
-		}
+	// Verify the scheduler registered the entry.
+	ds := srv.DigestScheduler()
+	if ds == nil {
+		t.Fatal("expected DigestScheduler to be set")
+	}
+	if ds.RegisteredEntries() != 1 {
+		t.Fatalf("expected 1 registered entry, got %d", ds.RegisteredEntries())
 	}
 }
 
@@ -6301,7 +6290,7 @@ func TestDigestSchedulerAllDisabled(t *testing.T) {
 
 	// Add two digests and disable both.
 	for i := 0; i < 2; i++ {
-		body := `{"schedule": "0 0 8 * * *", "scope": "today", "direction": "agenda"}`
+		body := `{"schedule": "0 8 * * *", "scope": "today", "direction": "agenda"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/digest/add", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -6337,7 +6326,7 @@ func TestDigestSchedulerCorruptedStore(t *testing.T) {
 
 	// First, add a valid config.
 	_, err := srv.DigestStore().Add(digest.DigestConfig{
-		Schedule:  "0 0 8 * * *",
+		Schedule:  "0 8 * * *",
 		Scope:     digest.ScopeToday,
 		Direction: digest.DirectionAgenda,
 	})
