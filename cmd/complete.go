@@ -28,6 +28,12 @@ var completeCmd = &cobra.Command{
 		}
 		store := mustStorage(cfg)
 
+		// Default --date to today when using --title lookup (matches wr add behavior)
+		if completeTitle != "" && completeDate == "" {
+			completeDate = todayInLocation(cfg)
+			logger.Infof("complete: source=default_today date=%s", completeDate)
+		}
+
 		// Resolve record ID: positional arg or --title/--date lookup
 		var id string
 		if len(args) > 0 && args[0] != "" {
@@ -95,4 +101,11 @@ func init() {
 
 	completeCmd.Flags().StringVar(&completeTitle, "title", "", "Lookup: exact title of the record to complete")
 	completeCmd.Flags().StringVar(&completeDate, "date", "", "Lookup: date of the record to complete (YYYY-MM-DD)")
+}
+
+// ResetCompleteFlags resets all complete command flags to their defaults.
+// For test isolation only.
+func ResetCompleteFlags() {
+	completeTitle = ""
+	completeDate = ""
 }

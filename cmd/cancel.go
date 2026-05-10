@@ -28,6 +28,12 @@ var cancelCmd = &cobra.Command{
 		}
 		store := mustStorage(cfg)
 
+		// Default --date to today when using --title lookup (matches wr add behavior)
+		if cancelTitle != "" && cancelDate == "" {
+			cancelDate = todayInLocation(cfg)
+			logger.Infof("cancel: source=default_today date=%s", cancelDate)
+		}
+
 		// Resolve record ID: positional arg or --title/--date lookup
 		var id string
 		if len(args) > 0 && args[0] != "" {
@@ -95,4 +101,11 @@ func init() {
 
 	cancelCmd.Flags().StringVar(&cancelTitle, "title", "", "Lookup: exact title of the record to cancel")
 	cancelCmd.Flags().StringVar(&cancelDate, "date", "", "Lookup: date of the record to cancel (YYYY-MM-DD)")
+}
+
+// ResetCancelFlags resets all cancel command flags to their defaults.
+// For test isolation only.
+func ResetCancelFlags() {
+	cancelTitle = ""
+	cancelDate = ""
 }
