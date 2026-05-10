@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2228,4 +2230,163 @@ func BenchmarkAddRecord(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// --- File lock tests ---
+
+// TestFlockBasicAcquireRelease verifies that a LockFile can be acquired and
+// released within the same process without error.
+func TestFlockBasicAcquireRelease(t *testing.T) {
+	dir := t.TempDir()
+	lf := NewLockFile(dir)
+
+	if err := lf.Acquire(DefaultLockTimeout); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := lf.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	// Double release should be a no-op
+	if err := lf.Release(); err != nil {
+		t.Fatalf("second Release: %v", err)
+	}
+}
+
+// TestFlockLockPath verifies LockPath returns the expected path.
+func TestFlockLockPath(t *testing.T) {
+	dir := t.TempDir()
+	expected := filepath.Join(dir, ".lock")
+	if got := LockPath(dir); got != expected {
+		t.Errorf("LockPath(%q) = %q, want %q", dir, got, expected)
+	}
+}
+
+// TestFlockLockTimeout verifies that Acquire returns ErrLockConflict when
+// another process holds the lock beyond the timeout.
+// This test spawns a subprocess that holds the lock, then tries to acquire
+// from the coordinator with a short timeout.
+func TestFlockLockTimeout(t *testing.T) {
+	if os.Getenv("WR_FLOCK_HOLDER") == "1" {
+		// Subprocess role: acquire lock and hold for 3 seconds
+		dir := os.Getenv("WR_FLOCK_DIR")
+		lf := NewLockFile(dir)
+		if err := lf.Acquire(DefaultLockTimeout); err != nil {
+			fmt.Fprintf(os.Stderr, "holder acquire: %v\n", err)
+			os.Exit(1)
+		}
+		// Signal coordinator that lock is held
+		fmt.Println("LOCKED")
+		time.Sleep(3 * time.Second)
+		lf.Release()
+		return
+	}
+
+	// Coordinator role: spawn holder subprocess
+	dir := t.TempDir()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFlockLockTimeout$")
+	cmd.Env = append(os.Environ(),
+		"WR_FLOCK_HOLDER=1",
+		"WR_FLOCK_DIR="+dir,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for holder to signal lock acquired
+	buf := make([]byte, 32)
+	n, err := stdout.Read(buf)
+	if err != nil {
+		t.Fatalf("reading subprocess output: %v", err)
+	}
+	if string(buf[:n]) != "LOCKED\n" {
+		t.Fatalf("expected LOCKED signal, got %q", string(buf[:n]))
+	}
+
+	// Try to acquire with short timeout — should fail
+	lf := NewLockFile(dir)
+	err = lf.Acquire(200 * time.Millisecond)
+	if err != ErrLockConflict {
+		t.Errorf("expected ErrLockConflict, got %v", err)
+	}
+
+	cmd.Wait()
+}
+
+// TestConcurrentWriteAcrossProcesses verifies that multiple processes can
+// concurrently call AddRecord without data loss or ShortID collisions.
+// Each subprocess creates its own Storage, acquires the file lock, and
+// writes a record. The coordinator verifies all records were written with
+// unique IDs.
+func TestConcurrentWriteAcrossProcesses(t *testing.T) {
+	if os.Getenv("WR_FLOCK_ADD_SUB") == "1" {
+		// Subprocess role: add a single record
+		dir := os.Getenv("WR_FLOCK_DIR")
+		idx := os.Getenv("WR_FLOCK_INDEX")
+
+		s := New(dir)
+		rec := newTestTask(fmt.Sprintf("subprocess-task-%s", idx), "2026-05-02")
+		_, err := s.AddRecord(rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "subprocess add: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Coordinator role: spawn N subprocesses
+	dir := t.TempDir()
+	const n = 5
+
+	var cmds []*exec.Cmd
+	for i := 0; i < n; i++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestConcurrentWriteAcrossProcesses$")
+		cmd.Env = append(os.Environ(),
+			"WR_FLOCK_ADD_SUB=1",
+			"WR_FLOCK_DIR="+dir,
+			"WR_FLOCK_INDEX="+strconv.Itoa(i),
+		)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds = append(cmds, cmd)
+	}
+
+	// Wait for all subprocesses to complete
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("subprocess failed: %v", err)
+		}
+	}
+
+	// Verify all N records exist
+	s := New(dir)
+	recs, err := s.ListRecords(ListOptions{})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(recs) != n {
+		t.Errorf("expected %d records, got %d", n, len(recs))
+	}
+
+	// Verify unique ShortIDs
+	ids := map[string]bool{}
+	for _, r := range recs {
+		if ids[r.ShortID] {
+			t.Errorf("duplicate ShortID: %s", r.ShortID)
+		}
+		ids[r.ShortID] = true
+	}
+	if len(ids) != n {
+		t.Errorf("expected %d unique IDs, got %d", n, len(ids))
+	}
+
+	t.Logf("cross-process write: %d records, %d unique IDs", len(recs), len(ids))
 }

@@ -22,8 +22,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"wr/internal/logger"
@@ -32,17 +32,18 @@ import (
 
 // Storage provides CRUD access to work records on disk.
 // All write operations (AddRecord, CompleteRecord, CancelRecord, UpdateRecord)
-// are serialized via a mutex to prevent concurrent file I/O corruption and
-// ShortID collisions.
+// are serialized via a cross-process file lock to prevent concurrent file I/O
+// corruption and ShortID collisions across multiple processes.
+// The monotonic seq counter is persisted in <baseDir>/.seq so that separate
+// processes sharing the same data directory generate unique filenames and IDs.
 type Storage struct {
 	baseDir string
-	mu      sync.Mutex
-	seq     uint64 // monotonic counter for unique ShortID generation
+	lock    *LockFile
 }
 
 // New creates a Storage rooted at baseDir (the work-records/ directory).
 func New(baseDir string) *Storage {
-	return &Storage{baseDir: baseDir}
+	return &Storage{baseDir: baseDir, lock: NewLockFile(baseDir)}
 }
 
 // AddRecord writes a record to the correct subdirectory, using a
@@ -52,8 +53,10 @@ func New(baseDir string) *Storage {
 // For meetings and logs, the file is placed under <type>/YYYY/MM/DD/.
 // For tasks and reminders, the file is placed under <type>/active/.
 func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock.Acquire(DefaultLockTimeout); err != nil {
+		return nil, err
+	}
+	defer s.lock.Release()
 
 	cf := models.GetCommonFields(rec)
 	if cf == nil {
@@ -66,8 +69,11 @@ func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
 		cf.Status = models.StatusActive
 	}
 
-	s.seq++
-	shortID := models.ShortIDFromTimestampAndSeq(now, s.seq)
+	seq, err := s.nextSeq()
+	if err != nil {
+		return nil, err
+	}
+	shortID := models.ShortIDFromTimestampAndSeq(now, seq)
 	cf.ShortID = shortID
 
 	dir := s.activeDirForRecord(cf.Type, cf.Date)
@@ -76,8 +82,8 @@ func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
 	}
 
 	// Use sequence counter for guaranteed-unique filenames.
-	// The seq counter is monotonic under the mutex, so collisions are impossible.
-	filename := now.Format("20060102_150405") + fmt.Sprintf("_%d", s.seq) + ".json"
+	// The seq counter is monotonic under the file lock, so collisions are impossible.
+	filename := now.Format("20060102_150405") + fmt.Sprintf("_%d", seq) + ".json"
 	path := filepath.Join(dir, filename)
 
 	data, err := models.MarshalRecord(rec)
@@ -184,8 +190,10 @@ func (s *Storage) GetByID(shortID string) (interface{}, string, error) {
 // status and completed_at fields. For logs, this is a no-op (logs are not
 // completable).
 func (s *Storage) CompleteRecord(shortID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock.Acquire(DefaultLockTimeout); err != nil {
+		return err
+	}
+	defer s.lock.Release()
 
 	rec, oldPath, err := s.GetByID(shortID)
 	if err != nil {
@@ -247,8 +255,10 @@ func (s *Storage) CompleteRecord(shortID string) error {
 
 // CancelRecord sets a record's status to cancelled, updating the file in place.
 func (s *Storage) CancelRecord(shortID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock.Acquire(DefaultLockTimeout); err != nil {
+		return err
+	}
+	defer s.lock.Release()
 
 	rec, path, err := s.GetByID(shortID)
 	if err != nil {
@@ -325,8 +335,10 @@ var ErrFieldNotAllowed = fmt.Errorf("storage: field not allowed for update")
 // Disallowed fields: type (immutable), status (use Complete/Cancel),
 // short_id, saved_at.
 func (s *Storage) UpdateRecord(shortID string, fields map[string]interface{}) (interface{}, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock.Acquire(DefaultLockTimeout); err != nil {
+		return nil, err
+	}
+	defer s.lock.Release()
 
 	if len(fields) == 0 {
 		return nil, ErrEmptyUpdate
@@ -533,6 +545,35 @@ func toStringSlice(v interface{}) []string {
 }
 
 // --- internal helpers ---
+
+// seqFileName is the name of the persisted monotonic counter file.
+const seqFileName = ".seq"
+
+// nextSeq atomically reads, increments, and persists the monotonic sequence
+// counter. Must be called while holding the file lock so that concurrent
+// processes and goroutines get unique values.
+func (s *Storage) nextSeq() (uint64, error) {
+	seqPath := filepath.Join(s.baseDir, seqFileName)
+
+	var seq uint64
+	data, err := os.ReadFile(seqPath)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("storage: read seq: %w", err)
+	}
+	if len(data) > 0 {
+		seq, err = strconv.ParseUint(string(strings.TrimSpace(string(data))), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("storage: parse seq: %w", err)
+		}
+	}
+	seq++
+
+	if err := os.WriteFile(seqPath, []byte(strconv.FormatUint(seq, 10)), 0644); err != nil {
+		return 0, fmt.Errorf("storage: write seq: %w", err)
+	}
+
+	return seq, nil
+}
 
 // activeDirForRecord returns the directory where a new active record should be
 // stored, based on its type and date.
