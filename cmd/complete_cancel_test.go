@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
+	"wr/internal/config"
 )
 
 // TestCompleteTitleDefaultDate verifies that `wr complete --title 'X'` defaults
@@ -212,4 +213,71 @@ func TestCompleteByIDStillWorks(t *testing.T) {
 	}
 
 	validateAllEnvelopes(t, out)
+}
+
+// TestCompleteTitleNotFound verifies that `wr complete --title 'nonexistent'`
+// returns a record_not_found error when no matching record exists.
+func TestCompleteTitleNotFound(t *testing.T) {
+	ResetCompleteFlags()
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+
+	// Attempt to complete a non-existent title without --date
+	ResetCompleteFlags()
+	code, out := executeCmd("complete", "--title", "nonexistent_task_xyz")
+	if code == agentsdk.ExitSuccess {
+		t.Fatal("expected failure for non-existent title lookup")
+	}
+
+	// Verify error in output (title lookup uses invalid_params when no record found)
+	lines := parseJSONLMaps(out)
+	found := false
+	for _, line := range lines {
+		if line["type"] == "error" {
+			errCode, _ := line["error_code"].(string)
+			if errCode == "invalid_params" || errCode == "record_not_found" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected error in output for non-existent title, got %v", lines)
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestLLMTimeoutDefaults verifies that a freshly loaded config defaults
+// LLM text and vision timeouts to 30 seconds.
+func TestLLMTimeoutDefaults(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	// Init config (creates a fresh config.json)
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+
+	// Load config directly from the temp home
+	cfgPath := filepath.Join(tmpHome, ".work-report", "config.json")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.LLM.Text.Timeout != 30 {
+		t.Errorf("expected LLM.Text.Timeout=30, got %d", cfg.LLM.Text.Timeout)
+	}
+	if cfg.LLM.Vision.Timeout != 30 {
+		t.Errorf("expected LLM.Vision.Timeout=30, got %d", cfg.LLM.Vision.Timeout)
+	}
 }
