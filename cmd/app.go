@@ -108,7 +108,7 @@ func registerCommandMeta() {
 			IsIdempotent: true,
 		},
 		"status": {
-			Description:  "Show daemon status and config diagnostics",
+			Description:  "Show configuration and data statistics",
 			IsIdempotent: true,
 		},
 		"config": {
