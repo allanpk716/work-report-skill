@@ -1,18 +1,19 @@
 # wr — Work Report CLI
 
-A CLI tool that helps you manage work reports through a local HTTP daemon. Built with Go, designed for AI agent consumption (JSONL output), but perfectly usable by humans too.
+A pure CLI tool for managing work reports. Built with Go, designed for AI agent consumption (JSONL output), but fully usable by humans too.
 
 ## Features
 
 - **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, logs)
-- **LLM classification** — Describe work in natural language or attach images; the daemon auto-classifies them into structured records
+- **LLM classification** — Describe work in natural language or attach images; auto-classifies them into structured records
 - **Report generation** — Generate daily, weekly, or custom-range reports in Markdown or JSON
-- **Push notifications** — Push reports via Pushover
+- **Push notifications** — Push reports directly to Pushover
+- **Digest summaries** — Schedule periodic LLM-powered digest summaries with optional Pushover delivery
+- **Prompt templates** — Manage custom LLM prompt templates for digest generation
 - **Data import/export** — Bulk import from JSON, export to JSON or Markdown
-- **Reminder scheduler** — Get notified before meetings and tasks via Pushover
 - **Idempotent adds** — Retry-safe record creation with idempotency keys
-- **Data backup** — Timestamped zip backups with Grandfather-Father-Son rotation and scheduled cron support
-- **Health checks** — `wr agent doctor` verifies daemon, LLM, and Pushover configuration
+- **Data backup** — Timestamped zip backups with Grandfather-Father-Son rotation
+- **Health checks** — `wr agent doctor` verifies LLM, Pushover, and data directory configuration
 
 ## Quick Start
 
@@ -27,17 +28,11 @@ go build -o wr .
 ./wr config set pushover.api_token your-app-token
 ./wr config set pushover.user_key your-user-key
 
-# Start the daemon
-./wr agent daemon ensure-running
-
-# (Optional) Verify daemon, LLM, and Pushover are configured
+# (Optional) Verify LLM, Pushover, and data directory are configured
 ./wr agent doctor
 
 # Add a record (--date defaults to today if omitted)
 ./wr add --type meeting --title "Sprint planning" --time 09:00
-
-# Add with advance reminder (triggers Pushover notification 15 min before)
-./wr add --type meeting --title "Design review" --time 14:00 --remind-before 15m
 
 # Check today's entries
 ./wr list
@@ -59,13 +54,12 @@ Config lives at `~/.work-report/config.json`. Create it with `wr config init` or
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `daemon.port` | `18080` | Daemon listen port |
 | `timezone` | `Asia/Shanghai` | IANA timezone for date calculations |
 | `data_dir` | `~/.work-report/work-records` | Storage directory |
 
 ### Push notifications (Pushover)
 
-Configure [Pushover](https://pushover.net/) credentials to receive push notifications for reminders and reports on your phone/desktop.
+Configure [Pushover](https://pushover.net/) credentials to receive push notifications for reports and digests on your phone/desktop.
 
 | Setting | Description |
 |---------|-------------|
@@ -81,7 +75,7 @@ wr config set pushover.user_key your-user-key
 wr config init --pushover-token your-app-token --pushover-key your-user-key
 ```
 
-> **Without Pushover credentials**, reminder scheduling still runs internally but notifications won't be delivered. `wr report push` will return `pushover_not_configured`.
+> **Without Pushover credentials**, `wr report push` and `wr digest` push delivery will return `pushover_not_configured`.
 
 ### LLM classification (optional)
 
@@ -98,51 +92,13 @@ wr config init --pushover-token your-app-token --pushover-key your-user-key
 | `llm.vision.api_base` | Vision LLM API base URL |
 | `llm.vision.timeout` | Vision LLM HTTP request timeout in seconds (default: 30) |
 
-## Push Notifications & Reminders
-
-The daemon includes a built-in scheduler that automatically determines which records need Pushover push notifications and when to send them.
-
-### Which records trigger a push?
-
-| Record type | Condition | Example |
-|-------------|-----------|---------|
-| `reminder` | Always — any reminder with a date and time will trigger a push | `wr add --type reminder --title "Submit report" --date 2026-05-10 --time 17:00` |
-| `meeting` | Only when `--remind-before` is set | `wr add --type meeting --title "Sprint planning" --time 09:00 --remind-before 15m` |
-| `task` | Only when `--remind-before` is set | `wr add --type task --title "Review PR" --time 14:00 --remind-before 30m` |
-| `log` | Never — logs are informational only | — |
-
-### How it works
-
-1. **Add a record** with a qualifying type/field → the daemon automatically registers a cron job
-2. **At the computed trigger time** (record time minus `remind_before`), Pushover sends the notification
-3. **One-time records** auto-remove after firing; **recurring records** (`daily`/`weekly`/`monthly`) repeat on schedule
-4. **Update time-related fields** → the scheduler re-registers with the new time
-5. **Complete or cancel** → the scheduler unregisters, no more notifications
-6. **Daemon restarts** → missed reminders are caught up and sent with a `【延迟提醒】` prefix
-
-### Quick examples
-
-```bash
-# Simple reminder — fires at 10:00 on May 10
-wr add --type reminder --title "Standup" --date 2026-05-10 --time 10:00
-
-# Meeting with 15-minute advance reminder — fires at 08:45
-wr add --type meeting --title "Sprint planning" --date 2026-05-10 --time 09:00 --remind-before 15m
-
-# Recurring weekly reminder (every week on the same weekday)
-wr add --type reminder --title "Weekly 1:1" --date 2026-05-10 --time 14:00 --recurring weekly
-
-# Push today's report to your phone
-wr report push today
-```
-
 ## Data Backup
 
 The `wr backup` command creates timestamped zip archives of your `~/.work-report/` data with automatic Grandfather-Father-Son (GFS) rotation.
 
 ### What gets backed up
 
-`config.json`, `work-records/`, `digests.json`, `scheduler-state.json`, `logs/`
+`config.json`, `work-records/`, `digests.json`
 
 ### Backup location and naming
 
@@ -169,8 +125,6 @@ Backup settings live in `~/.work-report/backup-config.json` (independent from th
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `output_dir` | `~/.work-report/backups` | Backup output directory |
-| `schedule` | *(empty)* | 6-field cron expression (sec min hour dom month dow) |
-| `enabled` | `false` | Master switch for scheduled backups |
 | `retention.daily` | `7` | Daily backups to keep |
 | `retention.weekly` | `4` | Weekly backups to keep |
 | `retention.monthly` | `6` | Monthly backups to keep |
@@ -187,14 +141,9 @@ wr backup list
 # Run GFS rotation cleanup
 wr backup cleanup
 
-# Configure scheduled backups (6-field cron)
-wr backup config set --schedule "0 0 2 * * *" --enabled
-
 # View backup config
 wr backup config show
 ```
-
-> **Scheduling note:** The `--schedule` flag accepts a 6-field cron expression (seconds precision). When `--enabled` is set, the daemon triggers backups automatically. Without a daemon running, use `wr backup create` for manual backups.
 
 ## Command Overview
 
@@ -207,23 +156,21 @@ wr backup config show
 | `wr cancel` | Cancel a record |
 | `wr report` | Generate reports (today / date / week / range) |
 | `wr report push` | Push reports via Pushover |
+| `wr digest` | Manage digest configurations |
+| `wr prompt` | Manage LLM prompt templates |
 | `wr import` | Bulk import from JSON file |
 | `wr export` | Export to JSON or Markdown |
-| `wr status` | Show daemon status and config |
+| `wr status` | Show configuration and data statistics |
 | `wr config init` | Create config with defaults |
 | `wr config set` | Set a config value |
 | `wr config show` | Display config (secrets redacted) |
-| `wr agent daemon start` | Start the wr daemon (add `--detach` for background) |
-| `wr agent daemon stop` | Stop the wr daemon |
-| `wr agent daemon status` | Show daemon status |
-| `wr agent daemon ensure-running` | Start daemon if not running (idempotent) |
-| `wr agent doctor` | Run health checks (daemon, LLM, Pushover) |
+| `wr agent doctor` | Run health checks (LLM, Pushover, data directory) |
 | `wr agent schema` | Print the JSONL schema for all commands |
 | `wr backup create` | Create a zip backup immediately |
 | `wr backup list` | List all backups with metadata |
 | `wr backup cleanup` | Run GFS rotation to remove old backups |
 | `wr backup config show` | Display backup configuration |
-| `wr backup config set` | Update backup configuration and sync with daemon |
+| `wr backup config set` | Update backup configuration |
 
 ## Development
 
@@ -240,4 +187,4 @@ go test ./internal/storage/...
 
 ## Documentation
 
-- **[SKILL.md](SKILL.md)** — Complete API reference with JSONL format specs, error codes, and all command details. This is the authoritative reference for both humans and AI agents.
+- **[SKILL.md](SKILL.md)** — AI agent integration manual with JSONL format specs, error codes, and command reference.
