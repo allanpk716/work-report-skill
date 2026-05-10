@@ -13,6 +13,7 @@ A pure CLI tool for managing work reports. Built with Go, designed for AI agent 
 - **Data import/export** — Bulk import from JSON, export to JSON or Markdown
 - **Idempotent adds** — Retry-safe record creation with idempotency keys
 - **Data backup** — Timestamped zip backups with Grandfather-Father-Son rotation
+- **Reminder push** — Detect due reminders and push via Pushover, auto-complete on success
 - **Health checks** — `wr agent doctor` verifies LLM, Pushover, and data directory configuration
 
 ## Quick Start
@@ -166,6 +167,8 @@ wr backup config show
 | `wr config show` | Display config (secrets redacted) |
 | `wr agent doctor` | Run health checks (LLM, Pushover, data directory) |
 | `wr agent schema` | Print the JSONL schema for all commands |
+| `wr remind due` | List due reminders |
+| `wr remind push` | Push reminders via Pushover |
 | `wr backup create` | Create a zip backup immediately |
 | `wr backup list` | List all backups with metadata |
 | `wr backup cleanup` | Run GFS rotation to remove old backups |
