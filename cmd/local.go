@@ -58,6 +58,14 @@ func writeJSONLErrorWithExit(exitCode int, code string, msg string) error {
 	return &agentsdk.ExitError{Code: exitCode, Err: fmt.Errorf("%s", msg)}
 }
 
+// writeExitErrorWithCode writes a JSONL error envelope with a specific error code
+// and returns an ExitError. This is used for CLI-side validation errors that should
+// carry the same error_code the daemon would use.
+func writeExitErrorWithCode(exitCode int, errorCode string, msg string) error {
+	app.JSONL().ErrorWithCode(errorCode, msg)
+	return &agentsdk.ExitError{Code: exitCode, Err: fmt.Errorf("%s", msg)}
+}
+
 // writeJSONLSuccess writes a JSONL success envelope with the given data.
 func writeJSONLSuccess(data interface{}) {
 	app.JSONL().Success(data)

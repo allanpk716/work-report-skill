@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"fmt"
-	"net/url"
-	"os"
+	"strings"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
-	"wr/internal/client"
+	"wr/internal/logger"
+	"wr/internal/models"
 
 	"github.com/spf13/cobra"
 )
@@ -22,11 +22,71 @@ var completeCmd = &cobra.Command{
 	Short: "Mark a work report entry as complete",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path, err := buildActionPath("complete", args)
-		if err != nil {
-			return err
+		cfg := loadConfig()
+		if cfg == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to load config")
 		}
-		return client.CallDaemonPost(os.Stdout, path, nil)
+		store := mustStorage(cfg)
+
+		// Resolve record ID: positional arg or --title/--date lookup
+		var id string
+		if len(args) > 0 && args[0] != "" {
+			id = args[0]
+		} else {
+			resolved, err := resolveIDOrLookup(store, "", completeTitle, completeDate)
+			if err != nil {
+				return writeJSONLError("invalid_params", err.Error())
+			}
+			id = resolved
+		}
+
+		// Check if record exists before completing
+		rec, _, err := store.GetByID(id)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return writeJSONLError("record_not_found", fmt.Sprintf("record %q not found", id))
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to find record: %v", err))
+		}
+
+		// Check if already completed
+		cf := models.GetCommonFields(rec)
+		if cf != nil && cf.Status == "completed" {
+			return writeJSONLError("already_completed", fmt.Sprintf("record %q is already completed", id))
+		}
+
+		// Check if already cancelled
+		if cf != nil && cf.Status == "cancelled" {
+			return writeJSONLError("already_cancelled", fmt.Sprintf("record %q is cancelled, cannot complete", id))
+		}
+
+		if err := store.CompleteRecord(id); err != nil {
+			if strings.Contains(err.Error(), "already completed") {
+				return writeJSONLError("already_completed", err.Error())
+			}
+			if strings.Contains(err.Error(), "cannot be completed") {
+				return writeJSONLError("invalid_params", err.Error())
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to complete record: %v", err))
+		}
+
+		// Read back completed record for output
+		completed, _, err := store.GetByID(id)
+		if err != nil {
+			logger.Warnf("complete: completed record %s but could not read back: %v", id, err)
+			writeJSONLSuccess(map[string]interface{}{
+				"action": "complete",
+				"id":     id,
+			})
+			return nil
+		}
+
+		logger.Infof("complete: id=%s", id)
+		writeJSONLSuccess(map[string]interface{}{
+			"action": "complete",
+			"record": completed,
+		})
+		return nil
 	},
 }
 
@@ -35,53 +95,4 @@ func init() {
 
 	completeCmd.Flags().StringVar(&completeTitle, "title", "", "Lookup: exact title of the record to complete")
 	completeCmd.Flags().StringVar(&completeDate, "date", "", "Lookup: date of the record to complete (YYYY-MM-DD)")
-}
-
-// buildActionPath resolves the daemon API path for update/complete/cancel commands.
-// When args contains an <id>, it returns /api/<action>/<id>.
-// When args is empty, it requires --title and --date flags and returns /api/<action>/?title=...&date=...
-func buildActionPath(action string, args []string) (string, error) {
-	if len(args) > 0 && args[0] != "" {
-		return fmt.Sprintf("/api/%s/%s", action, args[0]), nil
-	}
-
-	// No positional ID — require both --title and --date for lookup
-	title := lookupTitle(action)
-	date := lookupDate(action)
-
-	if title == "" || date == "" {
-		return "", writeExitError(agentsdk.ExitInvalidParams,
-			fmt.Sprintf("provide <id> or both --title and --date for lookup"))
-	}
-
-	return fmt.Sprintf("/api/%s/?title=%s&date=%s", action,
-		url.QueryEscape(title), url.QueryEscape(date)), nil
-}
-
-// lookupTitle returns the --title flag value for the given action command.
-func lookupTitle(action string) string {
-	switch action {
-	case "update":
-		return updateTitle
-	case "complete":
-		return completeTitle
-	case "cancel":
-		return cancelTitle
-	default:
-		return ""
-	}
-}
-
-// lookupDate returns the --date flag value for the given action command.
-func lookupDate(action string) string {
-	switch action {
-	case "update":
-		return updateDate
-	case "complete":
-		return completeDate
-	case "cancel":
-		return cancelDate
-	default:
-		return ""
-	}
 }

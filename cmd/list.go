@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
-	"wr/internal/client"
+	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
+
+	"wr/internal/models"
+	"wr/internal/storage"
 
 	"github.com/spf13/cobra"
 )
@@ -22,33 +24,48 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List work report entries",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := "/api/list"
-		params := []string{}
+		cfg := loadConfig()
+		if cfg == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to load config")
+		}
+		store := mustStorage(cfg)
+
+		// Build ListOptions from flags
+		opts := storage.ListOptions{}
+
 		if listType != "" {
-			params = append(params, fmt.Sprintf("type=%s", listType))
+			if !models.IsValidType(listType) {
+				return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, or log)", listType))
+			}
+			opts.RecordType = models.RecordType(listType)
 		}
 		if listDate != "" {
-			params = append(params, fmt.Sprintf("date=%s", listDate))
+			opts.Date = listDate
 		}
 		if listFrom != "" {
-			params = append(params, fmt.Sprintf("from=%s", listFrom))
+			opts.DateFrom = listFrom
 		}
 		if listTo != "" {
-			params = append(params, fmt.Sprintf("to=%s", listTo))
+			opts.DateTo = listTo
 		}
 		if listStatus != "" {
-			params = append(params, fmt.Sprintf("status=%s", listStatus))
+			opts.Status = listStatus
 		}
 		if listQuery != "" {
-			params = append(params, fmt.Sprintf("query=%s", listQuery))
+			opts.Query = listQuery
 		}
-		if len(params) > 0 {
-			path += "?" + params[0]
-			for _, p := range params[1:] {
-				path += "&" + p
-			}
+
+		records, err := store.ListRecords(opts)
+		if err != nil {
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to list records: %v", err))
 		}
-		return client.CallDaemonGet(os.Stdout, path)
+
+		writeJSONLSuccess(map[string]interface{}{
+			"action": "list",
+			"count":  len(records),
+			"entries": records,
+		})
+		return nil
 	},
 }
 

@@ -16,7 +16,6 @@ import (
 
 	"wr/internal/config"
 	"wr/internal/daemon"
-	"wr/internal/storage"
 )
 
 // executeCmd runs rootCmd with the given args and returns the exit code
@@ -147,17 +146,16 @@ func setupFakeDaemon(t *testing.T, tmpHome string, handler http.HandlerFunc) *ht
 // --- Test Success (exit 0) ---
 
 func TestSuccessExit0(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{"message": "ok"})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		fmt.Fprintf(w, "%s\n", b)
-	}))
-	defer srv.Close()
+	// Init config in temp home
+	executeCmd("config", "init")
 
+	// Reset list flags from any prior test
+	resetListFlags()
+
+	// list should succeed with direct call (empty result set)
 	code, out := executeCmd("list")
 	if code != agentsdk.ExitSuccess {
 		t.Errorf("expected exit code 0, got %d", code)
@@ -165,22 +163,20 @@ func TestSuccessExit0(t *testing.T) {
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Invalid Params (exit 2) from daemon error_code ---
-// Uses `list` (still daemon-backed) to test error code → exit code mapping.
+// --- Test Invalid Params (exit 2) from direct call ---
+// `wr list --type invalid` triggers invalid_type error from the direct-call list command.
 
 func TestInvalidParamsExit2(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewErrorEnvelope("wr", "invalid_type", "missing required field: type")
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		fmt.Fprintf(w, "%s\n", b)
-	}))
-	defer srv.Close()
+	// Init config in temp home
+	executeCmd("config", "init")
 
-	code, out := executeCmd("list")
+	// Reset list flags from any prior test
+	resetListFlags()
+
+	code, out := executeCmd("list", "--type", "invalid")
 	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2, got %d", code)
 	}
@@ -201,52 +197,18 @@ func TestInvalidParamsExit2(t *testing.T) {
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Daemon Unreachable (exit 4) ---
-
-func TestDaemonUnreachableExit4(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
-	defer cleanup()
-
-	// Create a state file pointing to a port with nothing listening
-	stateDir := filepath.Join(tmpHome, ".work-report")
-	os.MkdirAll(stateDir, 0755)
-	daemon.WriteState(stateDir, daemon.DaemonState{Port: 19999, PID: 99999})
-
-	cfgPath := filepath.Join(stateDir, "config.json")
-	cfg, _ := config.Load(filepath.Join(stateDir, "nonexistent.json"))
-	cfg.Daemon.Port = 19999
-	cfg.Save(cfgPath)
-
-	code, out := executeCmd("list")
-	if code != agentsdk.ExitNetworkError {
-		t.Errorf("expected exit code %d (ExitNetworkError), got %d", agentsdk.ExitNetworkError, code)
-	}
-	lines := parseJSONLMaps(out)
-	if len(lines) == 0 {
-		t.Fatal("expected JSONL output")
-	}
-	if lines[0]["error_code"] != "daemon_not_running" {
-		t.Errorf("expected error_code=daemon_not_running, got %v", lines[0]["error_code"])
-	}
-	validateAllEnvelopes(t, out)
-}
-
-// --- Test LLM Error (exit 4) from daemon error_code ---
-// Uses `list` (still daemon-backed) to test error code → exit code mapping.
+// --- Test LLM Error (exit 4) from direct call ---
+// `wr add --text "test"` with no LLM config triggers llm_not_configured error.
 
 func TestLLMErrorExit4(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewErrorEnvelope("wr", "llm_error", "LLM classification failed: timeout")
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		fmt.Fprintf(w, "%s\n", b)
-	}))
-	defer srv.Close()
+	// Init config in temp home (no LLM configured)
+	executeCmd("config", "init")
 
-	code, out := executeCmd("list")
+	// --text without LLM config triggers llm_not_configured → exit 4
+	code, out := executeCmd("add", "--text", "test meeting at 3pm")
 	if code != agentsdk.ExitNetworkError {
 		t.Errorf("expected exit code 4, got %d", code)
 	}
@@ -256,32 +218,29 @@ func TestLLMErrorExit4(t *testing.T) {
 	}
 	found := false
 	for _, line := range lines {
-		if line["error_code"] == "llm_error" {
+		if ec, ok := line["error_code"].(string); ok && (ec == "llm_error" || ec == "llm_not_configured") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected error_code=llm_error in output, got %v", lines)
+		t.Errorf("expected error_code=llm_error or llm_not_configured in output, got %v", lines)
 	}
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Fatal Error (exit 1) from daemon error_code ---
+// --- Test Fatal Error (exit 1) from direct call ---
+// `wr complete <nonexistent-id>` triggers record_not_found error.
 
 func TestFatalErrorExit1(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewErrorEnvelope("wr", "storage_error", "failed to read records")
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		fmt.Fprintf(w, "%s\n", b)
-	}))
-	defer srv.Close()
+	// Init config in temp home
+	executeCmd("config", "init")
 
-	code, out := executeCmd("list")
+	// wr complete <nonexistent-id> → record_not_found → exit 1
+	code, out := executeCmd("complete", "nonexistent-id-that-does-not-exist")
 	if code != agentsdk.ExitFatalError {
 		t.Errorf("expected exit code 1, got %d", code)
 	}
@@ -291,51 +250,34 @@ func TestFatalErrorExit1(t *testing.T) {
 	}
 	found := false
 	for _, line := range lines {
-		if line["error_code"] == "storage_error" {
+		if line["error_code"] == "record_not_found" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected error_code=storage_error in output, got %v", lines)
+		t.Errorf("expected error_code=record_not_found in output, got %v", lines)
 	}
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Lock Conflict (exit 5) from daemon error_code ---
-// Uses `list` (still daemon-backed) to test error code → exit code mapping.
+// --- Test Lock Conflict (exit 5) from direct call ---
+// We can't easily trigger a lock conflict from CLI, so we test that
+// the error code is properly registered and maps to exit 5.
 
 func TestLockConflictExit5(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
-	defer cleanup()
-
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewErrorEnvelope("wr", "lock_conflict", "concurrent modification conflict")
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		fmt.Fprintf(w, "%s\n", b)
-	}))
-	defer srv.Close()
-
-	code, out := executeCmd("list")
-	if code != agentsdk.ExitLockConflict {
-		t.Errorf("expected exit code 5, got %d", code)
+	// Verify that lock_conflict error code maps to ExitLockConflict (5)
+	if app == nil {
+		InitApp()
 	}
-	lines := parseJSONLMaps(out)
-	if len(lines) == 0 {
-		t.Fatal("expected JSONL output")
+	reg := app.Registry()
+	if reg == nil {
+		t.Fatal("error code registry is nil")
 	}
-	found := false
-	for _, line := range lines {
-		if line["error_code"] == "lock_conflict" {
-			found = true
-			break
-		}
+	exitCode := reg.ToExitCode("lock_conflict")
+	if exitCode != agentsdk.ExitLockConflict {
+		t.Errorf("expected lock_conflict → exit code %d, got %d", agentsdk.ExitLockConflict, exitCode)
 	}
-	if !found {
-		t.Errorf("expected error_code=lock_conflict in output, got %v", lines)
-	}
-	validateAllEnvelopes(t, out)
 }
 
 // --- Test Config Validation (exit 2) ---
@@ -417,61 +359,48 @@ func TestConfigSetUnknownPathExit2(t *testing.T) {
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test Daemon Not Running No State File (exit 4) ---
+// --- Test Direct Call List Works Without Daemon ---
+// `wr list` now works directly via storage without needing a daemon.
 
 func TestDaemonNotRunningNoStateExit4(t *testing.T) {
 	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	// No state file at all — daemon not running
+	// Init config in temp home so loadConfig succeeds
+	executeCmd("config", "init")
+
+	// Reset list flags from any prior test
+	resetListFlags()
+
+	// list should work without daemon — just returns empty results
 	code, out := executeCmd("list")
-	if code != agentsdk.ExitNetworkError {
-		t.Errorf("expected exit code %d (ExitNetworkError), got %d", agentsdk.ExitNetworkError, code)
+	if code != agentsdk.ExitSuccess {
+		t.Errorf("expected exit code 0 (list works without daemon), got %d; output: %s", code, string(out))
 	}
 	validateAllEnvelopes(t, out)
 }
 
-// --- Test with real daemon router (httptest + storage.Storage) ---
+// --- Test with real storage (no daemon needed) ---
 
 func TestExitCodeWithDaemonRouter(t *testing.T) {
-	// Create temp storage
-	tmpDir := t.TempDir()
-	store := storage.New(tmpDir)
-
-	cfg, _ := config.Load(filepath.Join(tmpDir, "nonexistent.json"))
-	srv := daemon.NewServer(0, store, cfg)
-	router := srv.Router()
-
-	httpSrv := httptest.NewServer(router)
-	defer httpSrv.Close()
-
-	// Set up temp home with state pointing to test server
-	tmpHome, cleanup := setupTempHome(t)
+	// Set up temp home
+	_, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	addr := httpSrv.Listener.Addr().String()
-	parts := strings.Split(addr, ":")
-	port := parts[len(parts)-1]
+	// Init config in temp home
+	executeCmd("config", "init")
 
-	stateDir := filepath.Join(tmpHome, ".work-report")
-	os.MkdirAll(stateDir, 0755)
-	var portInt int
-	fmt.Sscanf(port, "%d", &portInt)
-	daemon.WriteState(stateDir, daemon.DaemonState{Port: portInt, PID: os.Getpid()})
+	// Reset list flags from any prior test
+	resetListFlags()
 
-	cfgPath := filepath.Join(stateDir, "config.json")
-	cfgSave, _ := config.Load(filepath.Join(stateDir, "nonexistent.json"))
-	cfgSave.Daemon.Port = portInt
-	cfgSave.Save(cfgPath)
-
-	// Test: list with real daemon (empty) → should succeed (exit 0)
+	// Test: list with direct call (empty storage) → should succeed (exit 0)
 	code, out := executeCmd("list")
 	if code != agentsdk.ExitSuccess {
-		t.Errorf("expected exit code 0 for list, got %d", code)
+		t.Errorf("expected exit code 0 for list, got %d; output: %s", code, string(out))
 	}
 	validateAllEnvelopes(t, out)
 
-	// Test: add with invalid type → should be exit 2 (direct call, no daemon)
+	// Test: add with invalid type → should be exit 2 (direct call)
 	code, out = executeCmd("add", "--type", "invalid", "--title", "test", "--date", "2024-01-01")
 	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for invalid type, got %d", code)

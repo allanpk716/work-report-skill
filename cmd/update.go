@@ -2,31 +2,32 @@ package cmd
 
 import (
 	"fmt"
-	"os"
+	"strings"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
-	"wr/internal/client"
+	"wr/internal/logger"
+	"wr/internal/models"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	updateTitle        string
-	updateDescription  string
-	updateDate         string
-	updateTime         string
-	updateLocation     string
-	updateTags         []string
-	updatePriority     string
-	updateRemindBefore string
-	updateRecurring    string
-	updateEndTime      string
+	updateTitle         string
+	updateDescription   string
+	updateDate          string
+	updateTime          string
+	updateLocation      string
+	updateTags          []string
+	updatePriority      string
+	updateRemindBefore  string
+	updateRecurring     string
+	updateEndTime       string
 	updateRelatedPerson string
-	updateParticipants []string
-	updateAgenda       string
-	updateNotes        string
-	updateProgress     string
+	updateParticipants  []string
+	updateAgenda        string
+	updateNotes         string
+	updateProgress      string
 )
 
 var updateCmd = &cobra.Command{
@@ -34,8 +35,14 @@ var updateCmd = &cobra.Command{
 	Short: "Update fields of an existing work report entry",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fields := make(map[string]interface{})
+		cfg := loadConfig()
+		if cfg == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to load config")
+		}
+		store := mustStorage(cfg)
 
+		// Build fields map from changed flags
+		fields := make(map[string]interface{})
 		if cmd.Flags().Changed("time") {
 			fields["time"] = updateTime
 		}
@@ -76,33 +83,75 @@ var updateCmd = &cobra.Command{
 			fields["progress"] = updateProgress
 		}
 
-		var path string
-		var err error
-
+		// Resolve record ID
+		var id string
 		if len(args) > 0 && args[0] != "" {
-			// Existing behavior: <id> provided — title/date flags update fields
+			// Positional ID mode: --title/--date update fields, not lookup params
 			if cmd.Flags().Changed("title") {
 				fields["title"] = updateTitle
 			}
 			if cmd.Flags().Changed("date") {
 				fields["date"] = updateDate
 			}
-			if len(fields) == 0 {
-				return writeExitError(agentsdk.ExitInvalidParams, "no fields specified for update")
-			}
-			path = fmt.Sprintf("/api/update/%s", args[0])
+			id = args[0]
 		} else {
-			// Lookup mode: --title and --date are query params for lookup
-			path, err = buildActionPath("update", args)
+			// Lookup mode: --title and --date are query params for record lookup
+			resolved, err := resolveIDOrLookup(store, "", updateTitle, updateDate)
 			if err != nil {
-				return err
+				return writeJSONLError("invalid_params", err.Error())
 			}
-			if len(fields) == 0 {
-				return writeExitError(agentsdk.ExitInvalidParams, "no fields specified for update")
-			}
+			id = resolved
 		}
 
-		return client.CallDaemonPost(os.Stdout, path, fields)
+		if len(fields) == 0 {
+			return writeJSONLError("invalid_params", "no fields specified for update")
+		}
+
+		// Check if record exists before updating
+		rec, _, err := store.GetByID(id)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return writeJSONLError("record_not_found", fmt.Sprintf("record %q not found", id))
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to find record: %v", err))
+		}
+
+		// Check if record is completed or cancelled
+		cf := models.GetCommonFields(rec)
+		if cf != nil && cf.Status == "completed" {
+			return writeJSONLError("already_completed", fmt.Sprintf("record %q is completed, cannot update", id))
+		}
+		if cf != nil && cf.Status == "cancelled" {
+			return writeJSONLError("already_cancelled", fmt.Sprintf("record %q is cancelled, cannot update", id))
+		}
+
+		// Apply update via storage
+		updated, err := store.UpdateRecord(id, fields)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return writeJSONLError("record_not_found", err.Error())
+			}
+			if strings.Contains(err.Error(), "empty update") {
+				return writeJSONLError("invalid_params", err.Error())
+			}
+			if strings.Contains(err.Error(), "field not allowed") {
+				return writeJSONLError("invalid_field", err.Error())
+			}
+			if strings.Contains(err.Error(), "already completed") {
+				return writeJSONLError("already_completed", err.Error())
+			}
+			if strings.Contains(err.Error(), "already cancelled") {
+				return writeJSONLError("already_cancelled", err.Error())
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to update record: %v", err))
+		}
+
+		logger.Infof("update: id=%s fields=%v", id, fieldKeys(fields))
+		writeJSONLSuccess(map[string]interface{}{
+			"action": "update",
+			"record": updated,
+		})
+		return nil
 	},
 }
 
@@ -124,4 +173,13 @@ func init() {
 	updateCmd.Flags().StringVar(&updateAgenda, "agenda", "", "Update agenda")
 	updateCmd.Flags().StringVar(&updateNotes, "notes", "", "Update notes")
 	updateCmd.Flags().StringVar(&updateProgress, "progress", "", "Update progress")
+}
+
+// fieldKeys returns the keys of a fields map as a string slice.
+func fieldKeys(fields map[string]interface{}) []string {
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	return keys
 }

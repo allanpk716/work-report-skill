@@ -1,55 +1,99 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"time"
 
-	"wr/internal/daemon"
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
-	
+
+	"wr/internal/logger"
+	"wr/internal/models"
 
 	"github.com/spf13/cobra"
 )
 
 var importFilePath string
 
-// importTimeout is longer than the default client timeout because bulk imports
-// may take significantly more time than single-record operations.
-const importTimeout = 30 * time.Second
-
 var importCmd = &cobra.Command{
 	Use:   "import",
 	Short: "Bulk import work report entries from a JSON file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if importFilePath == "" {
-			return writeExitErrorWithCode(agentsdk.ExitInvalidParams, "invalid_params", "--file is required")
+			return writeJSONLError("invalid_params", "--file is required")
 		}
+
+		cfg := loadConfig()
+		if cfg == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to load config")
+		}
+		store := mustStorage(cfg)
 
 		data, err := os.ReadFile(importFilePath)
 		if err != nil {
-			return writeExitErrorWithCode(agentsdk.ExitInvalidParams, "invalid_body",
-				fmt.Sprintf("cannot read file %q: %v", importFilePath, err))
+			return writeJSONLError("invalid_body", fmt.Sprintf("cannot read file %q: %v", importFilePath, err))
 		}
 
-		payload, err := normalizeImportPayload(data)
+		// Parse and normalize the import payload
+		records, err := parseImportRecords(data)
 		if err != nil {
-			return writeExitErrorWithCode(agentsdk.ExitInvalidParams, "invalid_body",
-				fmt.Sprintf("invalid JSON in %q: %v", importFilePath, err))
+			return writeJSONLError("invalid_body", fmt.Sprintf("invalid JSON in %q: %v", importFilePath, err))
 		}
 
-		return callDaemonPostWithTimeout(os.Stdout, "/api/import", payload, importTimeout)
+		if len(records) == 0 {
+			return writeJSONLError("invalid_body", "no records found in import file")
+		}
+
+		// Phase 1: validate all records before persisting any
+		for i, rawRec := range records {
+			if err := validateImportRecord(rawRec, i); err != nil {
+				return writeJSONLError("import_record", err.Error())
+			}
+		}
+
+		// Phase 2: persist each record
+		imported := 0
+		var importErrors []map[string]interface{}
+
+		for _, rawRec := range records {
+			rec := buildRecordFromMap(rawRec)
+
+			result, err := store.AddRecord(rec)
+			if err != nil {
+				logger.Warnf("import: failed to add record: %v", err)
+				importErrors = append(importErrors, map[string]interface{}{
+					"record": rawRec,
+					"error":  err.Error(),
+				})
+				continue
+			}
+
+			cf := models.GetCommonFields(result)
+			logger.Infof("import: short_id=%s type=%s title=%q", cf.ShortID, cf.Type, cf.Title)
+			writeJSONLSuccess(result)
+			imported++
+		}
+
+		// Write summary
+		summary := map[string]interface{}{
+			"action":        "import",
+			"imported":      imported,
+			"failed":        len(importErrors),
+			"total":         len(records),
+		}
+		if len(importErrors) > 0 {
+			summary["errors"] = importErrors
+		}
+		writeJSONLSuccess(summary)
+
+		logger.Infof("import complete: imported=%d failed=%d total=%d", imported, len(importErrors), len(records))
+		return nil
 	},
 }
 
-// normalizeImportPayload validates JSON input and normalizes it into the
-// expected {"records": [...]} format. Accepts either a top-level array or
-// an object with a "records" key.
-func normalizeImportPayload(data []byte) (interface{}, error) {
+// parseImportRecords reads JSON data and returns a slice of raw record maps.
+// Accepts either a top-level array or an object with a "records" key.
+func parseImportRecords(data []byte) ([]map[string]interface{}, error) {
 	var raw interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
@@ -57,95 +101,91 @@ func normalizeImportPayload(data []byte) (interface{}, error) {
 
 	switch v := raw.(type) {
 	case []interface{}:
-		return map[string]interface{}{"records": v}, nil
+		records := make([]map[string]interface{}, 0, len(v))
+		for i, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("item %d is not a JSON object", i)
+			}
+			records = append(records, m)
+		}
+		return records, nil
 	case map[string]interface{}:
-		if _, ok := v["records"]; !ok {
+		arr, ok := v["records"]
+		if !ok {
 			return nil, fmt.Errorf("object must contain a \"records\" key")
 		}
-		return v, nil
+		items, ok := arr.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("\"records\" must be an array")
+		}
+		records := make([]map[string]interface{}, 0, len(items))
+		for i, item := range items {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("records[%d] is not a JSON object", i)
+			}
+			records = append(records, m)
+		}
+		return records, nil
 	default:
 		return nil, fmt.Errorf("expected JSON array or object, got %T", raw)
 	}
 }
 
-// callDaemonPostWithTimeout sends a POST request to the daemon with a custom
-// timeout. Used by import to allow longer processing for bulk operations.
-func callDaemonPostWithTimeout(w io.Writer, path string, payload interface{}, timeout time.Duration) error {
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return writeDaemonError(w, "marshal request body: %v", err)
+// validateImportRecord checks that a raw record map has the minimum required fields.
+func validateImportRecord(rec map[string]interface{}, index int) error {
+	recType, _ := rec["type"].(string)
+	if recType == "" {
+		return fmt.Errorf("record %d: missing required field \"type\"", index)
 	}
-
-	dir, err := daemon.DefaultStateDir()
-	if err != nil {
-		return writeDaemonError(w, "cannot determine state dir: %v", err)
+	if !models.IsValidType(recType) {
+		return fmt.Errorf("record %d: invalid type %q (must be meeting, task, reminder, or log)", index, recType)
 	}
-
-	state, err := daemon.ReadState(dir)
-	if err != nil {
-		return writeDaemonError(w, "daemon not running: %v", err)
+	title, _ := rec["title"].(string)
+	if title == "" {
+		return fmt.Errorf("record %d: missing required field \"title\"", index)
 	}
-
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", state.Port, path)
-	httpClient := &http.Client{Timeout: timeout}
-
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		return writeDaemonError(w, "daemon not running: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		_ = daemon.RemoveState(dir)
-		return writeDaemonError(w, "daemon not running (stale state cleaned): daemon unreachable at port %d", state.Port)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return writeDaemonError(w, "daemon response read failed: %v", err)
-	}
-
-	var record map[string]interface{}
-	if err := json.Unmarshal(bytes.TrimSpace(respBody), &record); err != nil {
-		return writeDaemonError(w, "malformed daemon response")
-	}
-
-	fmt.Fprintf(w, "%s", respBody)
-
-	if record["type"] == "error" {
-		errorCode, _ := record["error_code"].(string)
-		msg, _ := record["message"].(string)
-		return &agentsdk.ExitError{
-			Code: app.ErrorCodeToExitCode(errorCode),
-			Err:  fmt.Errorf("%s", msg),
-		}
-	}
-
 	return nil
 }
 
-// writeExitErrorWithCode writes a JSONL error envelope with a specific error code
-// and returns an ExitError. This is used by import for CLI-side validation errors
-// that should carry the same error_code the daemon would use.
-func writeExitErrorWithCode(exitCode int, errorCode string, msg string) error {
-	app.JSONL().ErrorWithCode(errorCode, msg)
-	return &agentsdk.ExitError{Code: exitCode, Err: fmt.Errorf("%s", msg)}
+// buildRecordFromMap constructs a typed record from a raw map, extracting
+// known fields and passing them to buildRecord in cmd/local.go.
+func buildRecordFromMap(rec map[string]interface{}) interface{} {
+	recType := getStringField(rec, "type")
+	title := getStringField(rec, "title")
+	date := getStringField(rec, "date")
+	tm := getStringField(rec, "time")
+	description := getStringField(rec, "description")
+	location := getStringField(rec, "location")
+	relatedPerson := getStringField(rec, "related_person")
+	priority := getStringField(rec, "priority")
+	remindBefore := getStringField(rec, "remind_before")
+	recurring := getStringField(rec, "recurring")
+	idempotencyKey := getStringField(rec, "idempotency_key")
+
+	var tags []string
+	if v, ok := rec["tags"]; ok {
+		switch arr := v.(type) {
+		case []interface{}:
+			for _, t := range arr {
+				if s, ok := t.(string); ok && s != "" {
+					tags = append(tags, s)
+				}
+			}
+		case []string:
+			tags = arr
+		}
+	}
+
+	return buildRecord(recType, title, date, tm, description,
+		tags, location, relatedPerson, priority, remindBefore, recurring, idempotencyKey)
 }
 
-// writeDaemonError reuses the client package error pattern locally for the
-// extended-timeout import path. This avoids exporting an internal helper.
-func writeDaemonError(w io.Writer, format string, args ...interface{}) error {
-	msg := fmt.Sprintf(format, args...)
-	msg += " Run 'wr agent daemon start' to start the daemon, then retry your command."
-	env := agentsdk.NewErrorEnvelope("wr", "daemon_not_running", msg)
-	b, _ := json.Marshal(env)
-	fmt.Fprintf(w, "%s\n", b)
-	return &agentsdk.ExitError{
-		Code: agentsdk.ExitNetworkError,
-		Err:  fmt.Errorf("%s", msg),
-	}
+// getStringField extracts a string field from a map, returning "" if missing or wrong type.
+func getStringField(m map[string]interface{}, key string) string {
+	v, _ := m[key].(string)
+	return v
 }
 
 func init() {
