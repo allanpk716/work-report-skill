@@ -2,18 +2,21 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/config"
 )
 
-// registerHealthChecks registers LLM and Pushover health checks
+// registerHealthChecks registers LLM, Pushover, and data-dir health checks
 // with the SDK App. Called once from InitApp(). Each check loads config fresh
 // (not cached) — doctor is a diagnostic tool, not a hot path.
 func registerHealthChecks() {
 	app.RegisterHealthCheck("llm", checkLLM)
 	app.RegisterHealthCheck("pushover", checkPushover)
+	app.RegisterHealthCheck("data_dir", checkDataDir)
 }
 
 // checkLLM verifies the LLM text API key is configured.
@@ -84,5 +87,74 @@ func checkPushover() agentsdk.HealthCheckResult {
 		Name:    "pushover",
 		Status:  agentsdk.HealthCheckPass,
 		Message: "pushover credentials are configured",
+	}
+}
+
+// checkDataDir verifies the data directory exists and is writable.
+// Pass if directory exists and is writable, warn if not present but creatable,
+// fail if not present and not creatable.
+func checkDataDir() agentsdk.HealthCheckResult {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return agentsdk.HealthCheckResult{
+			Name:    "data_dir",
+			Status:  agentsdk.HealthCheckFail,
+			Message: fmt.Sprintf("cannot load config: %v", err),
+		}
+	}
+
+	dir := cfg.DataDir
+	if dir == "" {
+		dir, _ = config.DefaultDataDir()
+	}
+
+	// Check if directory exists
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Try to create it
+			if mkdirErr := os.MkdirAll(dir, 0755); mkdirErr != nil {
+				return agentsdk.HealthCheckResult{
+					Name:    "data_dir",
+					Status:  agentsdk.HealthCheckFail,
+					Message: fmt.Sprintf("data_dir %q does not exist and cannot be created: %v", dir, mkdirErr),
+				}
+			}
+			return agentsdk.HealthCheckResult{
+				Name:    "data_dir",
+				Status:  agentsdk.HealthCheckWarning,
+				Message: fmt.Sprintf("data_dir %q was missing — created automatically", dir),
+			}
+		}
+		return agentsdk.HealthCheckResult{
+			Name:    "data_dir",
+			Status:  agentsdk.HealthCheckFail,
+			Message: fmt.Sprintf("cannot stat data_dir %q: %v", dir, err),
+		}
+	}
+
+	if !info.IsDir() {
+		return agentsdk.HealthCheckResult{
+			Name:    "data_dir",
+			Status:  agentsdk.HealthCheckFail,
+			Message: fmt.Sprintf("data_dir %q exists but is not a directory", dir),
+		}
+	}
+
+	// Check writability
+	probe := filepath.Join(dir, ".wr-doctor-write-test")
+	if err := os.WriteFile(probe, []byte("probe"), 0644); err != nil {
+		return agentsdk.HealthCheckResult{
+			Name:    "data_dir",
+			Status:  agentsdk.HealthCheckFail,
+			Message: fmt.Sprintf("data_dir %q is not writable: %v", dir, err),
+		}
+	}
+	os.Remove(probe)
+
+	return agentsdk.HealthCheckResult{
+		Name:    "data_dir",
+		Status:  agentsdk.HealthCheckPass,
+		Message: fmt.Sprintf("data_dir %q exists and is writable", dir),
 	}
 }
