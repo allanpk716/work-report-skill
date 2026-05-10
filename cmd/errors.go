@@ -19,16 +19,14 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("method_not_allowed", validateParams, "HTTP 方法不允许")
 	_ = app.RegisterErrorCode("import_record", validateParams, "导入记录验证失败")
 
-	// Network / daemon unreachable → exit 4
-	// Note: SDK has no ExitDaemonUnreachable (3); daemon_not_running maps to ExitNetworkError (4)
-	// which is semantically closest — network error reaching the daemon.
+	// Network / external service errors → exit 4
 	netError := agentsdk.ExitNetworkError
-	_ = app.RegisterErrorCode("daemon_not_running", netError, "daemon 未运行或无法连接")
 	_ = app.RegisterErrorCode("llm_error", netError, "LLM 调用失败")
 	_ = app.RegisterErrorCode("llm_not_configured", netError, "LLM 未配置（缺少 API key）")
 
 	// Lock conflict → exit 5
 	_ = app.RegisterErrorCode("lock_conflict", agentsdk.ExitLockConflict, "并发访问冲突")
+	_ = app.RegisterErrorCode("storage_locked", agentsdk.ExitLockConflict, "存储文件被锁定")
 
 	// Fatal / internal errors → exit 1
 	fatal := agentsdk.ExitFatalError
@@ -40,7 +38,6 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("pushover_not_configured", fatal, "Pushover 未配置")
 	_ = app.RegisterErrorCode("marshal_error", fatal, "JSON 序列化失败")
 	_ = app.RegisterErrorCode("unknown", fatal, "未知错误")
-	_ = app.RegisterErrorCode("daemon_start_timeout", fatal, "daemon 启动超时")
 
 	// Prompt errors
 	_ = app.RegisterErrorCode("prompt_not_found", validateParams, "prompt 未找到")
@@ -59,5 +56,4 @@ func registerErrorCodes() {
 	_ = app.RegisterErrorCode("backup_failed", fatal, "备份创建失败")
 	_ = app.RegisterErrorCode("rotation_failed", fatal, "GFS 轮转清理失败")
 	_ = app.RegisterErrorCode("config_not_found", agentsdk.ExitNotFound, "备份配置不存在")
-	_ = app.RegisterErrorCode("backup_sync_failed", netError, "daemon 备份同步失败")
 }

@@ -1,39 +1,46 @@
 package cmd
 
 import (
-	"encoding/json"
-	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
+
+	"wr/internal/digest"
 )
 
-// TestPromptListSuccess verifies that "wr prompt list" calls the daemon and
-// returns a successful JSONL envelope.
-func TestPromptListSuccess(t *testing.T) {
+// setupDigestStore initializes a digest store at a temp path for testing.
+func setupDigestStore(t *testing.T) (*digest.DigestStore, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "digests.json")
+	return digest.NewStore(storePath), storePath
+}
+
+// setupDigestTestHome sets up a temp home with a config and a digest store.
+func setupDigestTestHome(t *testing.T) (*digest.DigestStore, func()) {
+	t.Helper()
 	tmpHome, cleanup := setupTempHome(t)
+
+	// Create the .work-report directory
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init config
+	executeCmd("config", "init")
+
+	// The digest store will be at the default path under tmpHome
+	store := digest.NewStore(filepath.Join(stateDir, "digests.json"))
+	return store, cleanup
+}
+
+// TestPromptListSuccess verifies that "wr prompt list" returns built-in prompts.
+func TestPromptListSuccess(t *testing.T) {
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
-
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the request hits the correct endpoint
-		if r.URL.Path != "/api/prompt/list" {
-			t.Errorf("expected path /api/prompt/list, got %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"prompts": []map[string]interface{}{
-				{"name": "agenda", "is_default": true, "text": "default agenda prompt"},
-				{"name": "report", "is_default": true, "text": "default report prompt"},
-			},
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
 
 	code, out := executeCmd("prompt", "list")
 	if code != agentsdk.ExitSuccess {
@@ -48,32 +55,23 @@ func TestPromptListSuccess(t *testing.T) {
 		t.Errorf("expected type=result, got %v", lines[0]["type"])
 	}
 
+	// Should have at least 2 built-in prompts (agenda, report)
+	data := unwrapData(lines[0])
+	if data == nil {
+		t.Fatal("expected data in envelope")
+	}
+	count, _ := data["count"].(float64)
+	if count < 2 {
+		t.Errorf("expected at least 2 prompts, got %d", int(count))
+	}
+
 	validateAllEnvelopes(t, out)
 }
 
-// TestPromptShowSuccess verifies that "wr prompt show <name>" calls the daemon.
+// TestPromptShowSuccess verifies that "wr prompt show <name>" returns prompt text.
 func TestPromptShowSuccess(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
-
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/prompt/show/agenda" {
-			t.Errorf("expected path /api/prompt/show/agenda, got %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"name":      "agenda",
-			"text":      "default agenda prompt",
-			"is_default": true,
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
 
 	code, out := executeCmd("prompt", "show", "agenda")
 	if code != agentsdk.ExitSuccess {
@@ -88,83 +86,57 @@ func TestPromptShowSuccess(t *testing.T) {
 		t.Errorf("expected type=result, got %v", lines[0]["type"])
 	}
 
+	data := unwrapData(lines[0])
+	text, _ := data["text"].(string)
+	if text == "" {
+		t.Errorf("expected non-empty prompt text, got empty string")
+	}
+
 	validateAllEnvelopes(t, out)
 }
 
-// TestPromptSetWithText verifies that "wr prompt set <name> --text ..." sends
-// a POST with the text payload.
+// TestPromptSetWithText verifies that "wr prompt set <name> --text ..." works.
 func TestPromptSetWithText(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
-
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/prompt/set/agenda" {
-			t.Errorf("expected path /api/prompt/set/agenda, got %s", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
-		}
-		if body["text"] != "custom agenda text" {
-			t.Errorf("expected text='custom agenda text', got %q", body["text"])
-		}
-		if body["file"] != "" {
-			t.Errorf("expected no file field, got %q", body["file"])
-		}
-
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"action":  "set",
-			"name":    "agenda",
-			"message": "prompt updated",
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
 
 	code, out := executeCmd("prompt", "set", "agenda", "--text", "custom agenda text")
 	if code != agentsdk.ExitSuccess {
 		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
 	}
 
+	// Verify the change persisted
+	code, out = executeCmd("prompt", "show", "agenda")
+	if code != agentsdk.ExitSuccess {
+		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+	}
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	text, _ := data["text"].(string)
+	if text != "custom agenda text" {
+		t.Errorf("expected text='custom agenda text', got %q", text)
+	}
+
 	validateAllEnvelopes(t, out)
 }
 
-// TestPromptSetWithFile verifies that "wr prompt set <name> --file ..." sends
-// a POST with the file path payload.
+// TestPromptSetWithFile verifies that "wr prompt set <name> --file ..." reads from file.
 func TestPromptSetWithFile(t *testing.T) {
 	tmpHome, cleanup := setupTempHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
-		}
-		if body["file"] != "/tmp/prompt.txt" {
-			t.Errorf("expected file='/tmp/prompt.txt', got %q", body["file"])
-		}
-		if body["text"] != "" {
-			t.Errorf("expected no text field, got %q", body["text"])
-		}
+	// Create temp file with prompt text
+	promptFile := filepath.Join(tmpHome, "prompt.txt")
+	if err := os.WriteFile(promptFile, []byte("file-based prompt text"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"action":  "set",
-			"name":    "report",
-			"message": "prompt updated",
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
+	// Init config
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	os.MkdirAll(stateDir, 0755)
+	executeCmd("config", "init")
 
-	code, out := executeCmd("prompt", "set", "report", "--file", "/tmp/prompt.txt")
+	code, out := executeCmd("prompt", "set", "report", "--file", promptFile)
 	if code != agentsdk.ExitSuccess {
 		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
 	}
@@ -175,10 +147,9 @@ func TestPromptSetWithFile(t *testing.T) {
 // TestPromptSetMissingFlags verifies that "wr prompt set <name>" without
 // --text or --file returns exit code 2 (invalid params).
 func TestPromptSetMissingFlags(t *testing.T) {
-	_, cleanup := setupTempHome(t)
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
 
-	// No need for a fake daemon — the CLI should fail before making the call
 	code, out := executeCmd("prompt", "set", "agenda")
 	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code %d (ExitInvalidParams), got %d; output: %s", agentsdk.ExitInvalidParams, code, string(out))
@@ -193,53 +164,42 @@ func TestPromptSetMissingFlags(t *testing.T) {
 	}
 }
 
-// TestPromptResetSuccess verifies that "wr prompt reset <name>" sends a POST.
+// TestPromptResetSuccess verifies that "wr prompt reset <name>" resets to default.
 func TestPromptResetSuccess(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/prompt/reset/agenda" {
-			t.Errorf("expected path /api/prompt/reset/agenda, got %s", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
+	// Set custom text first
+	executeCmd("prompt", "set", "agenda", "--text", "custom text")
 
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"action":  "reset",
-			"name":    "agenda",
-			"message": "prompt reset to default",
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
-
+	// Reset
 	code, out := executeCmd("prompt", "reset", "agenda")
 	if code != agentsdk.ExitSuccess {
 		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
 	}
 
+	// Verify it's back to default
+	code, out = executeCmd("prompt", "show", "agenda")
+	if code != agentsdk.ExitSuccess {
+		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+	}
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	text, _ := data["text"].(string)
+	if text == "custom text" {
+		t.Errorf("expected default prompt text after reset, got %q", text)
+	}
+
 	validateAllEnvelopes(t, out)
 }
 
-// TestPromptNotFound verifies that prompt_not_found daemon error maps to
+// TestPromptNotFound verifies that prompt_not_found error maps to
 // exit code 2 (invalid params, as registered in errors.go).
 func TestPromptNotFound(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewErrorEnvelope("wr", "prompt_not_found", "prompt \"unknown\" not found")
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
-
-	code, out := executeCmd("prompt", "show", "unknown")
+	code, out := executeCmd("prompt", "show", "unknown_prompt_that_does_not_exist")
 	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code %d (ExitInvalidParams), got %d; output: %s", agentsdk.ExitInvalidParams, code, string(out))
 	}
@@ -288,7 +248,6 @@ func TestPromptCommandRegistration(t *testing.T) {
 			continue
 		}
 		if cmd.Use != sub {
-			// cobra Use includes args template (e.g. "show <name>"), so check prefix
 			if len(cmd.Use) < len(sub) || cmd.Use[:len(sub)] != sub {
 				t.Errorf("expected prompt %s Use to start with %q, got %q", sub, sub, cmd.Use)
 			}
@@ -296,151 +255,133 @@ func TestPromptCommandRegistration(t *testing.T) {
 	}
 }
 
-// --- Preview command tests ---
-
-// TestDigestPreviewSuccess verifies that "wr digest preview <id>" hits the
-// correct daemon endpoint and returns JSONL output.
-func TestDigestPreviewSuccess(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
-	defer cleanup()
-
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/digest/preview/abc123" {
-			t.Errorf("expected path /api/digest/preview/abc123, got %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"digest_id": "abc123",
-			"summary":   "Today you worked on implementing preview commands...",
-			"llm_status": "success",
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
-
-	code, out := executeCmd("digest", "preview", "abc123")
-	if code != agentsdk.ExitSuccess {
-		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
-	}
-
-	lines := parseJSONLMaps(out)
-	if len(lines) == 0 {
-		t.Fatal("expected JSONL output")
-	}
-	if lines[0]["type"] != "result" {
-		t.Errorf("expected type=result, got %v", lines[0]["type"])
-	}
-
-	validateAllEnvelopes(t, out)
-}
-
 // TestDigestPreviewMissingArg verifies that "wr digest preview" without an ID
 // argument fails with a usage error (cobra validation).
 func TestDigestPreviewMissingArg(t *testing.T) {
-	_, cleanup := setupTempHome(t)
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
 
 	code, _ := executeCmd("digest", "preview")
-	// Cobra reports ExactArgs(1) violation as exit code 1
 	if code == agentsdk.ExitSuccess {
 		t.Error("expected non-zero exit code for missing argument")
 	}
 }
 
-// TestPromptPreviewSuccess verifies that "wr prompt preview <name>" hits the
-// correct daemon endpoint with default scope=today.
-func TestPromptPreviewSuccess(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+// TestDigestAddListRemove verifies basic digest CRUD without daemon.
+func TestDigestAddListRemove(t *testing.T) {
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/prompt/preview/agenda" {
-			t.Errorf("expected path /api/prompt/preview/agenda, got %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		// Default scope should be "today"
-		scope := r.URL.Query().Get("scope")
-		if scope != "today" {
-			t.Errorf("expected scope=today, got %q", scope)
-		}
-
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"prompt_name": "agenda",
-			"scope":       "today",
-			"preview":     "## Agenda Preview\n- Task 1\n- Task 2",
-			"llm_status":  "success",
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
-
-	code, out := executeCmd("prompt", "preview", "agenda")
+	// Add a digest
+	code, out := executeCmd("digest", "add", "--schedule", "0 8 * * *", "--scope", "today", "--direction", "agenda")
 	if code != agentsdk.ExitSuccess {
-		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+		t.Fatalf("expected exit code 0 for digest add, got %d; output: %s", code, string(out))
+	}
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	digestMap, _ := data["digest"].(map[string]interface{})
+	digestID, _ := digestMap["id"].(string)
+	if digestID == "" {
+		t.Fatal("expected digest ID in output")
+	}
+
+	// List
+	code, out = executeCmd("digest", "list")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit code 0 for digest list, got %d; output: %s", code, string(out))
+	}
+	lines = parseJSONLMaps(out)
+	data = unwrapData(lines[0])
+	count, _ := data["count"].(float64)
+	if int(count) < 1 {
+		t.Errorf("expected at least 1 digest, got %d", int(count))
+	}
+
+	// Remove
+	code, out = executeCmd("digest", "remove", digestID)
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit code 0 for digest remove, got %d; output: %s", code, string(out))
+	}
+
+	// Verify removed
+	code, out = executeCmd("digest", "remove", digestID)
+	if code != agentsdk.ExitFatalError {
+		t.Errorf("expected exit code 1 after removing non-existent digest, got %d; output: %s", code, string(out))
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestDigestInvalidScope verifies validation of invalid scope.
+func TestDigestInvalidScope(t *testing.T) {
+	_, cleanup := setupDigestTestHome(t)
+	defer cleanup()
+
+	code, out := executeCmd("digest", "add", "--schedule", "0 8 * * *", "--scope", "invalid", "--direction", "agenda")
+	if code != agentsdk.ExitInvalidParams {
+		t.Errorf("expected exit code 2 for invalid scope, got %d; output: %s", code, string(out))
 	}
 
 	lines := parseJSONLMaps(out)
 	if len(lines) == 0 {
 		t.Fatal("expected JSONL output")
 	}
-	if lines[0]["type"] != "result" {
-		t.Errorf("expected type=result, got %v", lines[0]["type"])
+	if lines[0]["error_code"] != "invalid_scope" {
+		t.Errorf("expected error_code=invalid_scope, got %v", lines[0]["error_code"])
 	}
 
 	validateAllEnvelopes(t, out)
 }
 
-// TestPromptPreviewWithScope verifies that "wr prompt preview <name> --scope week"
-// passes the scope as a query parameter.
-func TestPromptPreviewWithScope(t *testing.T) {
-	tmpHome, cleanup := setupTempHome(t)
+// TestDigestInvalidDirection verifies validation of invalid direction.
+func TestDigestInvalidDirection(t *testing.T) {
+	_, cleanup := setupDigestTestHome(t)
 	defer cleanup()
 
-	srv := setupFakeDaemon(t, tmpHome, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scope := r.URL.Query().Get("scope")
-		if scope != "week" {
-			t.Errorf("expected scope=week, got %q", scope)
-		}
+	code, out := executeCmd("digest", "add", "--schedule", "0 8 * * *", "--scope", "today", "--direction", "invalid")
+	if code != agentsdk.ExitInvalidParams {
+		t.Errorf("expected exit code 2 for invalid direction, got %d; output: %s", code, string(out))
+	}
 
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{
-			"prompt_name": "report",
-			"scope":       "week",
-			"preview":     "Weekly summary preview...",
-			"llm_status":  "success",
-		})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
-	}))
-	defer srv.Close()
+	lines := parseJSONLMaps(out)
+	if len(lines) == 0 {
+		t.Fatal("expected JSONL output")
+	}
+	if lines[0]["error_code"] != "invalid_direction" {
+		t.Errorf("expected error_code=invalid_direction, got %v", lines[0]["error_code"])
+	}
 
-	code, out := executeCmd("prompt", "preview", "report", "--scope", "week")
+	validateAllEnvelopes(t, out)
+}
+
+// TestDigestEnableDisable verifies enable/disable operations.
+func TestDigestEnableDisable(t *testing.T) {
+	_, cleanup := setupDigestTestHome(t)
+	defer cleanup()
+
+	// Add
+	code, out := executeCmd("digest", "add", "--schedule", "0 8 * * *", "--scope", "today", "--direction", "summary")
 	if code != agentsdk.ExitSuccess {
-		t.Errorf("expected exit code 0, got %d; output: %s", code, string(out))
+		t.Fatalf("expected exit code 0 for digest add, got %d; output: %s", code, string(out))
+	}
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	digestMap, _ := data["digest"].(map[string]interface{})
+	digestID, _ := digestMap["id"].(string)
+
+	// Disable
+	code, out = executeCmd("digest", "disable", digestID)
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit code 0 for digest disable, got %d; output: %s", code, string(out))
+	}
+
+	// Enable
+	code, out = executeCmd("digest", "enable", digestID)
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit code 0 for digest enable, got %d; output: %s", code, string(out))
 	}
 
 	validateAllEnvelopes(t, out)
-}
-
-// TestPromptPreviewMissingArg verifies that "wr prompt preview" without a name
-// argument fails with a usage error.
-func TestPromptPreviewMissingArg(t *testing.T) {
-	_, cleanup := setupTempHome(t)
-	defer cleanup()
-
-	code, _ := executeCmd("prompt", "preview")
-	if code == agentsdk.ExitSuccess {
-		t.Error("expected non-zero exit code for missing argument")
-	}
 }
 
 // TestDigestPreviewRegistration verifies that the digest preview command is
@@ -459,5 +400,17 @@ func TestDigestPreviewRegistration(t *testing.T) {
 	}
 	if len(cmd.Use) < 7 || cmd.Use[:7] != "preview" {
 		t.Errorf("expected digest preview Use to start with 'preview', got %q", cmd.Use)
+	}
+}
+
+// TestPromptPreviewMissingArg verifies that "wr prompt preview" without a name
+// argument fails with a usage error.
+func TestPromptPreviewMissingArg(t *testing.T) {
+	_, cleanup := setupDigestTestHome(t)
+	defer cleanup()
+
+	code, _ := executeCmd("prompt", "preview")
+	if code == agentsdk.ExitSuccess {
+		t.Error("expected non-zero exit code for missing argument")
 	}
 }

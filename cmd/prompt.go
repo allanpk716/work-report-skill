@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
 	"os"
-
-	"wr/internal/client"
+	"time"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
+
+	"wr/internal/digest"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +30,22 @@ var promptListCmd = &cobra.Command{
 	Short: "List all prompts",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return client.CallDaemonGet(os.Stdout, "/api/prompt/list")
+		store := mustDigestStore()
+		if store == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to create digest store")
+		}
+
+		prompts, err := store.ListPrompts()
+		if err != nil {
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to list prompts: %v", err))
+		}
+
+		writeJSONLSuccess(map[string]interface{}{
+			"action":  "prompt_list",
+			"prompts": prompts,
+			"count":   len(prompts),
+		})
+		return nil
 	},
 }
 
@@ -36,7 +55,27 @@ var promptShowCmd = &cobra.Command{
 	Short: "Show prompt text",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return client.CallDaemonGet(os.Stdout, "/api/prompt/show/"+args[0])
+		store := mustDigestStore()
+		if store == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to create digest store")
+		}
+
+		name := digest.PromptName(args[0])
+		text, err := store.GetPrompt(name)
+		if err != nil {
+			if err == digest.ErrPromptNotFound {
+				return writeJSONLError("prompt_not_found", fmt.Sprintf("prompt %q not found", args[0]))
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to get prompt: %v", err))
+		}
+
+		writeJSONLSuccess(map[string]interface{}{
+			"action":      "prompt_show",
+			"name":        name,
+			"text":        text,
+			"is_default":  store != nil,
+		})
+		return nil
 	},
 }
 
@@ -46,17 +85,35 @@ var promptSetCmd = &cobra.Command{
 	Short: "Set prompt text",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		payload := map[string]string{}
+		store := mustDigestStore()
+		if store == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to create digest store")
+		}
+
+		var text string
 		if promptText != "" {
-			payload["text"] = promptText
+			text = promptText
+		} else if promptFile != "" {
+			data, err := os.ReadFile(promptFile)
+			if err != nil {
+				return writeJSONLError("invalid_body", fmt.Sprintf("cannot read file %q: %v", promptFile, err))
+			}
+			text = string(data)
 		}
-		if promptFile != "" {
-			payload["file"] = promptFile
+		if text == "" {
+			return writeJSONLError("invalid_params", "--text or --file is required")
 		}
-		if payload["text"] == "" && payload["file"] == "" {
-			return writeExitError(int(agentsdk.ExitInvalidParams), "--text or --file is required")
+
+		name := digest.PromptName(args[0])
+		if err := store.SetPrompt(name, text); err != nil {
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to set prompt: %v", err))
 		}
-		return client.CallDaemonPost(os.Stdout, "/api/prompt/set/"+args[0], payload)
+
+		writeJSONLSuccess(map[string]interface{}{
+			"action": "prompt_set",
+			"name":   name,
+		})
+		return nil
 	},
 }
 
@@ -66,7 +123,24 @@ var promptResetCmd = &cobra.Command{
 	Short: "Reset prompt to default",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return client.CallDaemonPost(os.Stdout, "/api/prompt/reset/"+args[0], nil)
+		store := mustDigestStore()
+		if store == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to create digest store")
+		}
+
+		name := digest.PromptName(args[0])
+		if err := store.ResetPrompt(name); err != nil {
+			if err == digest.ErrPromptNotFound {
+				return writeJSONLError("prompt_not_found", fmt.Sprintf("prompt %q not found (no default to reset to)", args[0]))
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to reset prompt: %v", err))
+		}
+
+		writeJSONLSuccess(map[string]interface{}{
+			"action": "prompt_reset",
+			"name":   name,
+		})
+		return nil
 	},
 }
 
@@ -78,11 +152,78 @@ var promptPreviewCmd = &cobra.Command{
 	Short: "Preview LLM prompt output in terminal",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := loadConfig()
+		if cfg == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to load config")
+		}
+		store := mustStorage(cfg)
+		dStore := mustDigestStore()
+		if dStore == nil {
+			return writeJSONLErrorWithExit(agentsdk.ExitFatalError, "storage_error", "failed to create digest store")
+		}
+
+		name := digest.PromptName(args[0])
+
+		// Verify the prompt exists
+		_, err := dStore.GetPrompt(name)
+		if err != nil {
+			if err == digest.ErrPromptNotFound {
+				return writeJSONLError("prompt_not_found", fmt.Sprintf("prompt %q not found", args[0]))
+			}
+			return writeJSONLError("storage_error", fmt.Sprintf("failed to get prompt: %v", err))
+		}
+
+		// Resolve scope
 		scope := promptPreviewScope
 		if scope == "" {
 			scope = "today"
 		}
-		return client.CallDaemonGet(os.Stdout, "/api/prompt/preview/"+args[0]+"?scope="+scope)
+		parsedScope, err := digest.ParseScope(scope)
+		if err != nil {
+			return writeJSONLError("invalid_scope", err.Error())
+		}
+
+		// Map prompt name to direction
+		dir := digest.DirectionForPrompt(name)
+
+		// Build adapters
+		storageAdapter := digest.NewStorageAdapter(store, cfg.Location())
+		if storageAdapter == nil {
+			return writeJSONLError("storage_error", "failed to create storage adapter")
+		}
+
+		llmAdapter := digest.NewLLMAdapter(
+			cfg.LLM.Text.APIBase,
+			cfg.LLM.Text.APIKey,
+			cfg.LLM.Text.Model,
+			time.Duration(cfg.LLM.Text.Timeout)*time.Second,
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		result, err := digest.GenerateSummary(ctx, digest.SummarizeInput{
+			DigestID:  "prompt-preview",
+			Scope:     parsedScope,
+			Direction: dir,
+			Loc:       cfg.Location(),
+			Storage:   storageAdapter,
+			LLM:       llmAdapter,
+		})
+		if err != nil {
+			return writeJSONLError("llm_error", fmt.Sprintf("failed to generate preview: %v", err))
+		}
+
+		writeJSONLSuccess(map[string]interface{}{
+			"action":       "prompt_preview",
+			"prompt_name":  name,
+			"scope":        scope,
+			"preview":      result.Text,
+			"record_count": result.RecordCount,
+			"llm_status":   result.LLMStatus,
+			"title":        result.Title,
+		})
+		return nil
 	},
 }
 

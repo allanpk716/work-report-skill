@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"wr/internal/backup"
-	"wr/internal/client"
 )
 
 var backupOutputDir string
@@ -214,8 +211,7 @@ var backupConfigSetCmd = &cobra.Command{
 	Short: "Update backup configuration and sync with daemon",
 	Long: `Update backup configuration stored in ~/.work-report/backup-config.json.
 Any flag provided will overwrite the corresponding field; omitted flags keep the
-current value. After saving, the command attempts to sync the new configuration
-with the running daemon (best-effort; succeeds even if daemon is not running).`,
+current value.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfgPath, err := backup.ConfigPath()
@@ -252,13 +248,6 @@ with the running daemon (best-effort; succeeds even if daemon is not running).`,
 		// Persist config to disk.
 		if err := backup.SaveConfig(cfg, cfgPath); err != nil {
 			return writeExitError(agentsdk.ExitFatalError, fmt.Sprintf("failed to save config: %v", err))
-		}
-
-		// Best-effort daemon sync — discard daemon response, log warning on failure.
-		// CallDaemonPost writes a JSONL line to its writer; we use /dev/null so
-		// it doesn't pollute our output when daemon is not running.
-		if syncErr := client.CallDaemonPost(io.Discard, "/api/backup/sync", nil); syncErr != nil {
-			log.Printf("[backup] daemon sync failed (non-fatal): %v", syncErr)
 		}
 
 		return app.JSONL().Success(map[string]interface{}{

@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
-
-	"wr/internal/client"
 )
 
 // app is the SDK App instance shared by all commands.
@@ -35,19 +33,13 @@ func InitApp() {
 	// Register custom health checks (daemon, llm, pushover).
 	registerHealthChecks()
 
-	// Add agent command tree (schema, errors, config, doctor, debug, cache)
-	// plus the daemon sub-command group.
+	// Add agent command tree (schema, errors, config, doctor, debug, cache).
 	// Guard against double-registration in tests that call InitApp() repeatedly.
 	if _, _, err := rootCmd.Find([]string{"agent"}); err != nil {
 		rootCmd.AddCommand(app.AgentCommands(newDaemonGroupCmd()))
 	}
 
 	registerErrorCodes()
-
-	// Inject the populated registry into the client package so CallDaemon
-	// can map daemon error_code strings to exit codes without hand-written mappings.
-	client.SetRegistry(app.Registry())
-
 	registerConfigProvider()
 	registerCommandMeta()
 }
@@ -133,26 +125,6 @@ func registerCommandMeta() {
 		},
 		"config show": {
 			Description:  "Display current config (secrets redacted)",
-			IsIdempotent: true,
-		},
-		"agent daemon": {
-			Description:  "Manage the wr daemon process",
-			IsIdempotent: false,
-		},
-		"agent daemon start": {
-			Description:  "Start the wr daemon",
-			IsIdempotent: false,
-		},
-		"agent daemon stop": {
-			Description:  "Stop the wr daemon",
-			IsIdempotent: true,
-		},
-		"agent daemon status": {
-			Description:  "Show daemon status",
-			IsIdempotent: true,
-		},
-		"agent daemon ensure-running": {
-			Description:  "Ensure the daemon is running (start if needed) and return status",
 			IsIdempotent: true,
 		},
 		"digest": {
