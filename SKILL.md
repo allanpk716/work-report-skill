@@ -42,12 +42,19 @@ wr report week       # 本周报告
 
 ### 完成 / 取消
 
+`--date` 在使用 `--title` 时省略默认今天。
+
 ```bash
 wr complete <short_id>                            # 通过 ID
-wr complete --title "Review PR #42" --date 2026-05-08  # 通过标题+日期
+wr complete --title "Review PR #42"               # --title 时 --date 默认今天
 ```
 
-> `--date` 在 complete/cancel 中**不默认今天**，必须显式提供。
+### 提醒
+
+```bash
+wr remind due                   # 列出所有到期提醒
+wr remind push --due            # 推送所有到期提醒并自动完成
+```
 
 ### 常见错误
 
@@ -251,23 +258,24 @@ wr complete [<short_id>]
 wr complete --title <title> --date <YYYY-MM-DD>
 ```
 
-**Arguments:** Optional positional `<short_id>`. When omitted, `--title` and `--date` become required for content-based lookup.
+**Arguments:** Optional positional `<short_id>`. When omitted, `--title` becomes required for content-based lookup.
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--title` | string | `""` | Lookup by exact title (required when no `<short_id>`) |
-| `--date` | string | `""` | Lookup by date `YYYY-MM-DD` (required when no `<short_id>`) |
+| `--date` | string | `""` | Lookup by date `YYYY-MM-DD`. Defaults to today when `--title` is provided. |
 
 **Notes:**
 - Only active records can be completed. Attempting to complete an already-completed or already-cancelled record returns `storage_error`.
-- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `multiple_matches` error.
+- **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `multiple_matches` error.
 
 **Example:**
 
 ```bash
 wr complete a1b2c3d4e5f67890
+wr complete --title "Review PR #42"
 wr complete --title "Review PR #42" --date 2026-05-03
 ```
 
@@ -292,23 +300,24 @@ wr cancel [<short_id>]
 wr cancel --title <title> --date <YYYY-MM-DD>
 ```
 
-**Arguments:** Optional positional `<short_id>`. When omitted, `--title` and `--date` become required for content-based lookup.
+**Arguments:** Optional positional `<short_id>`. When omitted, `--title` becomes required for content-based lookup.
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--title` | string | `""` | Lookup by exact title (required when no `<short_id>`) |
-| `--date` | string | `""` | Lookup by date `YYYY-MM-DD` (required when no `<short_id>`) |
+| `--date` | string | `""` | Lookup by date `YYYY-MM-DD`. Defaults to today when `--title` is provided. |
 
 **Notes:**
 - Only active records can be cancelled. Attempting to cancel an already-cancelled or already-completed record returns `storage_error`.
-- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `multiple_matches` error.
+- **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `multiple_matches` error.
 
 **Example:**
 
 ```bash
 wr cancel f0e1d2c3b4a56789
+wr cancel --title "Standup"
 wr cancel --title "Standup" --date 2026-05-03
 ```
 
@@ -319,6 +328,103 @@ wr cancel --title "Standup" --date 2026-05-03
 ```
 
 **Error codes:** `record_not_found`, `multiple_matches`, `storage_error`
+
+---
+
+### wr remind
+
+Manage reminders — list due reminders and push them via Pushover. This is a command group with subcommands.
+
+**Usage:** `wr remind <subcommand> [flags]`
+
+#### wr remind due
+
+List all currently due reminders.
+
+```
+wr remind due [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--window` | string | `"0"` | Look-ahead window (e.g. `"30m"`, `"1h"`). `0` = no window, only currently overdue reminders. |
+| `--include-stale` | bool | `false` | Include stale reminders (overdue > 24 hours). |
+
+**Notes:**
+- Reminders without a time component: due when `date < today`. Date == today is not due (no time to trigger).
+- Reminders with a time component: due when `datetime <= now`. With `--window`, reminders within `(now, now+window]` are also considered due.
+- Stale = overdue by more than 24 hours. Stale reminders are excluded by default; use `--include-stale` to include them.
+
+**Example:**
+
+```bash
+wr remind due
+wr remind due --window 1h
+wr remind due --include-stale
+```
+
+**Output:**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"action":"remind_due","count":2,"entries":[{"short_id":"a1b2c3d4e5f67890","title":"Team standup","date":"2026-05-03","time":"09:00","is_stale":false},{"short_id":"f0e1d2c3b4a56789","title":"Submit report","date":"2026-05-02","time":"","is_stale":true}]}}
+```
+
+**Error codes:** `invalid_params`, `storage_error`
+
+---
+
+#### wr remind push
+
+Push reminders via Pushover. Supports two modes: batch push all due reminders (`--due`) or push a single reminder by `<short_id>`.
+
+```
+wr remind push [<short_id>] [flags]
+```
+
+**Arguments:** Optional positional `<short_id>`. When provided, pushes that single reminder. When omitted, `--due` is required.
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--due` | bool | `false` | Push all due reminders (batch mode). |
+| `--window` | string | `"0"` | Look-ahead window for due detection (same semantics as `wr remind due`). |
+| `--include-stale` | bool | `false` | Include stale reminders (> 24 hours overdue). |
+
+**Notes:**
+- **Batch mode** (`--due`): Finds all due reminders and pushes each via Pushover. Successfully pushed reminders are automatically completed (atomic push+complete). Push failures leave the record active for retry. Maximum 10 reminders per batch.
+- **Single mode** (`<short_id>`): Pushes one specific reminder and completes it on success. Push failure leaves the record active.
+- Pushover must be configured (`pushover.api_token` and `pushover.user_key`).
+
+**Example (batch):**
+
+```bash
+wr remind push --due
+wr remind push --due --window 1h
+wr remind push --due --include-stale
+```
+
+**Output (batch mode):**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"action":"remind_push_due","pushed":[{"short_id":"a1b2c3d4e5f67890","title":"Team standup"}],"failed":[{"short_id":"f0e1d2c3b4a56789","title":"Submit report","error":"pushover: timeout"}],"total":2}}
+```
+
+**Example (single):**
+
+```bash
+wr remind push a1b2c3d4e5f67890
+```
+
+**Output (single mode):**
+
+```json
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"action":"remind_push_single","pushed":[{"short_id":"a1b2c3d4e5f67890","title":"Team standup"}]}}
+```
+
+**Error codes:** `pushover_not_configured`, `push_error`, `record_not_found`, `storage_error`, `invalid_params`
 
 ---
 
@@ -1005,7 +1111,7 @@ wr add --type task --title "Daily standup" --idempotency-key "standup-2026-05-03
 # Check today's entries
 wr list
 
-# Complete a task by title instead of short_id
+# Complete a task by title (no --date needed, defaults to today)
 wr complete --title "Review PR #42"
 
 # Generate end-of-day report
@@ -1171,14 +1277,16 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 13. **Import file accepts two JSON shapes.** A bare JSON array `[{...}]` or an object with a `records` key `{"records":[{...}]}`.
 
-14. **Content-based lookup for update/complete/cancel.** Use `--title` and `--date` flags instead of a positional argument when you don't know the `short_id`. If multiple records match, you'll get a `multiple_matches` error.
+14. **Content-based lookup for update/complete/cancel defaults --date to today.** Use `--title` without `--date` for today's records. If multiple records match, you'll get a `multiple_matches` error.
 
 15. **Use idempotency keys for retry-safe adds.** Pass `--idempotency-key <unique-key>` to deduplicate. Ideal for retry loops or any workflow where the same add might execute twice.
 
-16. **Backup config is separate from main config.** Backup settings live in `~/.work-report/backup-config.json`. Use `wr backup config show` to view and `wr backup config set` to modify.
+16. **`wr remind push --due` is atomic push+complete.** Successfully pushed reminders are automatically completed. Push failures leave the record active for retry. Maximum 10 reminders per batch.
 
-17. **GFS rotation uses a distinct-bucket strategy.** For each time granularity (daily/weekly/monthly), the newest backup per distinct calendar bucket is kept. Rules are unioned — a backup protected by ANY rule is retained.
+17. **Backup config is separate from main config.** Backup settings live in `~/.work-report/backup-config.json`. Use `wr backup config show` to view and `wr backup config set` to modify.
 
-18. **`wr agent doctor` diagnoses configuration issues.** Runs three health checks (data_dir, LLM, Pushover) and reports pass/fail/warn. LLM missing key is a warning (not a failure). Useful for quick troubleshooting.
+18. **GFS rotation uses a distinct-bucket strategy.** For each time granularity (daily/weekly/monthly), the newest backup per distinct calendar bucket is kept. Rules are unioned — a backup protected by ANY rule is retained.
 
-19. **All commands are direct CLI invocations.** No background process or setup is needed. Every command reads config and data directly from disk. Just run `wr config init` and start using the tool.
+19. **`wr agent doctor` diagnoses configuration issues.** Runs three health checks (data_dir, LLM, Pushover) and reports pass/fail/warn. LLM missing key is a warning (not a failure). Useful for quick troubleshooting.
+
+20. **All commands are direct CLI invocations.** No background process or setup is needed. Every command reads config and data directly from disk. Just run `wr config init` and start using the tool.
