@@ -341,7 +341,97 @@ func TestStatusWithBackups(t *testing.T) {
 	}
 }
 
+// TestStatusEnvelopeValidation verifies all status outputs pass
+// agentsdk.ValidateEnvelope().
+func TestStatusEnvelopeValidation(t *testing.T) {
+	tmpHome, homeCleanup := setupTempHome(t)
+	defer homeCleanup()
+
+	cleanup := resetAppForTest(t, tmpHome)
+	defer cleanup()
+
+	// Write config with all fields populated
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	cfgPath := filepath.Join(stateDir, "config.json")
+	cfg := &config.Config{
+		Timezone: "UTC",
+	}
+	cfg.LLM.Text.APIKey = "sk-test"
+	cfg.LLM.Vision.APIKey = "sk-vision"
+	cfg.Pushover.APIToken = "tok"
+	cfg.Pushover.UserKey = "user"
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add records so data section is non-trivial
+	loadedCfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := storage.New(loadedCfg.DataDir)
+	addTestRecords(t, store, 2, models.TypeTask, models.StatusActive)
+	addTestRecords(t, store, 1, models.TypeMeeting, models.StatusActive)
+
+	// Capture and validate
+	var buf strings.Builder
+	origWriter := app.JSONL()
+	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
+	defer func() { app.SetWriter(origWriter) }()
+
+	resetConfigFlags()
+	rootCmd.SetArgs([]string{"status"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	var env agentsdk.Envelope
+	if err := json.Unmarshal([]byte(output), &env); err != nil {
+		t.Fatalf("cannot unmarshal into Envelope: %v", err)
+	}
+	if err := agentsdk.ValidateEnvelope(env); err != nil {
+		t.Errorf("envelope validation failed: %v", err)
+	}
+}
+
 // --- test helpers ---
+
+// addTestRecords populates the store with count records of the given type and status.
+func addTestRecords(t *testing.T, store *storage.Storage, count int, recordType models.RecordType, status string) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		switch recordType {
+		case models.TypeTask:
+			store.AddRecord(&models.TaskRecord{
+				CommonFields: models.CommonFields{
+					Type:   models.TypeTask,
+					Title:  "Test Task",
+					Date:   "2026-01-15",
+					Status: status,
+				},
+			})
+		case models.TypeMeeting:
+			store.AddRecord(&models.MeetingRecord{
+				CommonFields: models.CommonFields{
+					Type:   models.TypeMeeting,
+					Title:  "Test Meeting",
+					Date:   "2026-01-15",
+					Status: status,
+				},
+			})
+		case models.TypeLog:
+			store.AddRecord(&models.LogRecord{
+				CommonFields: models.CommonFields{
+					Type:   models.TypeLog,
+					Title:  "Test Log",
+					Date:   "2026-01-15",
+					Status: status,
+				},
+			})
+		}
+	}
+}
 
 func taskRecordPtr(title, date string) *models.TaskRecord {
 	return &models.TaskRecord{
