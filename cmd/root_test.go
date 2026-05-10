@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -139,11 +138,8 @@ func TestPanicRecoveryNilPanic(t *testing.T) {
 // on stderr — all output should be JSONL on stdout only.
 func TestStderrZero(t *testing.T) {
 	if app == nil { InitApp() }
-	tmpHome, cleanup := setupTempHome(t)
+	_, cleanup := setupTempHome(t)
 	defer cleanup()
-
-	srv := setupFakeDaemon(t, tmpHome, fakeDaemonListHandler())
-	defer srv.Close()
 
 	// Capture stderr
 	r, w, err := os.Pipe()
@@ -156,7 +152,7 @@ func TestStderrZero(t *testing.T) {
 	resetConfigFlags()
 	rootCmd.SetArgs([]string{"list"})
 
-	// Capture JSONL output (executeCmd does this but also captures stdout)
+	// Capture JSONL output
 	var buf strings.Builder
 	origWriter := app.JSONL()
 	app.SetWriter(agentsdk.NewWriter(&buf, "wr"))
@@ -189,16 +185,5 @@ func TestStderrZero(t *testing.T) {
 		if err := agentsdk.ValidateEnvelope(envelope); err != nil {
 			t.Errorf("normal output envelope validation failed: %v", err)
 		}
-	}
-}
-
-// fakeDaemonListHandler returns an HTTP handler that responds with a successful
-// list result envelope, suitable for TestStderrZero.
-func fakeDaemonListHandler() func(w http.ResponseWriter, r *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		env := agentsdk.NewResultEnvelope("wr", map[string]interface{}{"records": []interface{}{}})
-		b, _ := json.Marshal(env)
-		w.Header().Set("Content-Type", "application/jsonl")
-		w.Write(append(b, '\n'))
 	}
 }

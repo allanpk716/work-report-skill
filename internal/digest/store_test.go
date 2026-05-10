@@ -121,40 +121,24 @@ func TestAdd_InvalidSchedule(t *testing.T) {
 	dir := tempDir(t)
 	s := NewStore(filepath.Join(dir, "digests.json"))
 
-	invalidCases := []struct {
-		name string
-		sched string
-	}{
-		{"empty", ""},
-		{"too short", "ab"},
-		{"4 fields", "0 8 * *"},
-		{"6 fields with seconds", "0 0 8 * * *"},
-		{"nonsense text", "abc def ghi jkl mno"},
-		{"invalid minute", "60 8 * * *"},
-		{"invalid hour", "0 25 * * *"},
-		{"invalid month", "0 0 1 13 *"},
-		{"invalid day-of-week", "0 0 * * 8"},
+	// Only empty schedule should be rejected (cron validation removed with scheduler)
+	_, err := s.Add(DigestConfig{Schedule: "", Scope: ScopeToday})
+	if err == nil {
+		t.Error("expected error for empty schedule, got nil")
 	}
 
-	for _, tc := range invalidCases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.Add(DigestConfig{Schedule: tc.sched, Scope: ScopeToday})
-			if err == nil {
-				t.Errorf("expected error for schedule %q (%s), got nil", tc.sched, tc.name)
-			}
-		})
-	}
-
-	// Valid schedules should succeed
+	// Non-empty schedules should succeed (cron validation deferred to scheduler)
 	validCases := []struct {
-		name string
-		sched string
+		name   string
+		sched  string
 	}{
 		{"daily 8am", "0 8 * * *"},
 		{"every 5 min", "*/5 * * * *"},
 		{"monthly 1st", "0 0 1 * *"},
 		{"monday 9:30", "30 9 * * 1"},
 		{"weekday 8am", "0 8 * * 1-5"},
+		{"nonsense text", "abc def ghi jkl mno"},
+		{"4 fields", "0 8 * *"},
 	}
 
 	for _, tc := range validCases {
@@ -204,35 +188,30 @@ func TestValidateSchedule_ValidCronExpressions(t *testing.T) {
 }
 
 // TestValidateSchedule_InvalidCronExpressions tests that validateSchedule rejects
-// various malformed cron expressions with descriptive errors.
+// only empty schedule strings. Cron-based validation was removed with the
+// scheduler — S03 will add proper scheduling with a new implementation.
 func TestValidateSchedule_InvalidCronExpressions(t *testing.T) {
-	invalidCases := []struct {
-		name string
-		sched string
-	}{
-		{"empty string", ""},
-		{"single char", "a"},
-		{"too short", "ab"},
-		{"3 fields", "0 8 *"},
-		{"4 fields", "0 8 * *"},
-		{"6 fields with seconds", "0 0 8 * * *"},
-		{"7 fields", "0 0 0 8 * * *"},
-		{"nonsense words", "abc def ghi jkl mno"},
-		{"invalid minute 60", "60 0 * * *"},
-		{"invalid hour 25", "0 25 * * *"},
-		{"invalid month 13", "0 0 1 13 *"},
-		{"invalid dow 8", "0 0 * * 8"},
-		{"negative minute", "-1 0 * * *"},
-		{"spaces only", "     "},
+	// Only empty schedule should fail
+	err := validateSchedule("")
+	if err == nil {
+		t.Error("validateSchedule(\"\") expected error, got nil")
 	}
 
-	for _, tc := range invalidCases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateSchedule(tc.sched)
-			if err == nil {
-				t.Errorf("validateSchedule(%q) expected error, got nil", tc.sched)
-			}
-		})
+	// Non-empty strings pass (even malformed cron — validation deferred)
+	nonEmptyCases := []string{
+		"a",
+		"ab",
+		"0 8 *",
+		"0 8 * *",
+		"0 0 8 * * *",
+		"abc def ghi jkl mno",
+		"60 0 * * *",
+		"     ",
+	}
+	for _, s := range nonEmptyCases {
+		if err := validateSchedule(s); err != nil {
+			t.Errorf("validateSchedule(%q) expected nil (non-empty), got error: %v", s, err)
+		}
 	}
 }
 

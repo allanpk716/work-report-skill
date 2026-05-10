@@ -3,19 +3,12 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
-
-	"wr/internal/config"
-	"wr/internal/daemon"
 )
 
 // executeCmd runs rootCmd with the given args and returns the exit code
@@ -107,40 +100,6 @@ func setupTempHome(t *testing.T) (string, func()) {
 		os.Setenv("HOME", origHome)
 		os.Setenv("USERPROFILE", origUserProfile)
 	}
-}
-
-// setupFakeDaemon creates an httptest.Server and configures the temp home
-// to point to it. Returns the server (caller must defer Close()).
-func setupFakeDaemon(t *testing.T, tmpHome string, handler http.HandlerFunc) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-
-	stateDir := filepath.Join(tmpHome, ".work-report")
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	addr := srv.Listener.Addr().String()
-	parts := strings.Split(addr, ":")
-	port := parts[len(parts)-1]
-
-	var portInt int
-	fmt.Sscanf(port, "%d", &portInt)
-	if err := daemon.WriteState(stateDir, daemon.DaemonState{Port: portInt, PID: os.Getpid()}); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(stateDir, "config.json")
-	cfg, err := config.Load(filepath.Join(stateDir, "nonexistent.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Daemon.Port = portInt
-	if err := cfg.Save(cfgPath); err != nil {
-		t.Fatal(err)
-	}
-
-	return srv
 }
 
 // --- Test Success (exit 0) ---
@@ -278,27 +237,6 @@ func TestLockConflictExit5(t *testing.T) {
 	if exitCode != agentsdk.ExitLockConflict {
 		t.Errorf("expected lock_conflict → exit code %d, got %d", agentsdk.ExitLockConflict, exitCode)
 	}
-}
-
-// --- Test Config Validation (exit 2) ---
-
-func TestConfigValidationExit2(t *testing.T) {
-	_, cleanup := setupTempHome(t)
-	defer cleanup()
-
-	// Invalid port should trigger validation error → exit 2
-	code, out := executeCmd("config", "init", "--daemon-port", "99999")
-	if code != agentsdk.ExitInvalidParams {
-		t.Errorf("expected exit code 2 for invalid port, got %d", code)
-	}
-	lines := parseJSONLMaps(out)
-	if len(lines) == 0 {
-		t.Fatal("expected JSONL output")
-	}
-	if lines[0]["type"] != "error" {
-		t.Errorf("expected type=error, got %v", lines[0]["type"])
-	}
-	validateAllEnvelopes(t, out)
 }
 
 // --- Test Report Range Missing Flags (exit 2) ---

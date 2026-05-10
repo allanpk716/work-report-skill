@@ -36,7 +36,7 @@ func InitApp() {
 	// Add agent command tree (schema, errors, config, doctor, debug, cache).
 	// Guard against double-registration in tests that call InitApp() repeatedly.
 	if _, _, err := rootCmd.Find([]string{"agent"}); err != nil {
-		rootCmd.AddCommand(app.AgentCommands(newDaemonGroupCmd()))
+		rootCmd.AddCommand(app.AgentCommands())
 	}
 
 	registerErrorCodes()

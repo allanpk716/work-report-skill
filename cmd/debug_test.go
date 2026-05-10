@@ -32,7 +32,7 @@ func resetAppForTest(t *testing.T, tmpHome string) func() {
 	// Create fresh app pointing to temp WR_HOME
 	app = agentsdk.New("wr", version)
 	registerHealthChecks()
-	rootCmd.AddCommand(app.AgentCommands(newDaemonGroupCmd()))
+	rootCmd.AddCommand(app.AgentCommands())
 	app.Sandbox().Ensure()
 
 	return func() {
@@ -45,7 +45,7 @@ func resetAppForTest(t *testing.T, tmpHome string) func() {
 		app = origApp
 		if app != nil {
 			registerHealthChecks()
-			rootCmd.AddCommand(app.AgentCommands(newDaemonGroupCmd()))
+			rootCmd.AddCommand(app.AgentCommands())
 		}
 	}
 }

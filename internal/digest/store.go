@@ -483,16 +483,12 @@ func generateID() string {
 	return fmt.Sprintf("d_%s_%x", now.Format("20060102"), b)
 }
 
-// validateSchedule validates the cron expression using the cron parser.
-// This catches malformed expressions at add-time instead of deferring to
-// the scheduler's sync loop where they are silently skipped.
+// validateSchedule validates the schedule string is non-empty.
+// Cron-based validation was removed with the scheduler; S03 will add
+// proper scheduling with a new implementation.
 func validateSchedule(schedule string) error {
 	if schedule == "" {
 		return fmt.Errorf("digest: schedule must not be empty")
-	}
-	_, err := cronParser.Parse(schedule)
-	if err != nil {
-		return fmt.Errorf("digest: invalid cron expression %q: %w", schedule, err)
 	}
 	return nil
 }

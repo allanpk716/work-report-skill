@@ -20,7 +20,6 @@ var (
 	configLLMVisionModel  string
 	configLLMVisionAPIBase  string
 	configLLMVisionProvider string
-	configDaemonPort      int
 	configTimezone        string
 )
 
@@ -76,9 +75,6 @@ var configInitCmd = &cobra.Command{
 		}
 		if cmd.Flags().Changed("llm-vision-provider") {
 			cfg.LLM.Vision.Provider = configLLMVisionProvider
-		}
-		if cmd.Flags().Changed("daemon-port") {
-			cfg.Daemon.Port = configDaemonPort
 		}
 		if cmd.Flags().Changed("timezone") {
 			cfg.Timezone = configTimezone
@@ -169,7 +165,6 @@ func init() {
 	configInitCmd.Flags().StringVar(&configLLMVisionModel, "llm-vision-model", "", "LLM vision model name")
 	configInitCmd.Flags().StringVar(&configLLMVisionAPIBase, "llm-vision-api-base", "", "LLM vision API base URL")
 	configInitCmd.Flags().StringVar(&configLLMVisionProvider, "llm-vision-provider", "", "LLM vision provider name")
-	configInitCmd.Flags().IntVar(&configDaemonPort, "daemon-port", 0, "Daemon listen port")
 	configInitCmd.Flags().StringVar(&configTimezone, "timezone", "", "Timezone (e.g. Asia/Shanghai)")
 
 	configCmd.AddCommand(configInitCmd)

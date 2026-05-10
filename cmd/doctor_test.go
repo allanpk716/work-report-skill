@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,11 +9,10 @@ import (
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 
 	"wr/internal/config"
-	"wr/internal/daemon"
 )
 
 // TestAgentDoctor verifies that "wr agent doctor" outputs a JSONL result
-// envelope with a checks array containing daemon, llm, and pushover entries.
+// envelope with a checks array containing llm and pushover entries.
 func TestAgentDoctor(t *testing.T) {
 	tmpHome, homeCleanup := setupTempHome(t)
 	defer homeCleanup()
@@ -22,16 +20,10 @@ func TestAgentDoctor(t *testing.T) {
 	cleanup := resetAppForTest(t, tmpHome)
 	defer cleanup()
 
-	// Write a daemon state file so the daemon check has something to read.
-	stateDir := filepath.Join(tmpHome, ".work-report")
-	if err := daemon.WriteState(stateDir, daemon.DaemonState{Port: 59001, PID: os.Getpid()}); err != nil {
-		t.Fatal(err)
-	}
-
 	// Write a config with LLM key and Pushover credentials.
+	stateDir := filepath.Join(tmpHome, ".work-report")
 	cfgPath := filepath.Join(stateDir, "config.json")
 	cfg := &config.Config{
-		Daemon:   config.DaemonConfig{Port: 59001},
 		Timezone: "UTC",
 	}
 	cfg.LLM.Text.APIKey = "test-key-123"
@@ -92,8 +84,8 @@ func TestAgentDoctor(t *testing.T) {
 		checkNames[name] = true
 	}
 
-	// Verify all expected custom health checks are present
-	for _, expected := range []string{"daemon", "llm", "pushover"} {
+	// Verify expected custom health checks are present
+	for _, expected := range []string{"llm", "pushover"} {
 		if !checkNames[expected] {
 			t.Errorf("missing health check: %s (got: %v)", expected, mapKeys(checkNames))
 		}
@@ -122,7 +114,6 @@ func TestAgentDoctorSandboxChecks(t *testing.T) {
 	stateDir := filepath.Join(tmpHome, ".work-report")
 	cfgPath := filepath.Join(stateDir, "config.json")
 	cfg := &config.Config{
-		Daemon:   config.DaemonConfig{Port: 59001},
 		Timezone: "UTC",
 	}
 	if err := cfg.Save(cfgPath); err != nil {

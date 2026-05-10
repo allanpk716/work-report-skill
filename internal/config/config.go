@@ -1,6 +1,6 @@
 // Package config loads and validates ~/.work-report/config.json, providing
 // typed access to Pushover credentials, LLM text/vision settings, the data
-// directory path, daemon port, and timezone.
+// directory path, and timezone.
 //
 // Config loading is fail-fast on startup: structural problems (missing required
 // fields, invalid values) return errors. Optional fields default sensibly.
@@ -21,7 +21,6 @@ type Config struct {
 	Pushover PushoverConfig `json:"pushover"`
 	LLM      LLMConfig      `json:"llm"`
 	DataDir  string         `json:"data_dir"`
-	Daemon   DaemonConfig   `json:"daemon"`
 	Timezone string         `json:"timezone"`
 }
 
@@ -45,14 +44,6 @@ type LLMProviderConfig struct {
 	APIBase  string `json:"api_base,omitempty"`
 	Model    string `json:"model"`
 	Timeout  int    `json:"timeout,omitempty"`
-}
-
-// DefaultDaemonPort is the default port the daemon listens on.
-const DefaultDaemonPort = 18080
-
-// DaemonConfig holds daemon-specific settings.
-type DaemonConfig struct {
-	Port int `json:"port"`
 }
 
 // DefaultConfigPath returns ~/.work-report/config.json.
@@ -118,9 +109,6 @@ func (c *Config) applyDefaults() {
 	if c.Timezone == "" {
 		c.Timezone = "Asia/Shanghai"
 	}
-	if c.Daemon.Port == 0 {
-		c.Daemon.Port = DefaultDaemonPort
-	}
 	if c.DataDir == "" {
 		dir, err := DefaultDataDir()
 		if err == nil {
@@ -144,10 +132,6 @@ func (c *Config) Validate() error {
 
 // validate checks that required fields are present and values are in range.
 func (c *Config) validate() error {
-	if c.Daemon.Port < 1 || c.Daemon.Port > 65535 {
-		return fmt.Errorf("config: daemon.port must be 1-65535, got %d", c.Daemon.Port)
-	}
-
 	// Validate timezone is parseable
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		return fmt.Errorf("config: invalid timezone %q: %w", c.Timezone, err)
@@ -161,10 +145,7 @@ func defaultConfig() *Config {
 	dir, _ := DefaultDataDir()
 	return &Config{
 		Timezone: "Asia/Shanghai",
-		Daemon: DaemonConfig{
-			Port: DefaultDaemonPort,
-		},
-		DataDir: dir,
+		DataDir:  dir,
 	}
 }
 
@@ -225,7 +206,6 @@ func ValidConfigPaths() []string {
 		"llm.vision.model",
 		"llm.vision.timeout",
 		"data_dir",
-		"daemon.port",
 		"timezone",
 	}
 }
@@ -301,12 +281,6 @@ func (c *Config) SetByPath(path string, value string) error {
 		c.LLM.Vision.Timeout = timeout
 	case "data_dir":
 		c.DataDir = value
-	case "daemon.port":
-		var port int
-		if _, err := fmt.Sscanf(value, "%d", &port); err != nil {
-			return fmt.Errorf("config: daemon.port must be an integer, got %q", value)
-		}
-		c.Daemon.Port = port
 	case "timezone":
 		if _, err := time.LoadLocation(value); err != nil {
 			return fmt.Errorf("config: invalid timezone %q: %w", value, err)

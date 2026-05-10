@@ -81,7 +81,6 @@ func resetConfigFlags() {
 	configLLMVisionModel = ""
 	configLLMVisionAPIBase = ""
 	configLLMVisionProvider = ""
-	configDaemonPort = 0
 	configTimezone = ""
 
 	promptText = ""
@@ -153,9 +152,6 @@ func TestConfigInitDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot load created config: %v", err)
 	}
-	if cfg.Daemon.Port != config.DefaultDaemonPort {
-		t.Errorf("expected default port config.DefaultDaemonPort, got %d", cfg.Daemon.Port)
-	}
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("expected default timezone Asia/Shanghai, got %s", cfg.Timezone)
 	}
@@ -166,7 +162,6 @@ func TestConfigInitWithFlags(t *testing.T) {
 	defer cleanup()
 
 	out, _ := runConfigCmd("config", "init",
-		"--daemon-port", "9090",
 		"--timezone", "UTC",
 		"--pushover-token", "tok123",
 		"--llm-text-key", "sk-text-key",
@@ -187,9 +182,6 @@ func TestConfigInitWithFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot load config: %v", err)
 	}
-	if cfg.Daemon.Port != 9090 {
-		t.Errorf("expected port 9090, got %d", cfg.Daemon.Port)
-	}
 	if cfg.Timezone != "UTC" {
 		t.Errorf("expected timezone UTC, got %s", cfg.Timezone)
 	}
@@ -198,26 +190,6 @@ func TestConfigInitWithFlags(t *testing.T) {
 	}
 	if cfg.LLM.Text.APIKey != "sk-text-key" {
 		t.Errorf("expected LLM text key sk-text-key, got %s", cfg.LLM.Text.APIKey)
-	}
-}
-
-func TestConfigInitInvalidPort(t *testing.T) {
-	_, cleanup := setupConfigEnv(t)
-	defer cleanup()
-
-	out, _ := runConfigCmd("config", "init", "--daemon-port", "99999")
-	assertValidJSONLEnvelope(t, out)
-
-	lines := parseJSONL(out)
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 JSONL line, got %d", len(lines))
-	}
-	if lines[0]["type"] != "error" {
-		t.Errorf("expected type=error for invalid port, got %v", lines[0]["type"])
-	}
-	msg, _ := lines[0]["message"].(string)
-	if !strings.Contains(msg, "validation") {
-		t.Errorf("error should mention validation, got: %s", msg)
 	}
 }
 
@@ -246,7 +218,7 @@ func TestConfigSetBasic(t *testing.T) {
 	// Init first
 	runConfigCmd("config", "init")
 
-	out, _ := runConfigCmd("config", "set", "daemon.port", "3000")
+	out, _ := runConfigCmd("config", "set", "timezone", "Europe/London")
 	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
 	if len(lines) != 1 {
@@ -256,11 +228,11 @@ func TestConfigSetBasic(t *testing.T) {
 		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
 	data, _ := lines[0]["data"].(map[string]interface{})
-	if data["key"] != "daemon.port" {
-		t.Errorf("expected key=daemon.port, got %v", data["key"])
+	if data["key"] != "timezone" {
+		t.Errorf("expected key=timezone, got %v", data["key"])
 	}
-	if data["value"] != "3000" {
-		t.Errorf("expected value=3000, got %v", data["value"])
+	if data["value"] != "Europe/London" {
+		t.Errorf("expected value=Europe/London, got %v", data["value"])
 	}
 
 	// Verify roundtrip
@@ -269,8 +241,8 @@ func TestConfigSetBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot load config: %v", err)
 	}
-	if cfg.Daemon.Port != 3000 {
-		t.Errorf("expected port 3000, got %d", cfg.Daemon.Port)
+	if cfg.Timezone != "Europe/London" {
+		t.Errorf("expected timezone Europe/London, got %s", cfg.Timezone)
 	}
 }
 
@@ -305,20 +277,6 @@ func TestConfigSetUnknownPath(t *testing.T) {
 	lines := parseJSONL(out)
 	if lines[0]["type"] != "error" {
 		t.Errorf("expected type=error for unknown path, got %v", lines[0]["type"])
-	}
-}
-
-func TestConfigSetInvalidPort(t *testing.T) {
-	_, cleanup := setupConfigEnv(t)
-	defer cleanup()
-
-	runConfigCmd("config", "init")
-
-	out, _ := runConfigCmd("config", "set", "daemon.port", "notanumber")
-	assertValidJSONLEnvelope(t, out)
-	lines := parseJSONL(out)
-	if lines[0]["type"] != "error" {
-		t.Errorf("expected type=error for non-numeric port, got %v", lines[0]["type"])
 	}
 }
 
@@ -387,12 +345,6 @@ func TestConfigShowBeforeInit(t *testing.T) {
 	if lines[0]["type"] != "result" {
 		t.Fatalf("expected type=result, got %v", lines[0]["type"])
 	}
-
-	data, _ := lines[0]["data"].(map[string]interface{})
-	daemon, _ := data["daemon"].(map[string]interface{})
-	if daemon["port"] != float64(config.DefaultDaemonPort) {
-		t.Errorf("expected default port config.DefaultDaemonPort, got %v", daemon["port"])
-	}
 }
 
 // ---------- integration ----------
@@ -457,9 +409,9 @@ func TestConfigInitIdempotent(t *testing.T) {
 	defer cleanup()
 
 	// Init twice — second should overwrite
-	runConfigCmd("config", "init", "--daemon-port", "8080")
+	runConfigCmd("config", "init", "--timezone", "UTC")
 
-	out, _ := runConfigCmd("config", "init", "--daemon-port", "9090")
+	out, _ := runConfigCmd("config", "init", "--timezone", "Asia/Tokyo")
 	assertValidJSONLEnvelope(t, out)
 	lines := parseJSONL(out)
 	if lines[0]["type"] != "result" {
@@ -468,8 +420,8 @@ func TestConfigInitIdempotent(t *testing.T) {
 
 	path, _ := config.DefaultConfigPath()
 	cfg, _ := config.Load(path)
-	if cfg.Daemon.Port != 9090 {
-		t.Errorf("expected port 9090 after second init, got %d", cfg.Daemon.Port)
+	if cfg.Timezone != "Asia/Tokyo" {
+		t.Errorf("expected timezone Asia/Tokyo after second init, got %s", cfg.Timezone)
 	}
 }
 
@@ -494,7 +446,6 @@ func TestConfigAllSetByPathPaths(t *testing.T) {
 		{"llm.vision.api_base", "https://api.zhipu.ai/"},
 		{"llm.vision.model", "glm-4v"},
 		{"data_dir", "/tmp/work-records"},
-		{"daemon.port", "5555"},
 		{"timezone", "Europe/London"},
 	}
 

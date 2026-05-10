@@ -1,10 +1,6 @@
 package cmd
 
 import (
-	"os"
-
-	"wr/internal/client"
-
 	"github.com/spf13/cobra"
 )
 
@@ -12,9 +8,9 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show daemon status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// CallDaemonGet writes a JSONL error to stdout and returns ExitError
-		// when the daemon is unreachable — just propagate the error, no double write.
-		return client.CallDaemonGet(os.Stdout, "/api/status")
+		// Daemon has been removed — status command stubbed.
+		// S03 will rewrite this with new observability surfaces.
+		return app.JSONL().Error("daemon commands have been removed; use 'wr agent doctor' for diagnostics")
 	},
 }
 

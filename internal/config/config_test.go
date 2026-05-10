@@ -39,9 +39,6 @@ func TestLoadFullConfig(t *testing.T) {
 			}
 		},
 		"data_dir": "/tmp/test-work-records",
-		"daemon": {
-			"port": 18092
-		},
 		"timezone": "Asia/Shanghai"
 	}`)
 
@@ -74,11 +71,6 @@ func TestLoadFullConfig(t *testing.T) {
 		t.Errorf("LLM.Vision.APIBase = %q", cfg.LLM.Vision.APIBase)
 	}
 
-	// Daemon
-	if cfg.Daemon.Port != 18092 {
-		t.Errorf("Daemon.Port = %d, want 18092", cfg.Daemon.Port)
-	}
-
 	// Timezone
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("Timezone = %q", cfg.Timezone)
@@ -99,9 +91,6 @@ func TestLoadDefaultsOnMissingFile(t *testing.T) {
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("default Timezone = %q, want Asia/Shanghai", cfg.Timezone)
 	}
-	if cfg.Daemon.Port != DefaultDaemonPort {
-		t.Errorf("default Daemon.Port = %d, want DefaultDaemonPort", cfg.Daemon.Port)
-	}
 	if cfg.DataDir == "" {
 		t.Error("default DataDir should not be empty")
 	}
@@ -114,19 +103,8 @@ func TestLoadDefaultsOnEmptyObject(t *testing.T) {
 		t.Fatalf("Load empty config: %v", err)
 	}
 
-	if cfg.Daemon.Port != DefaultDaemonPort {
-		t.Errorf("Daemon.Port = %d, want DefaultDaemonPort", cfg.Daemon.Port)
-	}
 	if cfg.Timezone != "Asia/Shanghai" {
 		t.Errorf("Timezone = %q", cfg.Timezone)
-	}
-}
-
-func TestLoadInvalidPort(t *testing.T) {
-	path := writeTestConfigFile(t, `{"daemon": {"port": 99999}}`)
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for invalid port")
 	}
 }
 
@@ -304,7 +282,6 @@ func TestSaveCreatesDirsAndWritesJSON(t *testing.T) {
 			UserKey:  "key456",
 		},
 		Timezone: "Asia/Shanghai",
-		Daemon:   DaemonConfig{Port: DefaultDaemonPort},
 		DataDir:  "/tmp/data",
 	}
 
@@ -328,21 +305,18 @@ func TestSaveCreatesDirsAndWritesJSON(t *testing.T) {
 	if loaded.Timezone != "Asia/Shanghai" {
 		t.Errorf("roundtrip Timezone = %q", loaded.Timezone)
 	}
-	if loaded.Daemon.Port != DefaultDaemonPort {
-		t.Errorf("roundtrip Port = %d, want DefaultDaemonPort", loaded.Daemon.Port)
-	}
 }
 
 func TestSaveOverwriteExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	cfg1 := &Config{Timezone: "UTC", Daemon: DaemonConfig{Port: 9090}}
+	cfg1 := &Config{Timezone: "UTC"}
 	if err := cfg1.Save(path); err != nil {
 		t.Fatalf("Save first: %v", err)
 	}
 
-	cfg2 := &Config{Timezone: "Asia/Tokyo", Daemon: DaemonConfig{Port: 8080}}
+	cfg2 := &Config{Timezone: "Asia/Tokyo"}
 	if err := cfg2.Save(path); err != nil {
 		t.Fatalf("Save second: %v", err)
 	}
@@ -353,9 +327,6 @@ func TestSaveOverwriteExistingFile(t *testing.T) {
 	}
 	if loaded.Timezone != "Asia/Tokyo" {
 		t.Errorf("Timezone = %q, want Asia/Tokyo", loaded.Timezone)
-	}
-	if loaded.Daemon.Port != 8080 {
-		t.Errorf("Port = %d, want 8080", loaded.Daemon.Port)
 	}
 }
 
@@ -401,24 +372,6 @@ func TestSetByPathStringFields(t *testing.T) {
 	}
 }
 
-func TestSetByPathDaemonPort(t *testing.T) {
-	cfg := defaultConfig()
-	if err := cfg.SetByPath("daemon.port", "9999"); err != nil {
-		t.Fatalf("SetByPath daemon.port: %v", err)
-	}
-	if cfg.Daemon.Port != 9999 {
-		t.Errorf("daemon.port = %d, want 9999", cfg.Daemon.Port)
-	}
-}
-
-func TestSetByPathDaemonPortNonInteger(t *testing.T) {
-	cfg := defaultConfig()
-	err := cfg.SetByPath("daemon.port", "not-a-number")
-	if err == nil {
-		t.Fatal("expected error for non-integer port")
-	}
-}
-
 func TestSetByPathInvalidTimezone(t *testing.T) {
 	cfg := defaultConfig()
 	err := cfg.SetByPath("timezone", "Invalid/Zone")
@@ -450,7 +403,6 @@ func TestSetByPathRoundtrip(t *testing.T) {
 	cfg := defaultConfig()
 	_ = cfg.SetByPath("pushover.api_token", "roundtrip-token")
 	_ = cfg.SetByPath("llm.text.api_key", "sk-roundtrip")
-	_ = cfg.SetByPath("daemon.port", "7777")
 
 	if err := cfg.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -467,9 +419,6 @@ func TestSetByPathRoundtrip(t *testing.T) {
 	if loaded.LLM.Text.APIKey != "sk-roundtrip" {
 		t.Errorf("LLM.Text.APIKey = %q, want sk-roundtrip", loaded.LLM.Text.APIKey)
 	}
-	if loaded.Daemon.Port != 7777 {
-		t.Errorf("Port = %d, want 7777", loaded.Daemon.Port)
-	}
 }
 
 func TestValidConfigPaths(t *testing.T) {
@@ -483,7 +432,6 @@ func TestValidConfigPaths(t *testing.T) {
 		"llm.text.model",
 		"llm.vision.api_key",
 		"data_dir",
-		"daemon.port",
 		"timezone",
 	}
 	for _, p := range expected {
@@ -496,6 +444,13 @@ func TestValidConfigPaths(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("ValidConfigPaths missing %q", p)
+		}
+	}
+
+	// Must NOT contain daemon.port (removed)
+	for _, vp := range paths {
+		if vp == "daemon.port" {
+			t.Errorf("ValidConfigPaths should not contain %q after daemon removal", vp)
 		}
 	}
 }
@@ -516,7 +471,6 @@ func TestSaveProducesValidJSON(t *testing.T) {
 				Model:    "model",
 			},
 		},
-		Daemon:   DaemonConfig{Port: 8080},
 		Timezone: "UTC",
 		DataDir:  "/data",
 	}
