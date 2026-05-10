@@ -205,10 +205,10 @@ var (
 	backupSetEnabled      bool
 )
 
-// backupConfigSetCmd updates the backup configuration and syncs with the daemon.
+// backupConfigSetCmd updates the backup configuration.
 var backupConfigSetCmd = &cobra.Command{
 	Use:   "set [--schedule <cron>] [--output-dir <dir>] [--retention-daily <n>] [--retention-weekly <n>] [--retention-monthly <n>] [--enabled]",
-	Short: "Update backup configuration and sync with daemon",
+	Short: "Update backup configuration",
 	Long: `Update backup configuration stored in ~/.work-report/backup-config.json.
 Any flag provided will overwrite the corresponding field; omitted flags keep the
 current value.`,

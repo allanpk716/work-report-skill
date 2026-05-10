@@ -275,7 +275,7 @@ func TestAgentErrors(t *testing.T) {
 	}
 
 	// Verify wr-specific codes appear
-	for _, wrCode := range []string{"daemon_not_running", "invalid_type", "lock_conflict", "storage_error"} {
+	for _, wrCode := range []string{"storage_locked", "invalid_type", "lock_conflict", "storage_error"} {
 		if !codeNames[wrCode] {
 			t.Errorf("expected wr-specific code %q in errors output", wrCode)
 		}
