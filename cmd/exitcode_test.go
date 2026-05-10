@@ -166,6 +166,7 @@ func TestSuccessExit0(t *testing.T) {
 }
 
 // --- Test Invalid Params (exit 2) from daemon error_code ---
+// Uses `list` (still daemon-backed) to test error code → exit code mapping.
 
 func TestInvalidParamsExit2(t *testing.T) {
 	tmpHome, cleanup := setupTempHome(t)
@@ -179,7 +180,7 @@ func TestInvalidParamsExit2(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	code, out := executeCmd("add", "--type", "task", "--title", "test", "--date", "2024-01-01")
+	code, out := executeCmd("list")
 	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2, got %d", code)
 	}
@@ -231,6 +232,7 @@ func TestDaemonUnreachableExit4(t *testing.T) {
 }
 
 // --- Test LLM Error (exit 4) from daemon error_code ---
+// Uses `list` (still daemon-backed) to test error code → exit code mapping.
 
 func TestLLMErrorExit4(t *testing.T) {
 	tmpHome, cleanup := setupTempHome(t)
@@ -244,7 +246,7 @@ func TestLLMErrorExit4(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	code, out := executeCmd("add", "--type", "task", "--title", "test", "--date", "2024-01-01")
+	code, out := executeCmd("list")
 	if code != agentsdk.ExitNetworkError {
 		t.Errorf("expected exit code 4, got %d", code)
 	}
@@ -301,6 +303,7 @@ func TestFatalErrorExit1(t *testing.T) {
 }
 
 // --- Test Lock Conflict (exit 5) from daemon error_code ---
+// Uses `list` (still daemon-backed) to test error code → exit code mapping.
 
 func TestLockConflictExit5(t *testing.T) {
 	tmpHome, cleanup := setupTempHome(t)
@@ -314,7 +317,7 @@ func TestLockConflictExit5(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	code, out := executeCmd("add", "--type", "task", "--title", "test", "--date", "2024-01-01")
+	code, out := executeCmd("list")
 	if code != agentsdk.ExitLockConflict {
 		t.Errorf("expected exit code 5, got %d", code)
 	}
@@ -468,7 +471,7 @@ func TestExitCodeWithDaemonRouter(t *testing.T) {
 	}
 	validateAllEnvelopes(t, out)
 
-	// Test: add with invalid type → should be exit 2
+	// Test: add with invalid type → should be exit 2 (direct call, no daemon)
 	code, out = executeCmd("add", "--type", "invalid", "--title", "test", "--date", "2024-01-01")
 	if code != agentsdk.ExitInvalidParams {
 		t.Errorf("expected exit code 2 for invalid type, got %d", code)
