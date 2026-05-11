@@ -563,3 +563,96 @@ func TestMeetingWithParticipants(t *testing.T) {
 		t.Errorf("Location = %q, want %q", meeting.Location, "七部")
 	}
 }
+
+// --- NotificationPriority tests ---
+
+// TestIsValidNotificationPriority checks validation of notification priority values.
+func TestIsValidNotificationPriority(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"", true},
+		{"normal", true},
+		{"high", true},
+		{"HIGH", false},
+		{"urgent", false},
+		{"low", false},
+	}
+	for _, tt := range tests {
+		got := IsValidNotificationPriority(tt.input)
+		if got != tt.want {
+			t.Errorf("IsValidNotificationPriority(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestNotificationPriorityToPushover checks the priority mapping to Pushover integers.
+func TestNotificationPriorityToPushover(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"", 0},
+		{"normal", 0},
+		{"high", 1},
+		{"anything-else", 0},
+	}
+	for _, tt := range tests {
+		got := NotificationPriorityToPushover(tt.input)
+		if got != tt.want {
+			t.Errorf("NotificationPriorityToPushover(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestNotificationPriorityFieldJSON verifies JSON serialisation of the notification_priority field.
+func TestNotificationPriorityFieldJSON(t *testing.T) {
+	rec := CommonFields{
+		Type:               TypeMeeting,
+		Title:              "test meeting",
+		NotificationPriority: "high",
+	}
+
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal to map: %v", err)
+	}
+
+	if m["notification_priority"] != "high" {
+		t.Errorf("notification_priority = %v, want high", m["notification_priority"])
+	}
+
+	// omitempty: empty value should be omitted
+	rec2 := CommonFields{Type: TypeTask, Title: "task", NotificationPriority: ""}
+	data2, _ := json.Marshal(rec2)
+	var m2 map[string]interface{}
+	if err := json.Unmarshal(data2, &m2); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := m2["notification_priority"]; ok {
+		t.Errorf("notification_priority should be omitted when empty, got %v", m2["notification_priority"])
+	}
+}
+
+// TestNotificationPriorityBackwardCompat verifies old JSON without notification_priority still parses.
+func TestNotificationPriorityBackwardCompat(t *testing.T) {
+	data := []byte(sampleMeetingJSON)
+	parsed, err := ParseRecord(data)
+	if err != nil {
+		t.Fatalf("ParseRecord: %v", err)
+	}
+	meeting, ok := parsed.(*MeetingRecord)
+	if !ok {
+		t.Fatalf("expected *MeetingRecord, got %T", parsed)
+	}
+	// Should be empty (default), which is treated as "normal"
+	if meeting.NotificationPriority != "" {
+		t.Errorf("NotificationPriority = %q, want empty for backward compat", meeting.NotificationPriority)
+	}
+}

@@ -79,22 +79,43 @@ type Record struct {
 
 // CommonFields holds fields shared across all record types.
 type CommonFields struct {
-	Type          RecordType `json:"type"`
-	Title         string     `json:"title"`
-	Description   string     `json:"description,omitempty"`
-	Date          string     `json:"date"`              // YYYY-MM-DD
-	Time          string     `json:"time,omitempty"`    // HH:MM
-	EndTime       string     `json:"end_time,omitempty"`
-	Location      string     `json:"location,omitempty"`
-	RelatedPerson string     `json:"related_person,omitempty"`
-	RemindBefore  string     `json:"remind_before,omitempty"` // e.g. "15m", "30m"
-	Priority      string     `json:"priority,omitempty"`      // normal, high, medium, 低, 高
-	Status        string     `json:"status,omitempty"`
-	Tags          []string   `json:"tags,omitempty"`
-	SavedAt       string     `json:"saved_at"`                // ISO-8601 timestamp
-	UpdatedAt     string     `json:"updated_at,omitempty"`
-	ShortID       string     `json:"short_id,omitempty"`
-	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	Type               RecordType `json:"type"`
+	Title              string     `json:"title"`
+	Description        string     `json:"description,omitempty"`
+	Date               string     `json:"date"`                          // YYYY-MM-DD
+	Time               string     `json:"time,omitempty"`                // HH:MM
+	EndTime            string     `json:"end_time,omitempty"`
+	Location           string     `json:"location,omitempty"`
+	RelatedPerson      string     `json:"related_person,omitempty"`
+	RemindBefore       string     `json:"remind_before,omitempty"`       // e.g. "15m", "30m"
+	Priority           string     `json:"priority,omitempty"`            // normal, high, medium, 低, 高
+	Status             string     `json:"status,omitempty"`
+	Tags               []string   `json:"tags,omitempty"`
+	SavedAt            string     `json:"saved_at"`                      // ISO-8601 timestamp
+	UpdatedAt          string     `json:"updated_at,omitempty"`
+	ShortID            string     `json:"short_id,omitempty"`
+	IdempotencyKey     string     `json:"idempotency_key,omitempty"`
+	NotificationPriority string   `json:"notification_priority,omitempty"` // normal, high; empty = normal
+}
+
+// IsValidNotificationPriority returns true if p is a valid notification priority value.
+func IsValidNotificationPriority(p string) bool {
+	switch p {
+	case "", "normal", "high":
+		return true
+	}
+	return false
+}
+
+// NotificationPriorityToPushover maps notification priority strings to
+// Pushover API priority integers: "" and "normal" → 0, "high" → 1.
+func NotificationPriorityToPushover(p string) int {
+	switch p {
+	case "high":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // MeetingRecord maps to the meeting JSON format stored in
