@@ -66,7 +66,7 @@ var completeCmd = &cobra.Command{
 			return writeJSONLError("already_cancelled", fmt.Sprintf("record %q is cancelled, cannot complete", id))
 		}
 
-		if err := store.CompleteRecord(id); err != nil {
+		if err := withLockRetry(func() error { return store.CompleteRecord(id) }); err != nil {
 			if strings.Contains(err.Error(), "already completed") {
 				return writeJSONLError("already_completed", err.Error())
 			}

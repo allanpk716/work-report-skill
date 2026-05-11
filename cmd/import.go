@@ -58,7 +58,9 @@ var importCmd = &cobra.Command{
 		for _, rawRec := range records {
 			rec := buildRecordFromMap(rawRec)
 
-			result, err := store.AddRecord(rec)
+			result, err := withLockRetryResult(func() (interface{}, error) {
+				return store.AddRecord(rec)
+			})
 			if err != nil {
 				logger.Warnf("import: failed to add record: %v", err)
 				importErrors = append(importErrors, map[string]interface{}{

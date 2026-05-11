@@ -157,10 +157,12 @@ var addCmd = &cobra.Command{
 		rec := buildRecord(addType, addTitle, addDate, addTime, addDescription,
 			tags, addLocation, addRelatedPerson, addPriority, addRemindBefore, addRecurring, addIdempotencyKey)
 
-		result, err := store.AddRecord(rec)
+		result, err := withLockRetryResult(func() (interface{}, error) {
+			return store.AddRecord(rec)
+		})
 		if err != nil {
 			logger.Errorf("add error: %v", err)
-			return writeJSONLError("storage_error", fmt.Sprintf("failed to add record: %v", err))
+			return writeStorageError("failed to add record", err)
 		}
 
 		cf := models.GetCommonFields(result)
@@ -288,7 +290,9 @@ func handleBatchAddLocal(store *storage.Storage, cfg *config.Config, actionable 
 			nil, result.Location, result.RelatedPerson, result.Priority,
 			result.RemindBefore, result.Recurring, "")
 
-		persisted, err := store.AddRecord(rec)
+		persisted, err := withLockRetryResult(func() (interface{}, error) {
+			return store.AddRecord(rec)
+		})
 		if err != nil {
 			logger.Errorf("add batch: storage error: %v", err)
 			continue

@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
@@ -11,6 +14,15 @@ import (
 	"wr/internal/models"
 	"wr/internal/storage"
 )
+
+// lockRetryBackoffs defines the sleep durations between lock retry attempts.
+// Two retries: 100ms, 200ms. After both fail, the final error is returned.
+var lockRetryBackoffs = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
+
+// lockRetryAfterMs is the suggested retry delay (ms) returned to callers when
+// all retry attempts are exhausted. Set to 500ms — enough for the previous
+// lock holder to finish a typical write operation.
+const lockRetryAfterMs = 500
 
 // loadConfig loads config from the default path (~/.work-report/config.json).
 // Returns the loaded config or writes an error envelope and returns nil.
@@ -64,6 +76,73 @@ func writeJSONLErrorWithExit(exitCode int, code string, msg string) error {
 func writeExitErrorWithCode(exitCode int, errorCode string, msg string) error {
 	app.JSONL().ErrorWithCode(errorCode, msg)
 	return &agentsdk.ExitError{Code: exitCode, Err: fmt.Errorf("%s", msg)}
+}
+
+// writeStorageError detects storage.ErrLockConflict via errors.Is and returns a
+// lock_conflict error with retry_after_ms in the JSONL data, or falls back to a
+// generic storage_error envelope. The caller should use this instead of raw
+// writeJSONLError("storage_error", ...) for any storage write operation that
+// goes through the file lock.
+func writeStorageError(op string, err error) error {
+	if errors.Is(err, storage.ErrLockConflict) {
+		env := agentsdk.Envelope{
+			Version:   agentsdk.EnvelopeVersion,
+			Tool:      "wr",
+			Type:      "error",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			ErrorCode: "lock_conflict",
+			Message:   fmt.Sprintf("%s: %v", op, err),
+			Data:      map[string]interface{}{"retry_after_ms": lockRetryAfterMs},
+		}
+		line, _ := json.Marshal(env)
+		fmt.Fprintln(os.Stdout, string(line))
+
+		return &agentsdk.ExitError{
+			Code: agentsdk.ExitLockConflict,
+			Err:  fmt.Errorf("%s: %v (retry_after_ms=%d)", op, err, lockRetryAfterMs),
+		}
+	}
+	return writeJSONLError("storage_error", fmt.Sprintf("%s: %v", op, err))
+}
+
+// withLockRetry executes fn, retrying up to len(lockRetryBackoffs) times on
+// storage.ErrLockConflict. Each retry sleeps for the corresponding backoff
+// duration and logs a [lock_retry] line with the attempt number and delay.
+// Returns the last error if all attempts fail.
+func withLockRetry(fn func() error) error {
+	var lastErr error
+	for attempt := 0; attempt <= len(lockRetryBackoffs); attempt++ {
+		lastErr = fn()
+		if lastErr == nil || !errors.Is(lastErr, storage.ErrLockConflict) {
+			return lastErr
+		}
+		if attempt < len(lockRetryBackoffs) {
+			delay := lockRetryBackoffs[attempt]
+			logger.Infof("[lock_retry] attempt=%d/%d backoff=%v", attempt+1, len(lockRetryBackoffs), delay)
+			time.Sleep(delay)
+		}
+	}
+	return lastErr
+}
+
+// withLockRetryResult executes fn, retrying up to len(lockRetryBackoffs) times
+// on storage.ErrLockConflict. Like withLockRetry but for operations that
+// return (result, error) instead of just error.
+func withLockRetryResult[T any](fn func() (T, error)) (T, error) {
+	var lastErr error
+	var result T
+	for attempt := 0; attempt <= len(lockRetryBackoffs); attempt++ {
+		result, lastErr = fn()
+		if lastErr == nil || !errors.Is(lastErr, storage.ErrLockConflict) {
+			return result, lastErr
+		}
+		if attempt < len(lockRetryBackoffs) {
+			delay := lockRetryBackoffs[attempt]
+			logger.Infof("[lock_retry] attempt=%d/%d backoff=%v", attempt+1, len(lockRetryBackoffs), delay)
+			time.Sleep(delay)
+		}
+	}
+	return result, lastErr
 }
 
 // writeJSONLSuccess writes a JSONL success envelope with the given data.

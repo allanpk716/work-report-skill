@@ -66,7 +66,7 @@ var cancelCmd = &cobra.Command{
 			return writeJSONLError("invalid_params", fmt.Sprintf("record %q is completed, cannot cancel", id))
 		}
 
-		if err := store.CancelRecord(id); err != nil {
+		if err := withLockRetry(func() error { return store.CancelRecord(id) }); err != nil {
 			if strings.Contains(err.Error(), "already cancelled") {
 				return writeJSONLError("already_cancelled", err.Error())
 			}

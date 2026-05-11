@@ -126,7 +126,9 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Apply update via storage
-		updated, err := store.UpdateRecord(id, fields)
+		updated, err := withLockRetryResult(func() (interface{}, error) {
+			return store.UpdateRecord(id, fields)
+		})
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				return writeJSONLError("record_not_found", err.Error())
