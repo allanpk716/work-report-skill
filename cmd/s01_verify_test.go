@@ -101,8 +101,7 @@ func TestListWithoutDaemon(t *testing.T) {
 		t.Fatal("expected JSONL output")
 	}
 
-	// The list command outputs records in "entries" array.
-	// ListedRecord fields are exported (no json tags), so keys are capitalized.
+	// ListedRecord fields use snake_case json tags matching wr add output.
 	recordCount := 0
 	for _, line := range lines {
 		data := unwrapData(line)
@@ -118,7 +117,7 @@ func TestListWithoutDaemon(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if _, hasShortID := entry["ShortID"].(string); hasShortID {
+			if _, hasShortID := entry["short_id"].(string); hasShortID {
 				recordCount++
 			}
 		}
@@ -271,8 +270,8 @@ func TestConcurrentAdd(t *testing.T) {
 			if !ok {
 				continue
 			}
-			// ListedRecord uses exported field names (no json tags)
-			shortID, ok := entry["ShortID"].(string)
+			// ListedRecord uses snake_case json tags
+			shortID, ok := entry["short_id"].(string)
 			if !ok || shortID == "" {
 				continue
 			}

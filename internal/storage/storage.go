@@ -128,14 +128,14 @@ type ListOptions struct {
 
 // ListedRecord is a lightweight view of a record returned by listing.
 type ListedRecord struct {
-	ShortID     string
-	Type        models.RecordType
-	Title       string
-	Description string
-	Date        string
-	Time        string
-	Status      string
-	FilePath    string
+	ShortID     string           `json:"short_id"`
+	Type        models.RecordType `json:"type"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	Date        string           `json:"date"`
+	Time        string           `json:"time"`
+	Status      string           `json:"status"`
+	FilePath    string           `json:"file_path"`
 }
 
 // ListRecords scans the directory for records matching the options.
