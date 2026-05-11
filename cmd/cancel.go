@@ -20,7 +20,11 @@ var (
 var cancelCmd = &cobra.Command{
 	Use:   "cancel [<id>]",
 	Short: "Cancel a work report entry",
-	Args:  cobra.MaximumNArgs(1),
+	Long: `Cancel a work report entry.
+
+Note: done_things records cannot be cancelled — they are factual records of work already done.
+Only task, meeting, and reminder types support this action.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfig()
 		if cfg == nil {

@@ -351,7 +351,7 @@ func splitByComma(s string) []string {
 }
 
 func init() {
-	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, done_things)")
+	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, done_things). Note: done_things is non-actionable (no complete/cancel)")
 	addCmd.Flags().StringVar(&addTitle, "title", "", "Entry title")
 	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD, defaults to today if omitted)")
 	addCmd.Flags().StringVar(&addTime, "time", "", "Time (HH:MM)")

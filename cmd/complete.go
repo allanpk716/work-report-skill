@@ -20,7 +20,11 @@ var (
 var completeCmd = &cobra.Command{
 	Use:   "complete [<id>]",
 	Short: "Mark a work report entry as complete",
-	Args:  cobra.MaximumNArgs(1),
+	Long: `Mark a work report entry as complete.
+
+Note: done_things records cannot be completed — they are factual records of work already done.
+Only task, meeting, and reminder types support this action.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfig()
 		if cfg == nil {

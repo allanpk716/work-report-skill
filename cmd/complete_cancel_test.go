@@ -343,6 +343,38 @@ func TestCompleteDoneThingsReturnsTypeError(t *testing.T) {
 	validateAllEnvelopes(t, out)
 }
 
+// TestCompleteHelpShowsTypeConstraint verifies that `wr complete --help`
+// output contains type constraint information about done_things.
+func TestCompleteHelpShowsTypeConstraint(t *testing.T) {
+	code, out := executeCmd("complete", "--help")
+	if code != 0 {
+		t.Fatalf("expected exit 0 for --help, got %d", code)
+	}
+	helpText := string(out)
+	if !strings.Contains(helpText, "done_things") {
+		t.Error("help output should mention done_things")
+	}
+	if !strings.Contains(helpText, "cannot be completed") {
+		t.Error("help output should say 'cannot be completed'")
+	}
+}
+
+// TestCancelHelpShowsTypeConstraint verifies that `wr cancel --help`
+// output contains type constraint information about done_things.
+func TestCancelHelpShowsTypeConstraint(t *testing.T) {
+	code, out := executeCmd("cancel", "--help")
+	if code != 0 {
+		t.Fatalf("expected exit 0 for --help, got %d", code)
+	}
+	helpText := string(out)
+	if !strings.Contains(helpText, "done_things") {
+		t.Error("help output should mention done_things")
+	}
+	if !strings.Contains(helpText, "cannot be cancelled") {
+		t.Error("help output should say 'cannot be cancelled'")
+	}
+}
+
 // TestCancelDoneThingsReturnsTypeError verifies that `wr cancel` on a
 // done_things record returns a type_not_cancellable error with a clear
 // message explaining that done_things are factual records.
