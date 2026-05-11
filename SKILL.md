@@ -1173,6 +1173,43 @@ wr add --image /tmp/whiteboard.jpg --text "whiteboard notes from meeting"
 # If LLM returns cancel_or_update, the response has type "result" and no record is created
 ```
 
+### Image / Screenshot Processing
+
+When a user sends an image (photo, screenshot, calendar snapshot, etc.) that contains work-related information, use `wr add --image` to classify it.
+
+**Prerequisites — vision LLM must be configured:**
+
+```bash
+wr config set llm.vision.api_base "https://api.openai.com/v1"
+wr config set llm.vision.api_key "sk-your-key"
+wr config set llm.vision.model "gpt-4o"
+# Verify configuration
+wr agent doctor
+```
+
+**When a user sends you an image:**
+
+1. Save the image to a temporary file (e.g. `/tmp/user_image.jpg`)
+2. Call `wr add --image <saved_path>` — the vision LLM analyzes the image and auto-classifies it as `meeting`, `task`, `reminder`, `done_things`, or `cancel_or_update`
+3. Optionally add `--text "supplementary context"` for additional hints
+4. The response contains the classified record with all extracted fields (type, title, date, time, etc.)
+
+**Example — user sends a calendar screenshot:**
+
+```bash
+# 1. Save the image (agent handles this)
+# 2. Classify:
+wr add --image /tmp/calendar_screenshot.png
+# → {"type":"result","data":{"short_id":"abc123...","type":"meeting","title":"Sprint planning","date":"2026-05-12","time":"10:00"}}
+
+# With extra context:
+wr add --image /tmp/whiteboard.jpg --text "whiteboard notes from standup"
+```
+
+**Supported formats:** `.png`, `.jpg`/`.jpeg`, `.gif`, `.webp` (max 20 MB).
+
+**Important:** `--image` and `--type`/`--title` can be combined — explicit flags take precedence over LLM results. If vision LLM is not configured, the command returns `llm_error`.
+
 ### Data Import
 
 ```bash
@@ -1278,6 +1315,8 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 8. **Tags are comma-separated strings.** In `wr add`, use `--tags "tag1,tag2"`. In `wr update`, `--tags` replaces the entire list (does not append).
 
 9. **Import validates all records before writing any.** If record at index 5 has a missing field, records 0–4 are NOT written either. Fix the invalid record and retry.
+
+10. **When a user sends an image, use `wr add --image`.** Save the image to a temp file first, then call `wr add --image /path/to/saved/image`. The vision LLM auto-classifies the content. If `llm.vision` is not configured, fall back to asking the user for type/title manually. Do NOT try to describe the image yourself and use `wr add --text` — the vision model is specifically trained to extract structured fields from screenshots and photos.
 
 10. **Imported records get fresh ShortIDs.** The original ShortIDs from the source are not preserved.
 
