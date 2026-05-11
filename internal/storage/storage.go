@@ -42,7 +42,12 @@ type Storage struct {
 }
 
 // New creates a Storage rooted at baseDir (the work-records/ directory).
+// It also runs any pending data migrations (e.g., logs/ → done_things/).
 func New(baseDir string) *Storage {
+	// Run startup migration; log warning on failure but don't block Storage creation.
+	if err := MigrateIfNeeded(baseDir); err != nil {
+		logger.WithField("error", err).Warnf("[storage] startup migration failed")
+	}
 	return &Storage{baseDir: baseDir, lock: NewLockFile(baseDir)}
 }
 
