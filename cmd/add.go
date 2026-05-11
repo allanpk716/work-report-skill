@@ -115,10 +115,14 @@ var addCmd = &cobra.Command{
 			}
 		}
 
-		// Default date to today when not using LLM classification
-		if !usedLLM && addDate == "" {
+		// Default date to today when not provided (covers both manual and LLM paths)
+		if addDate == "" {
 			addDate = todayInLocation(cfg)
-			logger.Infof("add: source=default_today date=%s", addDate)
+			source := "default_today"
+			if usedLLM {
+				source = "llm_date_fallback"
+			}
+			logger.Infof("add: source=%s date=%s", source, addDate)
 		}
 
 		// Validate required fields
