@@ -1,10 +1,16 @@
 package remind
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"wr/internal/models"
+	"wr/internal/pushover"
 	"wr/internal/storage"
 )
 
@@ -459,5 +465,148 @@ func TestListDue_NotificationPriority_Empty(t *testing.T) {
 	}
 	if due[0].NotificationPriority != "" {
 		t.Errorf("NotificationPriority = %q, want empty (backward compat)", due[0].NotificationPriority)
+	}
+}
+
+// --- PushDue/PushSingle priority mapping tests (mock HTTP server) ---
+
+func TestPushDue_HighPriority(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:               models.TypeReminder,
+			Title:              "Urgent meeting",
+			Date:               "2026-06-14",
+			Time:               "09:00",
+			NotificationPriority: "high",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 1 {
+		t.Fatalf("expected 1 pushed, got %d", len(result.Pushed))
+	}
+
+	if !strings.Contains(capturedBody, "priority=1") {
+		t.Errorf("expected priority=1 in POST body, got: %s", capturedBody)
+	}
+}
+
+func TestPushDue_NormalPriority(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	// No notification_priority set — should default to priority=0
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeReminder,
+			Title: "Normal task",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 1 {
+		t.Fatalf("expected 1 pushed, got %d", len(result.Pushed))
+	}
+
+	if !strings.Contains(capturedBody, "priority=0") {
+		t.Errorf("expected priority=0 in POST body, got: %s", capturedBody)
+	}
+}
+
+func TestPushSingle_HighPriority(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:               models.TypeReminder,
+			Title:              "Single high reminder",
+			Date:               "2026-06-14",
+			Time:               "09:00",
+			NotificationPriority: "high",
+		},
+	}
+	added, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+	shortID := models.GetCommonFields(added).ShortID
+
+	ctx := context.Background()
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	pushed, err := PushSingle(ctx, store, cfg, shortID)
+	if err != nil {
+		t.Fatalf("PushSingle: %v", err)
+	}
+	if pushed.ShortID != shortID {
+		t.Errorf("expected short_id %q, got %q", shortID, pushed.ShortID)
+	}
+
+	if !strings.Contains(capturedBody, "priority=1") {
+		t.Errorf("expected priority=1 in POST body, got: %s", capturedBody)
 	}
 }

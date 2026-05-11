@@ -181,7 +181,9 @@ func PushDue(ctx context.Context, store *storage.Storage, cfg pushover.Config, n
 			message = fmt.Sprintf("⏰ 提醒: %s (%s %s)", r.Title, r.Date, r.Time)
 		}
 
-		err := pushover.Send(ctx, cfg, message, "wr 提醒", 0)
+		priority := models.NotificationPriorityToPushover(r.NotificationPriority)
+		logger.WithField("short_id", r.ShortID).WithField("priority", priority).Info("[remind] resolved push priority")
+		err := pushover.Send(ctx, cfg, message, "wr 提醒", priority)
 		if err != nil {
 			logger.WithField("short_id", r.ShortID).WithField("error", err.Error()).Warn("[remind] push failed")
 			result.Failed = append(result.Failed, FailedItem{
@@ -232,7 +234,9 @@ func PushSingle(ctx context.Context, store *storage.Storage, cfg pushover.Config
 		message = fmt.Sprintf("⏰ 提醒: %s (%s %s)", cf.Title, cf.Date, cf.Time)
 	}
 
-	if err := pushover.Send(ctx, cfg, message, "wr 提醒", 0); err != nil {
+	priority := models.NotificationPriorityToPushover(cf.NotificationPriority)
+	logger.WithField("short_id", shortID).WithField("priority", priority).Info("[remind] resolved push priority")
+	if err := pushover.Send(ctx, cfg, message, "wr 提醒", priority); err != nil {
 		logger.WithField("short_id", shortID).WithField("error", err.Error()).Warn("[remind] push single failed")
 		return nil, err
 	}
