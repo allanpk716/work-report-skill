@@ -4,7 +4,7 @@ A pure CLI tool for managing work reports. Built with Go, designed for AI agent 
 
 ## Features
 
-- **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, logs)
+- **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, done_things)
 - **LLM classification** — Describe work in natural language or attach images; auto-classifies them into structured records
 - **Report generation** — Generate daily, weekly, or custom-range reports in Markdown or JSON
 - **Push notifications** — Push reports directly to Pushover
