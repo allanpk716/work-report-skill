@@ -215,22 +215,31 @@ func nowInLocation(cfg *config.Config) time.Time {
 // buildRecord creates the correct typed record struct from the given fields.
 // This is extracted from daemon/handler.go so CLI commands can construct
 // records without going through the daemon HTTP API.
+//
+// If notifyPriority is empty and the record type is "meeting", the
+// notification_priority is automatically set to "high".
 func buildRecord(recType, title, date, tm, description string,
-	tags []string, location, relatedPerson, priority, remindBefore, recurring, idempotencyKey string) interface{} {
+	tags []string, location, relatedPerson, priority, remindBefore, recurring, idempotencyKey, notifyPriority string) interface{} {
+
+	// Meeting records default to high notification priority when not specified.
+	if notifyPriority == "" && recType == string(models.TypeMeeting) {
+		notifyPriority = "high"
+	}
 
 	cf := models.CommonFields{
-		Type:           models.RecordType(recType),
-		Title:          title,
-		Date:           date,
-		Time:           tm,
-		Description:    description,
-		Tags:           tags,
-		Location:       location,
-		RelatedPerson:  relatedPerson,
-		Priority:       priority,
-		RemindBefore:   remindBefore,
-		Status:         models.StatusActive,
-		IdempotencyKey: idempotencyKey,
+		Type:               models.RecordType(recType),
+		Title:              title,
+		Date:               date,
+		Time:               tm,
+		Description:        description,
+		Tags:               tags,
+		Location:           location,
+		RelatedPerson:      relatedPerson,
+		Priority:           priority,
+		RemindBefore:       remindBefore,
+		Status:             models.StatusActive,
+		IdempotencyKey:     idempotencyKey,
+		NotificationPriority: notifyPriority,
 	}
 
 	switch models.RecordType(recType) {

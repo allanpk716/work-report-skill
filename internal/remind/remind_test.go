@@ -398,3 +398,66 @@ func TestListDue_StaleExcluded(t *testing.T) {
 		t.Errorf("expected 0 due reminders (stale excluded), got %d", len(due))
 	}
 }
+
+func TestListDue_NotificationPriority(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	// Create a reminder with high notification priority
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:               models.TypeReminder,
+			Title:              "High priority reminder",
+			Date:               "2026-06-14",
+			Time:               "09:00",
+			NotificationPriority: "high",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due reminder, got %d", len(due))
+	}
+	if due[0].NotificationPriority != "high" {
+		t.Errorf("NotificationPriority = %q, want high", due[0].NotificationPriority)
+	}
+}
+
+func TestListDue_NotificationPriority_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	// Create a reminder without notification priority (backward compat)
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeReminder,
+			Title: "Normal reminder",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due reminder, got %d", len(due))
+	}
+	if due[0].NotificationPriority != "" {
+		t.Errorf("NotificationPriority = %q, want empty (backward compat)", due[0].NotificationPriority)
+	}
+}

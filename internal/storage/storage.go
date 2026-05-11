@@ -310,7 +310,7 @@ var allowedUpdateFields = map[string]bool{
 	"end_time": true, "location": true, "related_person": true,
 	"priority": true, "tags": true, "remind_before": true,
 	"recurring": true, "participants": true, "agenda": true,
-	"notes": true, "progress": true,
+	"notes": true, "progress": true, "notification_priority": true,
 }
 
 // ErrRecordNotFound is returned by UpdateRecord when the short ID does not
@@ -472,6 +472,13 @@ func (s *Storage) applyCommonFields(cf *models.CommonFields, fields map[string]i
 		if sv, ok := v.(string); ok {
 			cf.Priority = sv
 			changed = append(changed, "priority")
+		}
+	}
+
+	if v, ok := fields["notification_priority"]; ok {
+		if sv, ok := v.(string); ok {
+			cf.NotificationPriority = sv
+			changed = append(changed, "notification_priority")
 		}
 	}
 

@@ -26,11 +26,12 @@ const (
 
 // DueReminder is a lightweight view of a reminder that is currently due.
 type DueReminder struct {
-	ShortID string `json:"short_id"`
-	Title   string `json:"title"`
-	Date    string `json:"date"`
-	Time    string `json:"time"`
-	IsStale bool   `json:"is_stale"`
+	ShortID             string `json:"short_id"`
+	Title               string `json:"title"`
+	Date                string `json:"date"`
+	Time                string `json:"time"`
+	IsStale             bool   `json:"is_stale"`
+	NotificationPriority string `json:"notification_priority,omitempty"`
 }
 
 // PushedItem represents a successfully pushed reminder.
@@ -112,6 +113,7 @@ func IsDue(rec storage.ListedRecord, now time.Time, window time.Duration, includ
 
 // ListDue returns all currently due reminders.
 // It queries storage for active reminders and filters by IsDue.
+// Each DueReminder includes the NotificationPriority from the full record.
 func ListDue(store *storage.Storage, now time.Time, window time.Duration, includeStale bool) ([]DueReminder, error) {
 	recs, err := store.ListRecords(storage.ListOptions{
 		RecordType: models.TypeReminder,
@@ -125,12 +127,21 @@ func ListDue(store *storage.Storage, now time.Time, window time.Duration, includ
 	for _, rec := range recs {
 		isDue, isStale := IsDue(rec, now, window, includeStale)
 		if isDue {
+			// Read full record to extract NotificationPriority
+			np := ""
+			if full, _, err := store.GetByID(rec.ShortID); err == nil {
+				if cf := models.GetCommonFields(full); cf != nil {
+					np = cf.NotificationPriority
+				}
+			}
+
 			due = append(due, DueReminder{
-				ShortID: rec.ShortID,
-				Title:   rec.Title,
-				Date:    rec.Date,
-				Time:    rec.Time,
-				IsStale: isStale,
+				ShortID:             rec.ShortID,
+				Title:               rec.Title,
+				Date:                rec.Date,
+				Time:                rec.Time,
+				IsStale:             isStale,
+				NotificationPriority: np,
 			})
 		}
 	}

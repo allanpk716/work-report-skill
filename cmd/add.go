@@ -155,7 +155,7 @@ var addCmd = &cobra.Command{
 
 		// Build and persist the record
 		rec := buildRecord(addType, addTitle, addDate, addTime, addDescription,
-			tags, addLocation, addRelatedPerson, addPriority, addRemindBefore, addRecurring, addIdempotencyKey)
+			tags, addLocation, addRelatedPerson, addPriority, addRemindBefore, addRecurring, addIdempotencyKey, "")
 
 		result, err := withLockRetryResult(func() (interface{}, error) {
 			return store.AddRecord(rec)
@@ -288,7 +288,7 @@ func handleBatchAddLocal(store *storage.Storage, cfg *config.Config, actionable 
 
 		rec := buildRecord(recType, title, date, result.Time, result.Description,
 			nil, result.Location, result.RelatedPerson, result.Priority,
-			result.RemindBefore, result.Recurring, "")
+			result.RemindBefore, result.Recurring, "", "")
 
 		persisted, err := withLockRetryResult(func() (interface{}, error) {
 			return store.AddRecord(rec)

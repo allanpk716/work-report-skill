@@ -180,8 +180,10 @@ func buildRecordFromMap(rec map[string]interface{}) interface{} {
 		}
 	}
 
+	notifyPriority := getStringField(rec, "notification_priority")
+
 	return buildRecord(recType, title, date, tm, description,
-		tags, location, relatedPerson, priority, remindBefore, recurring, idempotencyKey)
+		tags, location, relatedPerson, priority, remindBefore, recurring, idempotencyKey, notifyPriority)
 }
 
 // getStringField extracts a string field from a map, returning "" if missing or wrong type.

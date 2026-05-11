@@ -2390,3 +2390,61 @@ func TestConcurrentWriteAcrossProcesses(t *testing.T) {
 
 	t.Logf("cross-process write: %d records, %d unique IDs", len(recs), len(ids))
 }
+
+func TestUpdateRecord_NotificationPriority(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("通知测试", "2026-05-02")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Update notification_priority to "high"
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"notification_priority": "high",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if cf.NotificationPriority != "high" {
+		t.Errorf("NotificationPriority = %q, want high", cf.NotificationPriority)
+	}
+
+	// Verify persistence: re-read from disk
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after update: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.NotificationPriority != "high" {
+		t.Errorf("persisted NotificationPriority = %q, want high", foundCF.NotificationPriority)
+	}
+}
+
+func TestUpdateRecord_NotificationPriority_Normal(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestReminder("优先级测试", "2026-05-02", "09:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Set to "normal" explicitly
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"notification_priority": "normal",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(updated)
+	if cf.NotificationPriority != "normal" {
+		t.Errorf("NotificationPriority = %q, want normal", cf.NotificationPriority)
+	}
+}
