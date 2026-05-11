@@ -126,7 +126,7 @@ var addCmd = &cobra.Command{
 			return writeJSONLError("invalid_type", "missing required field: type")
 		}
 		if !models.IsValidType(addType) {
-			return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, or log)", addType))
+			return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, or done_things)", addType))
 		}
 		if addTitle == "" {
 			return writeJSONLError("invalid_body", "missing required field: title")
@@ -343,7 +343,7 @@ func splitByComma(s string) []string {
 }
 
 func init() {
-	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, log)")
+	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, done_things)")
 	addCmd.Flags().StringVar(&addTitle, "title", "", "Entry title")
 	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD, defaults to today if omitted)")
 	addCmd.Flags().StringVar(&addTime, "time", "", "Time (HH:MM)")

@@ -1,5 +1,5 @@
 // Package models defines data structures for work records (meetings, tasks,
-// reminders, logs) that map to the existing nanobot JSON record formats in the
+// reminders, done_things) that map to the existing nanobot JSON record formats in the
 // work-records/ directory hierarchy.
 //
 // Each record type includes a ShortID field — a 16-character hex string derived
@@ -21,21 +21,32 @@ const (
 	TypeMeeting  RecordType = "meeting"
 	TypeTask     RecordType = "task"
 	TypeReminder RecordType = "reminder"
-	TypeLog      RecordType = "log"
+	TypeDoneThings RecordType = "done_things"
 )
 
 // ValidRecordTypes returns the set of valid record type strings.
 func ValidRecordTypes() []string {
-	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeLog)}
+	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeDoneThings)}
 }
 
 // IsValidType checks whether s is a valid record type.
 func IsValidType(s string) bool {
 	switch RecordType(s) {
-	case TypeMeeting, TypeTask, TypeReminder, TypeLog:
+	case TypeMeeting, TypeTask, TypeReminder, TypeDoneThings:
 		return true
 	}
 	return false
+}
+
+// DirName returns the filesystem directory name for this record type.
+// For example, TypeDoneThings returns "done_things" (not "done_things" + "s").
+func (rt RecordType) DirName() string {
+	switch rt {
+	case TypeDoneThings:
+		return "done_things"
+	default:
+		return string(rt) + "s" // meetings, tasks, reminders
+	}
 }
 
 // Status constants for tasks and reminders.
@@ -103,9 +114,9 @@ type ReminderRecord struct {
 	Recurring string `json:"recurring,omitempty"`
 }
 
-// LogRecord maps to the log JSON format stored in
-// work-records/logs/YYYY/MM/DD/<timestamp>.json.
-type LogRecord struct {
+// DoneThingsRecord maps to the done_things JSON format stored in
+// work-records/done_things/YYYY/MM/DD/<timestamp>.json.
+type DoneThingsRecord struct {
 	CommonFields
 	Priority string `json:"priority,omitempty"`
 	Progress string `json:"progress,omitempty"`
@@ -141,10 +152,10 @@ func ParseRecord(data []byte) (interface{}, error) {
 			return nil, fmt.Errorf("models: parse reminder: %w", err)
 		}
 		return &r, nil
-	case TypeLog:
-		var r LogRecord
+	case TypeDoneThings:
+		var r DoneThingsRecord
 		if err := json.Unmarshal(data, &r); err != nil {
-			return nil, fmt.Errorf("models: parse log: %w", err)
+			return nil, fmt.Errorf("models: parse done_things: %w", err)
 		}
 		return &r, nil
 	default:
@@ -194,7 +205,7 @@ func GetCommonFields(r interface{}) *CommonFields {
 		return &v.CommonFields
 	case *ReminderRecord:
 		return &v.CommonFields
-	case *LogRecord:
+	case *DoneThingsRecord:
 		return &v.CommonFields
 	default:
 		return nil

@@ -16,7 +16,7 @@ var AllowedClassifyTypes = []string{
 	"meeting",
 	"task",
 	"reminder",
-	"log",
+	"done_things",
 	"cancel_or_update",
 }
 
@@ -189,7 +189,7 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 1. **meeting** — 会议、评审、讨论、面谈等需要多人参与的活动
 2. **task** — 待办任务、工作事项、需要完成的事情
 3. **reminder** — 提醒、备忘、需要注意的事项
-4. **log** — 工作日志、已完成的事、记录性的文字
+4. **done_things** — 工作日志、已完成的事、记录性的文字
 5. **cancel_or_update** — 取消、修改、更新已有记录的操作（包含目标记录ID时使用target_id字段）
 
 ## 会议关键词优先级
@@ -200,7 +200,7 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 - 1v1、一对一、面谈、约聊、约了（某人）
 - 与（某人）开/讨论/沟通/评审
 
-仅当关键词明显用于否定或取消语境（如"取消会议"、"不用开会了"）时，才考虑 cancel_or_update 或 log 类型。
+仅当关键词明显用于否定或取消语境（如"取消会议"、"不用开会了"）时，才考虑 cancel_or_update 或 done_things 类型。
 
 ## 多事件检测
 

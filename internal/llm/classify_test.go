@@ -60,11 +60,11 @@ func TestClassify_Reminder(t *testing.T) {
 
 func TestClassify_Log(t *testing.T) {
 	result := mockClassify(t, "今天完成了需求文档的编写", mockResponse{
-		Type:        "log",
+		Type: "done_things",
 		Title:       "完成需求文档编写",
 		Description: "今天完成了需求文档的编写",
 	})
-	if result.Type != "log" {
+	if result.Type != "done_things" {
 		t.Fatalf("expected type log, got %q", result.Type)
 	}
 }
@@ -308,10 +308,10 @@ func TestClassify_LongText(t *testing.T) {
 	}
 
 	result := mockClassify(t, longText, mockResponse{
-		Type:  "log",
+		Type: "done_things",
 		Title: "长文本记录",
 	})
-	if result.Type != "log" {
+	if result.Type != "done_things" {
 		t.Fatalf("expected type log, got %q", result.Type)
 	}
 }
@@ -461,14 +461,14 @@ func TestClassifyBatch_SingleResult(t *testing.T) {
 
 func TestClassifyBatch_MultipleResults(t *testing.T) {
 	items := []mockResponse{
-		{Type: "log", Title: "完成需求文档", Date: "2026-05-02"},
+		{Type: "done_things", Title: "完成需求文档", Date: "2026-05-02"},
 		{Type: "meeting", Title: "项目评审会", Date: "2026-05-02", Time: "14:00"},
 	}
 	results := mockClassifyBatch(t, "上午完成了需求文档，下午开了项目评审会", items)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	if results[0].Type != "log" {
+	if results[0].Type != "done_things" {
 		t.Fatalf("result[0]: expected type log, got %q", results[0].Type)
 	}
 	if results[1].Type != "meeting" {
@@ -579,7 +579,7 @@ func TestParseClassifyBatchResponse_SingleObject(t *testing.T) {
 }
 
 func TestParseClassifyBatchResponse_Array(t *testing.T) {
-	content := `[{"type":"log","title":"完成文档"},{"type":"meeting","title":"评审会","time":"14:00"}]`
+	content := `[{"type":"done_things","title":"完成文档"},{"type":"meeting","title":"评审会","time":"14:00"}]`
 	results, err := parseClassifyBatchResponse(content)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -587,7 +587,7 @@ func TestParseClassifyBatchResponse_Array(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	if results[0].Type != "log" {
+	if results[0].Type != "done_things" {
 		t.Fatalf("result[0]: expected type log, got %q", results[0].Type)
 	}
 	if results[1].Type != "meeting" {

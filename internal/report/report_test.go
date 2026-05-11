@@ -34,7 +34,7 @@ func TestGenerate_Empty(t *testing.T) {
 		t.Errorf("Total = %d, want 0", rpt.Summary.Total)
 	}
 	if len(rpt.Meetings) != 0 || len(rpt.Tasks) != 0 ||
-		len(rpt.Reminders) != 0 || len(rpt.Logs) != 0 {
+		len(rpt.Reminders) != 0 || len(rpt.DoneThings) != 0 {
 		t.Error("expected all entry slices to be empty")
 	}
 	// Markdown should have header but no sections
@@ -75,9 +75,9 @@ func TestGenerate_AllTypes(t *testing.T) {
 			Time:  "17:00",
 		},
 	})
-	addTestRecord(t, store, &models.LogRecord{
+	addTestRecord(t, store, &models.DoneThingsRecord{
 		CommonFields: models.CommonFields{
-			Type:  models.TypeLog,
+			Type:  models.TypeDoneThings,
 			Title: "修复登录Bug",
 			Date:  "2026-05-02",
 		},
@@ -97,8 +97,8 @@ func TestGenerate_AllTypes(t *testing.T) {
 	if rpt.Summary.Reminders != 1 {
 		t.Errorf("Reminders = %d, want 1", rpt.Summary.Reminders)
 	}
-	if rpt.Summary.Logs != 1 {
-		t.Errorf("Logs = %d, want 1", rpt.Summary.Logs)
+	if rpt.Summary.DoneThings != 1 {
+		t.Errorf("Logs = %d, want 1", rpt.Summary.DoneThings)
 	}
 	if rpt.Summary.Total != 4 {
 		t.Errorf("Total = %d, want 4", rpt.Summary.Total)
@@ -114,8 +114,8 @@ func TestGenerate_AllTypes(t *testing.T) {
 	if rpt.Reminders[0].Title != "提交报告" {
 		t.Errorf("reminder title = %q, want 提交报告", rpt.Reminders[0].Title)
 	}
-	if rpt.Logs[0].Title != "修复登录Bug" {
-		t.Errorf("log title = %q, want 修复登录Bug", rpt.Logs[0].Title)
+	if rpt.DoneThings[0].Title != "修复登录Bug" {
+		t.Errorf("log title = %q, want 修复登录Bug", rpt.DoneThings[0].Title)
 	}
 
 	// Verify participants extracted for meeting
@@ -220,10 +220,10 @@ func TestGenerate_Markdown_EmptySections(t *testing.T) {
 	store := storage.New(dir)
 
 	// Only add a log — other sections should be absent from markdown
-	addTestRecord(t, store, &models.LogRecord{
+	addTestRecord(t, store, &models.DoneThingsRecord{
 		CommonFields: models.CommonFields{
-			Type:  models.TypeLog,
-			Title: "只写日志",
+			Type:  models.TypeDoneThings,
+			Title: "只写已完成的事",
 			Date:  "2026-05-02",
 		},
 	})
@@ -240,8 +240,8 @@ func TestGenerate_Markdown_EmptySections(t *testing.T) {
 	if strings.Contains(md, "## ✅ 任务") {
 		t.Error("empty task section should not appear in markdown")
 	}
-	if !strings.Contains(md, "## 📝 日志") {
-		t.Error("log section should appear in markdown")
+	if !strings.Contains(md, "## 📝 已完成的事") {
+		t.Error("done_things section should appear in markdown")
 	}
 }
 
@@ -262,9 +262,9 @@ func TestGenerateToday(t *testing.T) {
 	loc := time.UTC
 	today := time.Now().In(loc).Format("2006-01-02")
 
-	addTestRecord(t, store, &models.LogRecord{
+	addTestRecord(t, store, &models.DoneThingsRecord{
 		CommonFields: models.CommonFields{
-			Type:  models.TypeLog,
+			Type:  models.TypeDoneThings,
 			Title: "today's log",
 			Date:  today,
 		},
@@ -371,9 +371,9 @@ func TestGenerate_LogWithProgress(t *testing.T) {
 
 	// LogRecord has its own Priority field that shadows CommonFields.Priority.
 	// Set the type-specific Priority directly.
-	rec := &models.LogRecord{
+	rec := &models.DoneThingsRecord{
 		CommonFields: models.CommonFields{
-			Type:  models.TypeLog,
+			Type:  models.TypeDoneThings,
 			Title: "代码重构",
 			Date:  "2026-05-02",
 		},
@@ -487,8 +487,8 @@ func TestGenerateRange_MultiDay(t *testing.T) {
 		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "task-d2", Date: "2026-05-02"},
 	})
 	// Day 3
-	addTestRecord(t, store, &models.LogRecord{
-		CommonFields: models.CommonFields{Type: models.TypeLog, Title: "log-d3", Date: "2026-05-03"},
+	addTestRecord(t, store, &models.DoneThingsRecord{
+		CommonFields: models.CommonFields{Type: models.TypeDoneThings, Title: "log-d3", Date: "2026-05-03"},
 	})
 
 	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC)
@@ -502,11 +502,11 @@ func TestGenerateRange_MultiDay(t *testing.T) {
 	if rr.Summary.Total != 3 {
 		t.Errorf("Total = %d, want 3", rr.Summary.Total)
 	}
-	if rr.Summary.Meetings != 1 || rr.Summary.Tasks != 1 || rr.Summary.Logs != 1 {
-		t.Errorf("summary counts = meetings=%d tasks=%d logs=%d, want 1/1/1",
-			rr.Summary.Meetings, rr.Summary.Tasks, rr.Summary.Logs)
+	if rr.Summary.Meetings != 1 || rr.Summary.Tasks != 1 || rr.Summary.DoneThings != 1 {
+		t.Errorf("summary counts = meetings=%d tasks=%d done_things=%d, want 1/1/1",
+			rr.Summary.Meetings, rr.Summary.Tasks, rr.Summary.DoneThings)
 	}
-	if len(rr.MergedMeetings) != 1 || len(rr.MergedTasks) != 1 || len(rr.MergedLogs) != 1 {
+	if len(rr.MergedMeetings) != 1 || len(rr.MergedTasks) != 1 || len(rr.MergedDoneThings) != 1 {
 		t.Error("expected 1 merged entry per type")
 	}
 }
@@ -672,8 +672,8 @@ func TestGenerateRange_Markdown_EmptyDays(t *testing.T) {
 	if strings.Contains(md, "## 🔔 提醒") {
 		t.Error("empty reminder section should not appear")
 	}
-	if strings.Contains(md, "## 📝 日志") {
-		t.Error("empty log section should not appear")
+	if strings.Contains(md, "## 📝 已完成的事") {
+		t.Error("empty done_things section should not appear")
 	}
 }
 

@@ -166,7 +166,7 @@ func TestStatusWithRecords(t *testing.T) {
 	store.AddRecord(taskRecordPtr("Test Task", "2026-01-15"))
 	store.AddRecord(taskRecordPtr("Another Task", "2026-01-15"))
 	store.AddRecord(meetingRecordPtr("Team Standup", "2026-01-15"))
-	store.AddRecord(logRecordPtr("Work log entry", "2026-01-15"))
+	store.AddRecord(doneThingsRecordPtr("Work log entry", "2026-01-15"))
 
 	// Capture JSONL output
 	var buf strings.Builder
@@ -202,8 +202,8 @@ func TestStatusWithRecords(t *testing.T) {
 	if int(byType["meeting"].(float64)) != 1 {
 		t.Errorf("expected by_type.meeting=1, got %v", byType["meeting"])
 	}
-	if int(byType["log"].(float64)) != 1 {
-		t.Errorf("expected by_type.log=1, got %v", byType["log"])
+	if int(byType["done_things"].(float64)) != 1 {
+		t.Errorf("expected by_type.done_things=1, got %v", byType["done_things"])
 	}
 }
 
@@ -420,10 +420,10 @@ func addTestRecords(t *testing.T, store *storage.Storage, count int, recordType 
 					Status: status,
 				},
 			})
-		case models.TypeLog:
-			store.AddRecord(&models.LogRecord{
+		case models.TypeDoneThings:
+			store.AddRecord(&models.DoneThingsRecord{
 				CommonFields: models.CommonFields{
-					Type:   models.TypeLog,
+					Type:   models.TypeDoneThings,
 					Title:  "Test Log",
 					Date:   "2026-01-15",
 					Status: status,
@@ -455,10 +455,10 @@ func meetingRecordPtr(title, date string) *models.MeetingRecord {
 	}
 }
 
-func logRecordPtr(title, date string) *models.LogRecord {
-	return &models.LogRecord{
+func doneThingsRecordPtr(title, date string) *models.DoneThingsRecord {
+	return &models.DoneThingsRecord{
 		CommonFields: models.CommonFields{
-			Type:   models.TypeLog,
+			Type:   models.TypeDoneThings,
 			Title:  title,
 			Date:   date,
 			Status: models.StatusActive,

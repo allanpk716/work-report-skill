@@ -101,7 +101,7 @@ const sampleReminderWithRemindBeforeJSON = `{
 }`
 
 const sampleLogJSON = `{
-  "type": "log",
+  "type": "done_things",
   "date": "2026-04-30",
   "title": "集团算法现状和改进方向PPT评审",
   "description": "对集团算法现状和改进方向PPT进行了评审，提出了改进意见。",
@@ -114,7 +114,7 @@ const sampleLogJSON = `{
 }`
 
 const sampleLogWithFieldsJSON = `{
-  "type": "log",
+  "type": "done_things",
   "title": "完成代码审查",
   "description": "对项目相关代码进行了审查，已完成本次审查任务。",
   "date": "2026-03-11",
@@ -357,23 +357,23 @@ func TestParseLogRoundTrip(t *testing.T) {
 		t.Fatalf("ParseRecord: %v", err)
 	}
 
-	log, ok := parsed.(*LogRecord)
+	doneThings, ok := parsed.(*DoneThingsRecord)
 	if !ok {
-		t.Fatalf("expected *LogRecord, got %T", parsed)
+		t.Fatalf("expected *DoneThingsRecord, got %T", parsed)
 	}
 
-	if log.Type != TypeLog {
-		t.Errorf("Type = %q, want %q", log.Type, TypeLog)
+	if doneThings.Type != TypeDoneThings {
+		t.Errorf("Type = %q, want %q", doneThings.Type, TypeDoneThings)
 	}
-	if log.Title != "集团算法现状和改进方向PPT评审" {
-		t.Errorf("Title = %q", log.Title)
+	if doneThings.Title != "集团算法现状和改进方向PPT评审" {
+		t.Errorf("Title = %q", doneThings.Title)
 	}
-	if len(log.Tags) != 3 {
-		t.Errorf("Tags length = %d, want 3", len(log.Tags))
+	if len(doneThings.Tags) != 3 {
+		t.Errorf("Tags length = %d, want 3", len(doneThings.Tags))
 	}
 
 	// Round-trip
-	roundTrip, err := MarshalRecord(log)
+	roundTrip, err := MarshalRecord(doneThings)
 	if err != nil {
 		t.Fatalf("MarshalRecord: %v", err)
 	}
@@ -398,19 +398,19 @@ func TestParseLogWithAllFields(t *testing.T) {
 		t.Fatalf("ParseRecord: %v", err)
 	}
 
-	log, ok := parsed.(*LogRecord)
+	doneThings, ok := parsed.(*DoneThingsRecord)
 	if !ok {
-		t.Fatalf("expected *LogRecord, got %T", parsed)
+		t.Fatalf("expected *DoneThingsRecord, got %T", parsed)
 	}
 
-	if log.Time != "09:29" {
-		t.Errorf("Time = %q, want %q", log.Time, "09:29")
+	if doneThings.Time != "09:29" {
+		t.Errorf("Time = %q, want %q", doneThings.Time, "09:29")
 	}
-	if log.Priority != "normal" {
-		t.Errorf("Priority = %q, want %q", log.Priority, "normal")
+	if doneThings.Priority != "normal" {
+		t.Errorf("Priority = %q, want %q", doneThings.Priority, "normal")
 	}
-	if log.Progress != "completed" {
-		t.Errorf("Progress = %q, want %q", log.Progress, "completed")
+	if doneThings.Progress != "completed" {
+		t.Errorf("Progress = %q, want %q", doneThings.Progress, "completed")
 	}
 }
 
@@ -466,7 +466,7 @@ func TestIsValidType(t *testing.T) {
 		{"meeting", true},
 		{"task", true},
 		{"reminder", true},
-		{"log", true},
+		{"done_things", true},
 		{"", false},
 		{"unknown", false},
 		{"Meeting", false},
@@ -505,12 +505,12 @@ func TestGetCommonFields(t *testing.T) {
 		t.Errorf("GetCommonFields(reminder) failed")
 	}
 
-	log := &LogRecord{
-		CommonFields: CommonFields{Type: TypeLog, Title: "test log"},
+	doneThings := &DoneThingsRecord{
+		CommonFields: CommonFields{Type: TypeDoneThings, Title: "test done_things"},
 	}
-	cf = GetCommonFields(log)
-	if cf == nil || cf.Title != "test log" {
-		t.Errorf("GetCommonFields(log) failed")
+	cf = GetCommonFields(doneThings)
+	if cf == nil || cf.Title != "test done_things" {
+		t.Errorf("GetCommonFields(done_things) failed")
 	}
 
 	// Unknown type

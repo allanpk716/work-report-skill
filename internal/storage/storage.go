@@ -1,7 +1,7 @@
 // Package storage provides CRUD operations for work records stored in the
 // work-records/ directory hierarchy. It handles reading, writing, listing,
 // completing, and cancelling records across the four record types (meeting,
-// task, reminder, log).
+// task, reminder, done_things).
 //
 // Directory layout mirrors the existing nanobot format:
 //
@@ -11,7 +11,7 @@
 //	tasks/completed/YYYY/MM/DD/<timestamp>.json    (completed tasks)
 //	reminders/active/<timestamp>.json               (active reminders)
 //	reminders/completed/YYYY/MM/DD/<timestamp>.json (completed reminders)
-//	logs/YYYY/MM/DD/<timestamp>.json               (logs, no active/completed)
+//	done_things/YYYY/MM/DD/<timestamp>.json         (done_things, no active/completed)
 //
 // All operations log record ID, type, and action for observability.
 package storage
@@ -205,8 +205,8 @@ func (s *Storage) CompleteRecord(shortID string) error {
 		return fmt.Errorf("storage: complete: unknown record type for %s", shortID)
 	}
 
-	if cf.Type == models.TypeLog {
-		return fmt.Errorf("storage: complete: logs cannot be completed")
+	if cf.Type == models.TypeDoneThings {
+		return fmt.Errorf("storage: complete: done_things entries cannot be completed")
 	}
 
 	if cf.Status == models.StatusCompleted {
@@ -457,7 +457,7 @@ func (s *Storage) applyCommonFields(cf *models.CommonFields, fields map[string]i
 		}
 	}
 
-	// priority is handled in applyTypeFields for LogRecord (shadowed field)
+	// priority is handled in applyTypeFields for DoneThingsRecord (shadowed field)
 	// and here for all other types
 	if v, ok := fields["priority"]; ok {
 		if sv, ok := v.(string); ok {
@@ -501,9 +501,9 @@ func (s *Storage) applyTypeFields(rec interface{}, fields map[string]interface{}
 				changed = append(changed, "recurring")
 			}
 		}
-	case *models.LogRecord:
-		// LogRecord has its own Priority field that shadows CommonFields.Priority.
-		// Setting priority on LogRecord must go through the outer struct.
+	case *models.DoneThingsRecord:
+		// DoneThingsRecord has its own Priority field that shadows CommonFields.Priority.
+		// Setting priority on DoneThingsRecord must go through the outer struct.
 		if p, ok := fields["priority"]; ok {
 			if sv, ok := p.(string); ok {
 				v.Priority = sv
@@ -578,10 +578,10 @@ func (s *Storage) nextSeq() (uint64, error) {
 // activeDirForRecord returns the directory where a new active record should be
 // stored, based on its type and date.
 func (s *Storage) activeDirForRecord(rt models.RecordType, date string) string {
-	typeDir := filepath.Join(s.baseDir, string(rt)+"s") // "tasks", "meetings", etc.
+	typeDir := filepath.Join(s.baseDir, rt.DirName())
 
 	switch rt {
-	case models.TypeLog:
+	case models.TypeDoneThings:
 		return filepath.Join(typeDir, datePath(date))
 	case models.TypeMeeting:
 		return filepath.Join(typeDir, datePath(date))
@@ -597,17 +597,17 @@ func (s *Storage) activeDirForRecord(rt models.RecordType, date string) string {
 // completedDirForRecord returns the completed directory for a record type at a
 // given time (used for date-based completed paths).
 func (s *Storage) completedDirForRecord(rt models.RecordType, t time.Time) string {
-	typeDir := filepath.Join(s.baseDir, string(rt)+"s")
+	typeDir := filepath.Join(s.baseDir, rt.DirName())
 	return filepath.Join(typeDir, "completed", t.Format("2006"), t.Format("01"), t.Format("02"))
 }
 
 // scanType scans all directories for a given record type, applying filters.
 func (s *Storage) scanType(rt models.RecordType, opts ListOptions) ([]ListedRecord, error) {
 	var results []ListedRecord
-	typeDir := filepath.Join(s.baseDir, string(rt)+"s")
+	typeDir := filepath.Join(s.baseDir, rt.DirName())
 
 	switch rt {
-	case models.TypeLog:
+	case models.TypeDoneThings:
 		return s.scanDateTree(typeDir, rt, opts)
 	case models.TypeMeeting:
 		// Meetings use date tree (no active/ subdir)
@@ -800,10 +800,10 @@ func (s *Storage) matchesFilter(lr *ListedRecord, opts ListOptions) bool {
 // findRecordByID scans all files of a given type looking for one whose ShortID
 // matches.
 func (s *Storage) findRecordByID(rt models.RecordType, shortID string) (interface{}, string, error) {
-	typeDir := filepath.Join(s.baseDir, string(rt)+"s")
+	typeDir := filepath.Join(s.baseDir, rt.DirName())
 
 	switch rt {
-	case models.TypeLog:
+	case models.TypeDoneThings:
 		return s.findInDateTree(typeDir, shortID)
 	case models.TypeMeeting:
 		rec, path, err := s.findInDateTree(typeDir, shortID)

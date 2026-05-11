@@ -164,9 +164,9 @@ func buildRecord(recType, title, date, tm, description string,
 			CommonFields: cf,
 			Recurring:    recurring,
 		}
-	case models.TypeLog:
-		return &models.LogRecord{CommonFields: cf}
+	case models.TypeDoneThings:
+		return &models.DoneThingsRecord{CommonFields: cf}
 	default:
-		return &models.LogRecord{CommonFields: cf}
+		return &models.DoneThingsRecord{CommonFields: cf}
 	}
 }

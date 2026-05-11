@@ -43,7 +43,7 @@ func TestAddWithoutDaemon(t *testing.T) {
 	executeCmd("config", "init")
 
 	// Add a record without LLM (manual type/title/date)
-	code, out := executeCmd("add", "--type", "log", "--title", "S01 integration test entry", "--date", "2025-01-01")
+	code, out := executeCmd("add", "--type", "done_things", "--title", "S01 integration test entry", "--date", "2025-01-01")
 	if code != agentsdk.ExitSuccess {
 		t.Fatalf("expected exit code 0, got %d; output: %s", code, string(out))
 	}
@@ -84,7 +84,7 @@ func TestListWithoutDaemon(t *testing.T) {
 
 	// Add 3 records
 	for i := 0; i < 3; i++ {
-		code, _ := executeCmd("add", "--type", "log", "--title", fmt.Sprintf("list test entry %d", i), "--date", "2025-01-01")
+		code, _ := executeCmd("add", "--type", "done_things", "--title", fmt.Sprintf("list test entry %d", i), "--date", "2025-01-01")
 		if code != agentsdk.ExitSuccess {
 			t.Fatalf("add %d failed", i)
 		}
@@ -191,7 +191,7 @@ func TestReportPushTodayNoDaemon(t *testing.T) {
 
 	// Add a record for today
 	today := todayInLocation(loadConfig())
-	code, _ := executeCmd("add", "--type", "log", "--title", "report test entry", "--date", today)
+	code, _ := executeCmd("add", "--type", "done_things", "--title", "report test entry", "--date", today)
 	if code != agentsdk.ExitSuccess {
 		t.Fatalf("add failed")
 	}
@@ -234,7 +234,7 @@ func TestConcurrentAdd(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			code, _ := executeCmd("add", "--type", "log",
+			code, _ := executeCmd("add", "--type", "done_things",
 				"--title", fmt.Sprintf("concurrent test %d", idx),
 				"--date", "2025-01-01")
 			if code != agentsdk.ExitSuccess {
@@ -491,7 +491,7 @@ func TestExportJSONNoDaemon(t *testing.T) {
 	executeCmd("config", "init")
 
 	// Add a record
-	code, _ := executeCmd("add", "--type", "log", "--title", "export test", "--date", "2025-01-01")
+	code, _ := executeCmd("add", "--type", "done_things", "--title", "export test", "--date", "2025-01-01")
 	if code != agentsdk.ExitSuccess {
 		t.Fatalf("add failed")
 	}
@@ -527,7 +527,7 @@ func TestImportJSONNoDaemon(t *testing.T) {
 	importFile := filepath.Join(tmpHome, "import.json")
 	records := []map[string]interface{}{
 		{
-			"type":  "log",
+			"type":  "done_things",
 			"title": "imported entry 1",
 			"date":  "2025-01-01",
 		},
