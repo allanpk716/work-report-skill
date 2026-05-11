@@ -29,6 +29,18 @@ func ValidRecordTypes() []string {
 	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeDoneThings)}
 }
 
+// IsActionableType returns true for record types that support lifecycle state
+// transitions (complete/cancel). done_things are factual records and do not
+// support these actions.
+func IsActionableType(rt RecordType) bool {
+	switch rt {
+	case TypeMeeting, TypeTask, TypeReminder:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsValidType checks whether s is a valid record type.
 func IsValidType(s string) bool {
 	switch RecordType(s) {

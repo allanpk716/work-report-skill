@@ -66,6 +66,11 @@ var cancelCmd = &cobra.Command{
 			return writeJSONLError("invalid_params", fmt.Sprintf("record %q is completed, cannot cancel", id))
 		}
 
+		// Check if record type supports cancellation
+		if cf != nil && !models.IsActionableType(cf.Type) {
+			return writeJSONLError("type_not_cancellable", fmt.Sprintf("%s records cannot be cancelled: they are factual records of work already done. Only task, meeting, and reminder types support the cancel action.", cf.Type))
+		}
+
 		if err := withLockRetry(func() error { return store.CancelRecord(id) }); err != nil {
 			if strings.Contains(err.Error(), "already cancelled") {
 				return writeJSONLError("already_cancelled", err.Error())

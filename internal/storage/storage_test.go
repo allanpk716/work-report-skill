@@ -389,7 +389,7 @@ func TestCompleteRecord_Reminder(t *testing.T) {
 	}
 }
 
-func TestCompleteRecord_LogReturnsError(t *testing.T) {
+func TestCompleteRecord_DoneThings(t *testing.T) {
 	s, _ := newTestStorage(t)
 
 	rec := newTestDoneThings("日志测试", "2026-05-02", "09:00")
@@ -401,10 +401,10 @@ func TestCompleteRecord_LogReturnsError(t *testing.T) {
 
 	err = s.CompleteRecord(shortID)
 	if err == nil {
-	// t.Fatal("expected error when completing a done_things record")
+		t.Fatal("expected error when completing a done_things record")
 	}
-	if !strings.Contains(err.Error(), "done_things entries cannot be completed") {
-		t.Errorf("error = %q, should mention done_things entries cannot be completed", err)
+	if !strings.Contains(err.Error(), "factual entries of completed work") {
+		t.Errorf("error = %q, should mention factual entries of completed work", err)
 	}
 }
 

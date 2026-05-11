@@ -211,7 +211,7 @@ func (s *Storage) CompleteRecord(shortID string) error {
 	}
 
 	if cf.Type == models.TypeDoneThings {
-		return fmt.Errorf("storage: complete: done_things entries cannot be completed")
+		return fmt.Errorf("storage: complete: done_things records are factual entries of completed work and do not support status transitions (complete/cancel)")
 	}
 
 	if cf.Status == models.StatusCompleted {
@@ -273,6 +273,10 @@ func (s *Storage) CancelRecord(shortID string) error {
 	cf := models.GetCommonFields(rec)
 	if cf == nil {
 		return fmt.Errorf("storage: cancel: unknown record type for %s", shortID)
+	}
+
+	if cf.Type == models.TypeDoneThings {
+		return fmt.Errorf("storage: cancel: done_things records are factual entries of completed work and do not support status transitions (complete/cancel)")
 	}
 
 	if cf.Status == models.StatusCancelled {

@@ -66,6 +66,11 @@ var completeCmd = &cobra.Command{
 			return writeJSONLError("already_cancelled", fmt.Sprintf("record %q is cancelled, cannot complete", id))
 		}
 
+		// Check if record type supports completion
+		if cf != nil && !models.IsActionableType(cf.Type) {
+			return writeJSONLError("type_not_completable", fmt.Sprintf("%s records cannot be completed: they are factual records of work already done. Only task, meeting, and reminder types support the complete action.", cf.Type))
+		}
+
 		if err := withLockRetry(func() error { return store.CompleteRecord(id) }); err != nil {
 			if strings.Contains(err.Error(), "already completed") {
 				return writeJSONLError("already_completed", err.Error())
