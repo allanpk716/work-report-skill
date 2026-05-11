@@ -64,6 +64,7 @@ wr remind push --due            # 推送所有到期提醒并自动完成
 | `invalid_type` | `--type` 须为 meeting / task / reminder / done_things |
 
 > 完整命令参考、JSONL 格式规范、错误码表见下方各章节。
+> **通知优先级：** 会议记录默认 `high`（绕过 Pushover 静默时段），其他类型默认 `normal`。可通过 `--notify-priority` 显式指定。
 
 ---
 
@@ -136,6 +137,7 @@ Add a new work report entry.
 | `--text` | string | `""` | Natural language text for LLM classification. When provided, `--type`, `--title`, `--date` become optional. |
 | `--image` | string | `""` | Image file path for LLM vision classification. |
 | `--idempotency-key` | string | `""` | Idempotency key for deduplication. |
+| `--notify-priority` | string | `""` | Notification priority for push: `normal`, `high`. Defaults to `high` for meetings, `normal` for all other types. |
 
 **Notes:**
 - `--type` and `--title` are required when not using LLM classification (no `--text`/`--image`).
@@ -143,6 +145,7 @@ Add a new work report entry.
 - If both `--text` (or `--image`) and `--type` are provided, explicit flags take precedence over LLM classification.
 - If LLM classification returns `cancel_or_update` type, no record is created — the response has `type: "result"` with `data.action` set to `"cancel_or_update"`.
 - `done_things` is a non-actionable type — records of this type cannot be completed or cancelled (they are factual records of work already done).
+- `--notify-priority` controls the Pushover delivery priority. Meetings default to `high` (bypasses quiet hours) and other types default to `normal`.
 
 **Example:**
 
@@ -226,6 +229,7 @@ Update fields of an existing work report entry. Only explicitly provided flags a
 | `--agenda` | string | `""` | Update agenda |
 | `--notes` | string | `""` | Update notes |
 | `--progress` | string | `""` | Update progress |
+| `--notify-priority` | string | `""` | Update notification priority (`normal` or `high`) |
 
 **Notes:**
 - Completed or cancelled records cannot be updated — returns `already_completed` or `already_cancelled`.
@@ -399,6 +403,7 @@ wr remind push [<short_id>] [flags]
 **Notes:**
 - **Batch mode** (`--due`): Finds all due reminders and pushes each via Pushover. Successfully pushed reminders are automatically completed (atomic push+complete). Push failures leave the record active for retry. Maximum 10 reminders per batch.
 - **Single mode** (`<short_id>`): Pushes one specific reminder and completes it on success. Push failure leaves the record active.
+- **Priority-aware delivery:** Each reminder's `notification_priority` field (`normal` or `high`) is mapped to the Pushover API priority (`0` or `1`). `high` priority notifications bypass Pushover quiet hours.
 - Pushover must be configured (`pushover.api_token` and `pushover.user_key`).
 
 **Example (batch):**
@@ -1050,6 +1055,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `saved_at` | string | ISO-8601 timestamp when record was created |
 | `updated_at` | string | ISO-8601 timestamp when record was last modified (optional) |
 | `short_id` | string | 16-character hex identifier for CLI reference |
+| `notification_priority` | string | Push notification priority: `normal` or `high` (optional, defaults to `high` for meetings, `normal` for other types) |
 
 ### Meeting-specific Fields
 
@@ -1339,3 +1345,5 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 19. **`wr agent doctor` diagnoses configuration issues.** Runs three health checks (data_dir, LLM, Pushover) and reports pass/fail/warn. LLM missing key is a warning (not a failure). Useful for quick troubleshooting.
 
 20. **All commands are direct CLI invocations.** No background process or setup is needed. Every command reads config and data directly from disk. Just run `wr config init` and start using the tool.
+
+21. **Notification priority controls Pushover delivery urgency.** `notification_priority` is a per-record field (`normal` or `high`). Meetings default to `high` (bypasses quiet hours on the recipient's device); all other types default to `normal`. Set it with `--notify-priority` on `wr add` or update it with `wr update --notify-priority`. When `wr remind push` sends notifications, it reads each record's `notification_priority` and maps it to Pushover API priority (`0` = normal, `1` = high).
