@@ -13,6 +13,7 @@ A pure CLI tool for managing work reports. Built with Go, designed for AI agent 
 - **Data import/export** — Bulk import from JSON, export to JSON or Markdown
 - **Idempotent adds** — Retry-safe record creation with idempotency keys
 - **Data backup** — Timestamped zip backups with Grandfather-Father-Son rotation
+- **Notification priority** — Control Pushover urgency with `--notify-priority` (normal/high) per record
 - **Reminder push** — Detect due reminders and push via Pushover, auto-complete on success
 - **Health checks** — `wr agent doctor` verifies LLM, Pushover, and data directory configuration
 
@@ -32,8 +33,8 @@ go build -o wr .
 # (Optional) Verify LLM, Pushover, and data directory are configured
 ./wr agent doctor
 
-# Add a record (--date defaults to today if omitted)
-./wr add --type meeting --title "Sprint planning" --time 09:00
+# Add a record with high-priority notification (--notify-priority defaults to high for meetings)
+./wr add --type meeting --title "Sprint planning" --time 09:00 --notify-priority high
 
 # Check today's entries
 ./wr list
@@ -77,6 +78,28 @@ wr config init --pushover-token your-app-token --pushover-key your-user-key
 ```
 
 > **Without Pushover credentials**, `wr report push` and `wr digest` push delivery will return `pushover_not_configured`.
+
+### Notification priority
+
+Control the urgency of Pushover notifications on a per-record basis using `--notify-priority`.
+
+| Value | Pushover priority | Behavior |
+|-------|-------------------|----------|
+| `high` | 1 | Bypasses quiet hours, always delivers immediately |
+| `normal` | 0 | Respects quiet hours (default for non-meeting records) |
+
+**Default behavior:** Meetings default to `high` priority; all other record types default to `normal`.
+
+```bash
+# Add a meeting with high-priority notification (default for meetings)
+./wr add --type meeting --title "Sprint planning" --notify-priority high
+
+# Add a task with normal-priority notification
+./wr add --type task --title "Review PR" --notify-priority normal
+
+# Update an existing record's notification priority
+./wr update <id> --notify-priority high
+```
 
 ### LLM classification (optional)
 
