@@ -25,7 +25,7 @@ wr config init                    # 最小配置（无需 LLM key）
 `--date` 省略时默认今天。`--type` 和 `--title` 必填。
 
 ```bash
-wr add --type log --title "完成了代码审查"
+wr add --type done_things --title "完成了代码审查"
 wr add --type meeting --title "站会" --time 10:00
 wr add --type task --title "Review PR #42" --priority high
 ```
@@ -61,7 +61,7 @@ wr remind push --due            # 推送所有到期提醒并自动完成
 | `error_code` | 处理 |
 |---|---|
 | `record_not_found` | `wr list` 查找正确 ID |
-| `invalid_type` | `--type` 须为 meeting / task / reminder / log |
+| `invalid_type` | `--type` 须为 meeting / task / reminder / done_things |
 
 > 完整命令参考、JSONL 格式规范、错误码表见下方各章节。
 
@@ -122,7 +122,7 @@ Add a new work report entry.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `log` |
+| `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `done_things` |
 | `--title` | string | `""` | Entry title |
 | `--date` | string | `""` | Date in `YYYY-MM-DD` format. Defaults to today if omitted. |
 | `--time` | string | `""` | Time in `HH:MM` format |
@@ -142,6 +142,7 @@ Add a new work report entry.
 - `--date` defaults to today when omitted and not using LLM classification.
 - If both `--text` (or `--image`) and `--type` are provided, explicit flags take precedence over LLM classification.
 - If LLM classification returns `cancel_or_update` type, no record is created — the response has `type: "result"` with `data.action` set to `"cancel_or_update"`.
+- `done_things` is a non-actionable type — records of this type cannot be completed or cancelled (they are factual records of work already done).
 
 **Example:**
 
@@ -171,7 +172,7 @@ List work report entries with optional filters.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `log` |
+| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `done_things` |
 | `--date` | string | `""` | Exact date filter (`YYYY-MM-DD`) |
 | `--from` | string | `""` | Date range start, inclusive (`YYYY-MM-DD`) |
 | `--to` | string | `""` | Date range end, inclusive (`YYYY-MM-DD`) |
@@ -269,6 +270,7 @@ wr complete --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be completed. Attempting to complete an already-completed or already-cancelled record returns `storage_error`.
+- `done_things` records cannot be completed — they are factual records of work already done. Only `task`, `meeting`, and `reminder` types support this action. Attempting to complete a `done_things` record returns `type_not_completable`.
 - **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
@@ -285,7 +287,7 @@ wr complete --title "Review PR #42" --date 2026-05-03
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T16:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"completed","tags":["project","weekly"],"saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00","short_id":"a1b2c3d4e5f67890"}}
 ```
 
-**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_params`, `storage_error`
+**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `type_not_completable`, `invalid_params`, `storage_error`
 
 ---
 
@@ -311,6 +313,7 @@ wr cancel --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be cancelled. Attempting to cancel an already-cancelled or already-completed record returns `storage_error`.
+- `done_things` records cannot be cancelled — they are factual records of work already done. Only `task`, `meeting`, and `reminder` types support this action. Attempting to cancel a `done_things` record returns `type_not_cancellable`.
 - **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
@@ -327,7 +330,7 @@ wr cancel --title "Standup" --date 2026-05-03
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T12:00:00Z","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00","short_id":"f0e1d2c3b4a56789"}}
 ```
 
-**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_params`, `storage_error`
+**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `type_not_cancellable`, `invalid_params`, `storage_error`
 
 ---
 
@@ -447,10 +450,10 @@ wr report today
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","meetings":[],"tasks":[],"reminders":[],"logs":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"logs":0},"markdown":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 日志 0 | 共计 0 条\n\n"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","meetings":[],"tasks":[],"reminders":[],"done_things":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"done_things":0},"markdown":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 已完成的事 0 | 共计 0 条\n\n"}}
 ```
 
-The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `logs`). Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report.
+The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `done_things`). Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report.
 
 ##### wr report date \<YYYY-MM-DD\>
 
@@ -992,12 +995,14 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 
 | Code | Meaning | Recommended Agent Response |
 |------|---------|---------------------------|
-| `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `log`. Or provide `--text`/`--image` for LLM classification. |
+| `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `done_things`. Or provide `--text`/`--image` for LLM classification. |
 | `invalid_body` | Missing required fields or malformed request body | Check that required flags (`--title`, `--date`, `--type`) are provided. |
 | `invalid_field` | Attempted to update a field that is not allowed | Check the field name in the update command. |
 | `record_not_found` | No record matches the given short_id | List records with `wr list` to find the correct short_id. |
 | `already_completed` | Attempted to update a completed record | Completed records cannot be modified. Use `wr list --status completed` to view them. |
 | `already_cancelled` | Attempted to update a cancelled record | Cancelled records cannot be modified. |
+| `type_not_completable` | Attempted to complete a `done_things` record | `done_things` records are factual records of work already done and cannot be completed. Only `task`, `meeting`, and `reminder` types support the complete action. |
+| `type_not_cancellable` | Attempted to cancel a `done_things` record | `done_things` records are factual records of work already done and cannot be cancelled. Only `task`, `meeting`, and `reminder` types support the cancel action. |
 | `storage_error` | Filesystem or storage layer error | Check data directory permissions and disk space. |
 | `llm_not_configured` | LLM API key is missing for the requested classification mode | LLM is optional. Either provide `--type` and `--title` explicitly, or run `wr config set llm.text.api_key <key>`. |
 | `llm_error` | LLM API call failed | Check API key validity, network connectivity, and model name. Retry once. |
@@ -1016,7 +1021,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `backup_failed` | Zip creation failed | Check disk space and write permissions on the backup output directory. |
 | `rotation_failed` | GFS rotation failed during backup cleanup | Check backup directory permissions. Inspect with `wr backup list`. |
 | `config_not_found` | Backup config file not found | Defaults are used when the file is missing. Check filesystem permissions. |
-| `lock_conflict` | Concurrent access conflict (cross-process file lock) | Another `wr` process is writing to the same data. Wait a moment and retry. |
+| `lock_conflict` | Concurrent access conflict (cross-process file lock) | Another `wr` process is writing to the same data. The CLI auto-retries up to 2 times with backoff (100ms, 200ms). If still failing, wait and retry manually. The error JSONL includes a `retry_after_ms` field in `data` (currently 500ms) suggesting when to retry. |
 | `storage_locked` | Storage file is locked by another process | Wait for the other process to finish, or remove stale lock files if the other process has exited. |
 | `marshal_error` | JSON serialization failed | Internal error — check data integrity. File a bug if persistent. |
 | `method_not_allowed` | Unsupported HTTP method | Internal routing error. File a bug. |
@@ -1030,7 +1035,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Record type: `meeting`, `task`, `reminder`, `log` |
+| `type` | string | Record type: `meeting`, `task`, `reminder`, `done_things` |
 | `title` | string | Entry title |
 | `description` | string | Longer description (optional) |
 | `date` | string | Date in `YYYY-MM-DD` format |
@@ -1070,7 +1075,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `notes` | string | Additional notes |
 | `recurring` | string | Recurring pattern (e.g. `daily`, `weekly`) |
 
-### Log-specific Fields
+### Done Things-specific Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1108,7 +1113,7 @@ wr agent doctor
 # Add entries (--date defaults to today if omitted)
 wr add --type meeting --title "Sprint planning" --time 09:00 --participants "Alice,Bob"
 wr add --type task --title "Review PR #42" --priority high
-wr add --type log --title "Deployed v2.1 to staging"
+wr add --type done_things --title "Deployed v2.1 to staging"
 
 # Add with idempotency key (safe in retry loops — no duplicates)
 wr add --type task --title "Daily standup" --idempotency-key "standup-2026-05-03"
