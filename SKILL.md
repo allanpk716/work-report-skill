@@ -229,7 +229,7 @@ Update fields of an existing work report entry. Only explicitly provided flags a
 **Notes:**
 - Completed or cancelled records cannot be updated — returns `already_completed` or `already_cancelled`.
 - At least one field flag must be explicitly set, otherwise the command prints help text.
-- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `multiple_matches` error.
+- **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
 
@@ -243,7 +243,7 @@ wr update a1b2c3d4e5f67890 --time 15:00 --location "Room 5B"
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:30:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"active","tags":["project","weekly"],"saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T14:30:00+08:00","short_id":"a1b2c3d4e5f67890"}}
 ```
 
-**Error codes:** `record_not_found`, `multiple_matches`, `already_completed`, `already_cancelled`, `invalid_body`, `invalid_field`, `invalid_params`, `storage_error`
+**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_body`, `invalid_field`, `invalid_params`, `storage_error`
 
 ---
 
@@ -269,7 +269,7 @@ wr complete --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be completed. Attempting to complete an already-completed or already-cancelled record returns `storage_error`.
-- **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `multiple_matches` error.
+- **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
 
@@ -285,7 +285,7 @@ wr complete --title "Review PR #42" --date 2026-05-03
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T16:00:00Z","data":{"type":"meeting","title":"Project sync","date":"2026-05-03","time":"15:00","location":"Room 5B","status":"completed","tags":["project","weekly"],"saved_at":"2026-05-03T14:00:00+08:00","updated_at":"2026-05-03T16:00:00+08:00","short_id":"a1b2c3d4e5f67890"}}
 ```
 
-**Error codes:** `record_not_found`, `multiple_matches`, `storage_error`
+**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_params`, `storage_error`
 
 ---
 
@@ -311,7 +311,7 @@ wr cancel --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be cancelled. Attempting to cancel an already-cancelled or already-completed record returns `storage_error`.
-- **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `multiple_matches` error.
+- **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
 
@@ -327,7 +327,7 @@ wr cancel --title "Standup" --date 2026-05-03
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T12:00:00Z","data":{"type":"meeting","title":"Standup","date":"2026-05-03","time":"10:00","status":"cancelled","saved_at":"2026-05-03T10:00:00+08:00","updated_at":"2026-05-03T12:00:00+08:00","short_id":"f0e1d2c3b4a56789"}}
 ```
 
-**Error codes:** `record_not_found`, `multiple_matches`, `storage_error`
+**Error codes:** `record_not_found`, `already_completed`, `already_cancelled`, `invalid_params`, `storage_error`
 
 ---
 
@@ -1005,7 +1005,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `push_error` | Pushover notification delivery failed | Check Pushover credentials and network. |
 | `import_record` | Per-record validation failure during import | Check the record at the specified index for missing or invalid fields. Fix and retry. |
 | `invalid_params` | Missing or unsupported command parameter | Check the command's required flags. For export, `--format` must be `json` or `markdown`. |
-| `multiple_matches` | Content-based lookup matched more than one active record | Use `wr list` to find the exact `short_id` and use that instead. |
+| `multiple_matches` | Content-based lookup matched more than one active record (returned as `invalid_params`) | Use `wr list` to find the exact `short_id` and use that instead. The error message lists all matching IDs. |
 | `digest_not_found` | No digest configuration matches the given ID | List digests with `wr digest list` to find the correct ID. |
 | `invalid_scope` | Invalid digest scope value | Scope must be one of: `today`, `yesterday`, `week`, `month`, or `YYYY-MM-DD:YYYY-MM-DD`. |
 | `invalid_schedule` | Invalid schedule expression for digest | Check the expression syntax (5-field format: min hour dom month dow). |
@@ -1016,6 +1016,11 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `backup_failed` | Zip creation failed | Check disk space and write permissions on the backup output directory. |
 | `rotation_failed` | GFS rotation failed during backup cleanup | Check backup directory permissions. Inspect with `wr backup list`. |
 | `config_not_found` | Backup config file not found | Defaults are used when the file is missing. Check filesystem permissions. |
+| `lock_conflict` | Concurrent access conflict (cross-process file lock) | Another `wr` process is writing to the same data. Wait a moment and retry. |
+| `storage_locked` | Storage file is locked by another process | Wait for the other process to finish, or remove stale lock files if the other process has exited. |
+| `marshal_error` | JSON serialization failed | Internal error — check data integrity. File a bug if persistent. |
+| `method_not_allowed` | Unsupported HTTP method | Internal routing error. File a bug. |
+| `unknown` | Unrecognized error | Internal error — check logs for details. File a bug if persistent. |
 
 ---
 
@@ -1277,7 +1282,7 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 
 13. **Import file accepts two JSON shapes.** A bare JSON array `[{...}]` or an object with a `records` key `{"records":[{...}]}`.
 
-14. **Content-based lookup for update/complete/cancel defaults --date to today.** Use `--title` without `--date` for today's records. If multiple records match, you'll get a `multiple_matches` error.
+14. **Content-based lookup for update/complete/cancel defaults --date to today.** Use `--title` without `--date` for today's records. If multiple records match, you'll get an `invalid_params` error listing all matching IDs — use `wr list` to find the exact `short_id`.
 
 15. **Use idempotency keys for retry-safe adds.** Pass `--idempotency-key <unique-key>` to deduplicate. Ideal for retry loops or any workflow where the same add might execute twice.
 
