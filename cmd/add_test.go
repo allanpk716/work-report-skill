@@ -27,6 +27,97 @@ func resetAddFlags() {
 	addRemindBefore = ""
 	addRecurring = ""
 	addIdempotencyKey = ""
+	addNotifyPriority = ""
+}
+
+// TestAdd_NotifyPriorityHigh verifies that --notify-priority high is stored on the record.
+func TestAdd_NotifyPriorityHigh(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+	resetAddFlags()
+
+	code, out := executeCmd("add", "--type", "task", "--title", "notify test", "--date", "2025-01-01", "--notify-priority", "high")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit 0, got %d: %s", code, string(out))
+	}
+
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	if data == nil {
+		t.Fatal("expected data field")
+	}
+	np, _ := data["notification_priority"].(string)
+	if np != "high" {
+		t.Errorf("expected notification_priority=high, got %q", np)
+	}
+	validateAllEnvelopes(t, out)
+}
+
+// TestAdd_NotifyPriorityInvalid verifies that an invalid --notify-priority returns an error.
+func TestAdd_NotifyPriorityInvalid(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+	resetAddFlags()
+
+	code, out := executeCmd("add", "--type", "task", "--title", "bad priority", "--date", "2025-01-01", "--notify-priority", "urgent")
+	if code != agentsdk.ExitInvalidParams {
+		t.Fatalf("expected exit 2, got %d: %s", code, string(out))
+	}
+
+	lines := parseJSONLMaps(out)
+	found := false
+	for _, line := range lines {
+		if line["error_code"] == "invalid_params" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error_code=invalid_params, got %v", lines)
+	}
+	validateAllEnvelopes(t, out)
+}
+
+// TestAdd_MeetingDefaultNotifyPriority verifies that meetings auto-default to
+// high notification priority when --notify-priority is not provided.
+func TestAdd_MeetingDefaultNotifyPriority(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+	resetAddFlags()
+
+	code, out := executeCmd("add", "--type", "meeting", "--title", "team standup", "--date", "2025-01-01")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit 0, got %d: %s", code, string(out))
+	}
+
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	if data == nil {
+		t.Fatal("expected data field")
+	}
+	np, _ := data["notification_priority"].(string)
+	if np != "high" {
+		t.Errorf("expected notification_priority=high (auto-default for meeting), got %q", np)
+	}
+	validateAllEnvelopes(t, out)
 }
 
 // TestLLMDateFallback verifies that when LLM returns a classification result

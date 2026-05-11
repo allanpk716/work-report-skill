@@ -28,6 +28,7 @@ var (
 	updateAgenda        string
 	updateNotes         string
 	updateProgress      string
+	updateNotifyPriority string
 )
 
 var updateCmd = &cobra.Command{
@@ -81,6 +82,12 @@ var updateCmd = &cobra.Command{
 		}
 		if cmd.Flags().Changed("progress") {
 			fields["progress"] = updateProgress
+		}
+		if cmd.Flags().Changed("notify-priority") {
+			if !models.IsValidNotificationPriority(updateNotifyPriority) {
+				return writeJSONLError("invalid_params", fmt.Sprintf("invalid notify-priority: %q (must be normal or high)", updateNotifyPriority))
+			}
+			fields["notification_priority"] = updateNotifyPriority
 		}
 
 		// Resolve record ID
@@ -175,6 +182,7 @@ func init() {
 	updateCmd.Flags().StringVar(&updateAgenda, "agenda", "", "Update agenda")
 	updateCmd.Flags().StringVar(&updateNotes, "notes", "", "Update notes")
 	updateCmd.Flags().StringVar(&updateProgress, "progress", "", "Update progress")
+	updateCmd.Flags().StringVar(&updateNotifyPriority, "notify-priority", "", "Update notification priority (normal, high)")
 }
 
 // fieldKeys returns the keys of a fields map as a string slice.

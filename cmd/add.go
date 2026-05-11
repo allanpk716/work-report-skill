@@ -30,6 +30,7 @@ var (
 	addRemindBefore   string
 	addRecurring      string
 	addIdempotencyKey string
+	addNotifyPriority string
 )
 
 var addCmd = &cobra.Command{
@@ -139,6 +140,11 @@ var addCmd = &cobra.Command{
 			return writeJSONLError("invalid_body", "missing required field: date")
 		}
 
+		// Validate notification priority if provided
+		if addNotifyPriority != "" && !models.IsValidNotificationPriority(addNotifyPriority) {
+			return writeJSONLError("invalid_params", fmt.Sprintf("invalid notify-priority: %q (must be normal or high)", addNotifyPriority))
+		}
+
 		// Idempotency check
 		if addIdempotencyKey != "" {
 			existing, _, err := store.GetByIdempotencyKey(addIdempotencyKey)
@@ -155,7 +161,7 @@ var addCmd = &cobra.Command{
 
 		// Build and persist the record
 		rec := buildRecord(addType, addTitle, addDate, addTime, addDescription,
-			tags, addLocation, addRelatedPerson, addPriority, addRemindBefore, addRecurring, addIdempotencyKey, "")
+			tags, addLocation, addRelatedPerson, addPriority, addRemindBefore, addRecurring, addIdempotencyKey, addNotifyPriority)
 
 		result, err := withLockRetryResult(func() (interface{}, error) {
 			return store.AddRecord(rec)
@@ -365,6 +371,7 @@ func init() {
 	addCmd.Flags().StringVar(&addRemindBefore, "remind-before", "", "Remind before (e.g. 15m, 30m)")
 	addCmd.Flags().StringVar(&addRecurring, "recurring", "", "Recurring pattern (e.g. daily, weekly)")
 	addCmd.Flags().StringVar(&addIdempotencyKey, "idempotency-key", "", "Idempotency key: retry with same key returns existing record")
+	addCmd.Flags().StringVar(&addNotifyPriority, "notify-priority", "", "Notification priority (normal, high); defaults to high for meetings")
 
 	rootCmd.AddCommand(addCmd)
 }
