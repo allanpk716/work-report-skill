@@ -19,6 +19,7 @@ var AllowedClassifyTypes = []string{
 	"done_things",
 	"cancel_or_update",
 	"personal",
+	"backlog",
 }
 
 // ClassifyResult holds the structured fields extracted by the LLM classifier.
@@ -183,7 +184,7 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 	weekday := today.In(location).Format("Monday")
 	tzName := location.String()
 
-	return fmt.Sprintf(`你是一个工作记录分类助手。用户会输入一段自然语言文字，你需要将其分类为以下6种类型之一，并提取结构化字段。
+	return fmt.Sprintf(`你是一个工作记录分类助手。用户会输入一段自然语言文字，你需要将其分类为以下7种类型之一，并提取结构化字段。
 
 ## 分类类型
 
@@ -193,6 +194,26 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 4. **done_things** — 工作日志、已完成的事、记录性的文字
 5. **cancel_or_update** — 取消、修改、更新已有记录的操作（包含目标记录ID时使用target_id字段）
 6. **personal** — 个人事务：吃药、买菜、体检、家务、交水电费、购物、私事等非工作相关的事项
+7. **backlog** — 模糊的未来意图、想法、待研究的课题：没有明确日期/时间的待办事项
+
+## Backlog 分类规则
+
+当输入表达了一个**模糊的未来意图或想法**，但**没有明确的日期或时间**时，分类为 **backlog** 而非 task 或 reminder。
+
+典型特征：
+- 使用"帮我记一下"、"我有个想法"、"记一下"、"有空看看"、"回头研究一下"等表达
+- 没有提到具体的日期、时间、截止日期
+- 表达的是一种"以后再说"的意图
+
+**判断规则：**
+- 没有日期/时间 → **backlog**
+- 有日期/时间 → 按内容归类为 **task** 或 **reminder**
+
+示例：
+- "帮我记一下要研究 wasm" → backlog
+- "我有个想法，可以做一个内部工具" → backlog
+- "有空看看这篇关于微服务的文章" → backlog
+- "下周研究一下 wasm" → task（有时间"下周"）
 
 ## 个人事务分类
 

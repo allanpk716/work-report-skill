@@ -376,6 +376,61 @@ func TestClassify_Personal(t *testing.T) {
 	}
 }
 
+func TestClassify_Backlog(t *testing.T) {
+	result := mockClassify(t, "帮我记一下要研究 wasm", mockResponse{
+		Type:  "backlog",
+		Title: "研究 wasm",
+	})
+	if result.Type != "backlog" {
+		t.Fatalf("expected type backlog, got %q", result.Type)
+	}
+	if result.Title != "研究 wasm" {
+		t.Fatalf("expected title 研究 wasm, got %q", result.Title)
+	}
+	// backlog should have no date
+	if result.Date != "" {
+		t.Fatalf("expected empty date for backlog, got %q", result.Date)
+	}
+}
+
+func TestBuildSystemPrompt_Backlog(t *testing.T) {
+	today := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	loc := time.FixedZone("CST", 8*3600)
+
+	prompt := buildSystemPrompt(today, loc)
+
+	// Should mention 7 types
+	if !contains(prompt, "7种") {
+		t.Error("prompt should mention 7 types")
+	}
+
+	// Should have backlog type description
+	if !contains(prompt, "backlog") {
+		t.Error("prompt should mention backlog type")
+	}
+
+	// Should have backlog classification guidance section
+	if !contains(prompt, "Backlog 分类规则") {
+		t.Error("prompt should contain 'Backlog 分类规则' section")
+	}
+
+	// Should have key backlog trigger phrases
+	backlogPhrases := []string{"帮我记一下", "我有个想法", "有空看看", "回头研究"}
+	for _, phrase := range backlogPhrases {
+		if !contains(prompt, phrase) {
+			t.Errorf("prompt should contain backlog phrase %q", phrase)
+		}
+	}
+
+	// Should have the decision rule: no date → backlog, has date → task/reminder
+	if !contains(prompt, "没有日期/时间") {
+		t.Error("prompt should explain no-date-means-backlog rule")
+	}
+	if !contains(prompt, "有时间") {
+		t.Error("prompt should explain has-date-means-task rule")
+	}
+}
+
 func TestBuildSystemPrompt(t *testing.T) {
 	today := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
@@ -390,9 +445,9 @@ func TestBuildSystemPrompt(t *testing.T) {
 	if !contains(prompt, "CST") {
 		t.Error("prompt should contain timezone name")
 	}
-	// Should mention all 6 types
-	if len(AllowedClassifyTypes) != 6 {
-		t.Fatalf("expected 6 allowed types, got %d", len(AllowedClassifyTypes))
+	// Should mention all 7 types
+	if len(AllowedClassifyTypes) != 7 {
+		t.Fatalf("expected 7 allowed types, got %d", len(AllowedClassifyTypes))
 	}
 	for _, typ := range AllowedClassifyTypes {
 		if !contains(prompt, typ) {
