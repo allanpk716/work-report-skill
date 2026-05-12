@@ -3,10 +3,13 @@ package digest
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"wr/internal/llm"
+	"wr/internal/models"
+	"wr/internal/storage"
 )
 
 // --- StorageQueryAdapter tests ---
@@ -321,6 +324,203 @@ func TestChatMessageExported(t *testing.T) {
 	_ = llm.ChatMessage{
 		Role:    "system",
 		Content: "test",
+	}
+}
+
+// --- Integration: StorageQueryAdapter + report.Generate with personals ---
+
+func TestStorageQueryAdapter_GenerateDay_WithPersonals(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Add work records
+	_, _ = store.AddRecord(&models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "工作事项A", Date: "2026-06-01"},
+	})
+	_, _ = store.AddRecord(&models.MeetingRecord{
+		CommonFields: models.CommonFields{Type: models.TypeMeeting, Title: "团队周会", Date: "2026-06-01", Time: "14:00"},
+	})
+
+	// Add personal records
+	_, _ = store.AddRecord(&models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "看牙医", Date: "2026-06-01", Time: "10:00"},
+	})
+	_, _ = store.AddRecord(&models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "取快递", Date: "2026-06-01", Status: models.StatusCompleted},
+	})
+
+	adapter := &StorageQueryAdapter{Store: store, Loc: time.UTC}
+	md, total, err := adapter.GenerateDay("2026-06-01")
+	if err != nil {
+		t.Fatalf("GenerateDay: %v", err)
+	}
+
+	// Total must be work-only (2 work records, personals excluded)
+	if total != 2 {
+		t.Errorf("Total = %d, want 2 (work-only, personals excluded)", total)
+	}
+
+	// Markdown must contain personal section
+	if !strings.Contains(md, "## 🏠 个人事务 (2)") {
+		t.Error("markdown missing personals section header")
+	}
+	if !strings.Contains(md, "看牙医 [10:00]") {
+		t.Error("markdown missing personal entry with time")
+	}
+	if !strings.Contains(md, "取快递 [已处理]") {
+		t.Error("markdown missing completed personal entry")
+	}
+
+	// Markdown must also contain work sections
+	if !strings.Contains(md, "## ✅ 任务 (1)") {
+		t.Error("markdown missing task section")
+	}
+	if !strings.Contains(md, "## 📅 会议 (1)") {
+		t.Error("markdown missing meeting section")
+	}
+
+	// Summary line must include personals count
+	if !strings.Contains(md, "个人事务 2") {
+		t.Error("summary line missing personals count")
+	}
+}
+
+func TestStorageQueryAdapter_GenerateDay_NoPersonals(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	_, _ = store.AddRecord(&models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "工作事项", Date: "2026-06-01"},
+	})
+
+	adapter := &StorageQueryAdapter{Store: store, Loc: time.UTC}
+	md, total, err := adapter.GenerateDay("2026-06-01")
+	if err != nil {
+		t.Fatalf("GenerateDay: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("Total = %d, want 1", total)
+	}
+
+	// No personal section should appear
+	if strings.Contains(md, "🏠 个人事务") {
+		t.Error("no personals section should appear when empty")
+	}
+	if strings.Contains(md, "个人事务") {
+		t.Error("summary line should not mention personals when zero")
+	}
+}
+
+func TestStorageQueryAdapter_GenerateDay_OnlyPersonals(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	_, _ = store.AddRecord(&models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "看牙医", Date: "2026-06-01"},
+	})
+
+	adapter := &StorageQueryAdapter{Store: store, Loc: time.UTC}
+	md, total, err := adapter.GenerateDay("2026-06-01")
+	if err != nil {
+		t.Fatalf("GenerateDay: %v", err)
+	}
+
+	// Total should be 0 (no work records)
+	if total != 0 {
+		t.Errorf("Total = %d, want 0 (personals excluded from total)", total)
+	}
+
+	// But personal section should appear
+	if !strings.Contains(md, "## 🏠 个人事务 (1)") {
+		t.Error("markdown should contain personals section")
+	}
+	if !strings.Contains(md, "看牙医") {
+		t.Error("markdown should contain personal entry")
+	}
+}
+
+func TestStorageQueryAdapter_GenerateRange_WithPersonals(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Day 1: work + personal
+	_, _ = store.AddRecord(&models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "任务D1", Date: "2026-06-01"},
+	})
+	_, _ = store.AddRecord(&models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "个人D1", Date: "2026-06-01"},
+	})
+
+	// Day 2: only personal
+	_, _ = store.AddRecord(&models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "个人D2", Date: "2026-06-02"},
+	})
+
+	// Day 3: only work
+	_, _ = store.AddRecord(&models.DoneThingsRecord{
+		CommonFields: models.CommonFields{Type: models.TypeDoneThings, Title: "完成D3", Date: "2026-06-03"},
+	})
+
+	adapter := &StorageQueryAdapter{Store: store, Loc: time.UTC}
+	md, total, err := adapter.GenerateRange("2026-06-01", "2026-06-03")
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	// Total must be work-only (1 task + 1 done_things = 2)
+	if total != 2 {
+		t.Errorf("Total = %d, want 2 (work-only)", total)
+	}
+
+	// Personal section should appear with 2 entries
+	if !strings.Contains(md, "## 🏠 个人事务 (2)") {
+		t.Error("range markdown missing personals section")
+	}
+	if !strings.Contains(md, "[2026-06-01] 个人D1") {
+		t.Error("range markdown missing date-prefixed personal D1")
+	}
+	if !strings.Contains(md, "[2026-06-02] 个人D2") {
+		t.Error("range markdown missing date-prefixed personal D2")
+	}
+
+	// Summary line must include personals count
+	if !strings.Contains(md, "个人事务 2") {
+		t.Error("range summary line missing personals count")
+	}
+
+	// Work sections should also be present
+	if !strings.Contains(md, "[2026-06-01] 任务D1") {
+		t.Error("range markdown missing task entry")
+	}
+	if !strings.Contains(md, "[2026-06-03] 完成D3") {
+		t.Error("range markdown missing done_things entry")
+	}
+}
+
+func TestStorageQueryAdapter_GenerateRange_NoPersonals(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	_, _ = store.AddRecord(&models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "任务", Date: "2026-06-01"},
+	})
+
+	adapter := &StorageQueryAdapter{Store: store, Loc: time.UTC}
+	md, total, err := adapter.GenerateRange("2026-06-01", "2026-06-02")
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("Total = %d, want 1", total)
+	}
+
+	if strings.Contains(md, "🏠 个人事务") {
+		t.Error("no personals section should appear when empty")
+	}
+	if strings.Contains(md, "个人事务") {
+		t.Error("summary line should not mention personals when zero")
 	}
 }
 
