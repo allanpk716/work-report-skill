@@ -23,7 +23,7 @@ var completeCmd = &cobra.Command{
 	Long: `Mark a work report entry as complete.
 
 Note: done_things records cannot be completed — they are factual records of work already done.
-Only task, meeting, and reminder types support this action.`,
+Only task, meeting, reminder, and personal types support this action.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfig()
@@ -72,7 +72,7 @@ Only task, meeting, and reminder types support this action.`,
 
 		// Check if record type supports completion
 		if cf != nil && !models.IsActionableType(cf.Type) {
-			return writeJSONLError("type_not_completable", fmt.Sprintf("%s records cannot be completed: they are factual records of work already done. Only task, meeting, and reminder types support the complete action.", cf.Type))
+			return writeJSONLError("type_not_completable", fmt.Sprintf("%s records cannot be completed: they are factual records of work already done. Only task, meeting, reminder, and personal types support the complete action.", cf.Type))
 		}
 
 		if err := withLockRetry(func() error { return store.CompleteRecord(id) }); err != nil {

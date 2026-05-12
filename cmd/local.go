@@ -252,6 +252,11 @@ func buildRecord(recType, title, date, tm, description string,
 			CommonFields: cf,
 			Recurring:    recurring,
 		}
+	case models.TypePersonal:
+		return &models.PersonalRecord{
+			CommonFields: cf,
+			Recurring:    recurring,
+		}
 	case models.TypeDoneThings:
 		return &models.DoneThingsRecord{CommonFields: cf}
 	default:

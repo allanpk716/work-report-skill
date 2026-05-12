@@ -131,7 +131,7 @@ var addCmd = &cobra.Command{
 			return writeJSONLError("invalid_type", "missing required field: type")
 		}
 		if !models.IsValidType(addType) {
-			return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, or done_things)", addType))
+			return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, personal, or done_things)", addType))
 		}
 		if addTitle == "" {
 			return writeJSONLError("invalid_body", "missing required field: title")

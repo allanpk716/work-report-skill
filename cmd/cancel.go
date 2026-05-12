@@ -23,7 +23,7 @@ var cancelCmd = &cobra.Command{
 	Long: `Cancel a work report entry.
 
 Note: done_things records cannot be cancelled — they are factual records of work already done.
-Only task, meeting, and reminder types support this action.`,
+Only task, meeting, reminder, and personal types support this action.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfig()
@@ -72,7 +72,7 @@ Only task, meeting, and reminder types support this action.`,
 
 		// Check if record type supports cancellation
 		if cf != nil && !models.IsActionableType(cf.Type) {
-			return writeJSONLError("type_not_cancellable", fmt.Sprintf("%s records cannot be cancelled: they are factual records of work already done. Only task, meeting, and reminder types support the cancel action.", cf.Type))
+			return writeJSONLError("type_not_cancellable", fmt.Sprintf("%s records cannot be cancelled: they are factual records of work already done. Only task, meeting, reminder, and personal types support the cancel action.", cf.Type))
 		}
 
 		if err := withLockRetry(func() error { return store.CancelRecord(id) }); err != nil {
