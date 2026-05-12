@@ -282,7 +282,9 @@ func listBacklogs(store *storage.Storage, date string) ([]RecordEntry, error) {
 		if completedDate != date {
 			continue
 		}
-		entries = append(entries, listedToEntry(lr, rec))
+		entry := listedToEntry(lr, rec)
+		entry.Date = completedDate
+		entries = append(entries, entry)
 	}
 
 	return entries, nil
@@ -489,6 +491,10 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) 
 	rr.Summary.Total = rr.Summary.Meetings + rr.Summary.Tasks +
 		rr.Summary.Reminders + rr.Summary.DoneThings
 
+	// Deduplicate backlogs — active backlogs appear on every day so must be deduped by ShortID.
+	rr.MergedBacklogs = dedupByShortID(rr.MergedBacklogs)
+	rr.Summary.Backlogs = len(rr.MergedBacklogs)
+
 	rr.Markdown = renderRangeMarkdown(rr)
 
 	logFields := map[string]interface{}{
@@ -650,16 +656,35 @@ func renderRangeMarkdown(r *RangeReport) string {
 		return fmt.Sprintf("- [%s] %s", e.Date, e.Title)
 	})
 
-	renderRangeSection(&b, "📋 待办积压", r.Days, func(dr DailyReport) []RecordEntry {
-		return dr.Backlogs
-	}, func(e RecordEntry) string {
-		if e.Status == "completed" {
-			return fmt.Sprintf("- [%s] %s [已处理]", e.Date, e.Title)
+	// Render backlogs from merged (deduplicated) list.
+	// Active backlogs have no date prefix; completed backlogs show completion date.
+	if len(r.MergedBacklogs) > 0 {
+		fmt.Fprintf(&b, "## 📋 待办积压 (%d)\n\n", len(r.MergedBacklogs))
+		for _, e := range r.MergedBacklogs {
+			if e.Status == "completed" {
+				fmt.Fprintf(&b, "- [%s] %s [已处理]\n", e.Date, e.Title)
+			} else {
+				fmt.Fprintf(&b, "- %s\n", e.Title)
+			}
 		}
-		return fmt.Sprintf("- [%s] %s", e.Date, e.Title)
-	})
+		fmt.Fprintln(&b)
+	}
 
 	return b.String()
+}
+
+// dedupByShortID removes duplicate entries sharing the same ShortID, keeping the first occurrence.
+func dedupByShortID(entries []RecordEntry) []RecordEntry {
+	seen := make(map[string]bool, len(entries))
+	result := make([]RecordEntry, 0, len(entries))
+	for _, e := range entries {
+		if seen[e.ShortID] {
+			continue
+		}
+		seen[e.ShortID] = true
+		result = append(result, e)
+	}
+	return result
 }
 
 // renderRangeSection appends a per-type section to the builder, iterating over

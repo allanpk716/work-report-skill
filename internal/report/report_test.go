@@ -1,6 +1,7 @@
 package report
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1079,7 +1080,7 @@ func TestGenerateRange_BacklogsMerged(t *testing.T) {
 	dir := t.TempDir()
 	store := storage.New(dir)
 
-	// Active backlog appears on every day
+	// Active backlog appears on every day — should be deduped to 1 entry
 	addTestRecord(t, store, &models.BacklogRecord{
 		CommonFields: models.CommonFields{Type: models.TypeBacklog, Title: "always-active", Date: ""},
 	})
@@ -1092,23 +1093,30 @@ func TestGenerateRange_BacklogsMerged(t *testing.T) {
 		t.Fatalf("GenerateRange: %v", err)
 	}
 
-	// Active backlogs appear on each day's report, so merged count = days * active backlogs
-	if rr.Summary.Backlogs != 2 {
-		t.Errorf("Backlogs = %d, want 2 (active backlog appears on each day)", rr.Summary.Backlogs)
+	// Active backlogs deduped — only 1 unique entry despite 2 days
+	if rr.Summary.Backlogs != 1 {
+		t.Errorf("Backlogs = %d, want 1 (active backlog deduped across days)", rr.Summary.Backlogs)
 	}
 	if rr.Summary.Total != 1 {
 		t.Errorf("Total = %d, want 1 (backlogs excluded)", rr.Summary.Total)
 	}
-	if len(rr.MergedBacklogs) != 2 {
-		t.Errorf("MergedBacklogs len = %d, want 2", len(rr.MergedBacklogs))
+	if len(rr.MergedBacklogs) != 1 {
+		t.Errorf("MergedBacklogs len = %d, want 1", len(rr.MergedBacklogs))
 	}
 
 	md := rr.Markdown
-	if !strings.Contains(md, "## 📋 待办积压 (2)") {
+	if !strings.Contains(md, "## 📋 待办积压 (1)") {
 		t.Error("range markdown missing backlogs section")
 	}
-	if !strings.Contains(md, "待办积压 2") {
+	if !strings.Contains(md, "待办积压 1") {
 		t.Error("range summary line missing backlogs count")
+	}
+	// Active backlog should NOT have date prefix in range rendering
+	if !strings.Contains(md, "- always-active") {
+		t.Error("range markdown missing active backlog entry")
+	}
+	if strings.Contains(md, "[2026-05-01] always-active") {
+		t.Error("active backlog should not have date prefix in range rendering")
 	}
 }
 
@@ -1132,6 +1140,90 @@ func TestGenerateRange_NoBacklogs_OmitsSection(t *testing.T) {
 	md := rr.Markdown
 	if strings.Contains(md, "📋 待办积压") {
 		t.Error("no backlogs section should appear when empty")
+	}
+}
+
+func TestGenerateRange_BacklogDedup_MultipleActive(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Two active backlogs across 3 days — should dedup to 2
+	addTestRecord(t, store, &models.BacklogRecord{
+		CommonFields: models.CommonFields{Type: models.TypeBacklog, Title: "backlog-a", Date: ""},
+	})
+	addTestRecord(t, store, &models.BacklogRecord{
+		CommonFields: models.CommonFields{Type: models.TypeBacklog, Title: "backlog-b", Date: ""},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-03", time.UTC)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.Summary.Backlogs != 2 {
+		t.Errorf("Backlogs = %d, want 2 (deduped across 3 days)", rr.Summary.Backlogs)
+	}
+	if len(rr.MergedBacklogs) != 2 {
+		t.Errorf("MergedBacklogs len = %d, want 2", len(rr.MergedBacklogs))
+	}
+
+	md := rr.Markdown
+	if !strings.Contains(md, "## 📋 待办积压 (2)") {
+		t.Error("range markdown should show 2 deduped backlogs")
+	}
+	// Both should appear without date prefix
+	if !strings.Contains(md, "- backlog-a") || !strings.Contains(md, "- backlog-b") {
+		t.Error("range markdown should list both active backlogs")
+	}
+}
+
+func TestGenerateRange_BacklogCompletedInRange(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Active backlog
+	addTestRecord(t, store, &models.BacklogRecord{
+		CommonFields: models.CommonFields{Type: models.TypeBacklog, Title: "still-active", Date: ""},
+	})
+
+	// Create and complete a backlog — CompletedAt will be today
+	br := &models.BacklogRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeBacklog,
+			Title: "completed-today",
+			Date:  "",
+		},
+	}
+	added, _ := store.AddRecord(br)
+	shortID := added.(*models.BacklogRecord).ShortID
+	store.CompleteRecord(shortID)
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Generate range including today
+	rr, err := GenerateRange(store, "2026-05-01", today, time.UTC)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	// Should have 2 unique backlogs: 1 active + 1 completed-today
+	if rr.Summary.Backlogs != 2 {
+		t.Errorf("Backlogs = %d, want 2", rr.Summary.Backlogs)
+	}
+
+	md := rr.Markdown
+	if !strings.Contains(md, "## 📋 待办积压 (2)") {
+		t.Error("range markdown should show 2 backlogs")
+	}
+
+	// Active backlog: no date prefix
+	if !strings.Contains(md, "- still-active") {
+		t.Error("range markdown should show active backlog without date prefix")
+	}
+
+	// Completed backlog: with completion date prefix and 已处理
+	if !strings.Contains(md, fmt.Sprintf("- [%s] completed-today [已处理]", today)) {
+		t.Errorf("range markdown should show completed backlog with date and 已处理:\n%s", md)
 	}
 }
 
