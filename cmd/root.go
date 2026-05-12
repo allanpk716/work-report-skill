@@ -13,7 +13,7 @@ var version = "dev"
 var rootCmd = &cobra.Command{
 	Use:   "wr",
 	Short: "wr — work report CLI for AI agents",
-	Long:  `wr is a CLI tool for AI agents to manage work reports via a local HTTP daemon. All output is JSONL format.`,
+	Long:  `wr is a pure CLI tool for AI agents to manage work reports. Single binary, local filesystem storage, JSONL output. No daemon, no HTTP layer.`,
 }
 
 func init() {

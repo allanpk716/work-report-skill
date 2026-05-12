@@ -809,7 +809,7 @@ Show configuration health and data statistics.
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"timezone":"Asia/Shanghai","data_dir":"/home/user/.work-report/work-records","pushover":"configured","llm_text":"configured","llm_vision":"not_configured"},"data":{"total_records":3,"by_type":{"meeting":2,"task":1},"by_status":{"active":3},"digests":1,"backups":5}}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"config":{"timezone":"Asia/Shanghai","data_dir":"/home/user/.work-report/work-records","pushover":"configured","llm_text":"configured","llm_vision":"not_configured"},"data":{"total_records":3,"by_type":{"meeting":2,"task":1,"personal":1},"by_status":{"active":4},"digests":1,"backups":5}}}
 ```
 
 The output includes `config` (timezone, data_dir, pushover/llm configured status) and `data` (total records, counts by type and status, digest count, backup count).
