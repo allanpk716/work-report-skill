@@ -22,6 +22,7 @@ type DailyReport struct {
 	Tasks    []RecordEntry `json:"tasks"`
 	Reminders []RecordEntry `json:"reminders"`
 	DoneThings []RecordEntry `json:"done_things"`
+	Personals []RecordEntry `json:"personals"`
 	Summary  Summary       `json:"summary"`
 	Markdown string        `json:"markdown"`
 }
@@ -44,11 +45,12 @@ type RecordEntry struct {
 
 // Summary holds aggregate counts per record type.
 type Summary struct {
-	Total     int `json:"total"`
-	Meetings  int `json:"meetings"`
-	Tasks     int `json:"tasks"`
-	Reminders int `json:"reminders"`
+	Total      int `json:"total"`
+	Meetings   int `json:"meetings"`
+	Tasks      int `json:"tasks"`
+	Reminders  int `json:"reminders"`
 	DoneThings int `json:"done_things"`
+	Personals  int `json:"personals"`
 }
 
 // Generate builds a DailyReport by querying storage for all record types on
@@ -74,6 +76,10 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("report: list done_things: %w", err)
 	}
+	personals, err := listType(store, models.TypePersonal, date)
+	if err != nil {
+		return nil, fmt.Errorf("report: list personals: %w", err)
+	}
 
 	rpt := &DailyReport{
 		Date:       date,
@@ -81,6 +87,7 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 		Tasks:      tasks,
 		Reminders:  reminders,
 		DoneThings: doneThings,
+		Personals:  personals,
 	}
 
 	rpt.Summary = Summary{
@@ -88,20 +95,25 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 		Tasks:       len(tasks),
 		Reminders:   len(reminders),
 		DoneThings:  len(doneThings),
+		Personals:   len(personals),
 	}
 	rpt.Summary.Total = rpt.Summary.Meetings + rpt.Summary.Tasks +
 		rpt.Summary.Reminders + rpt.Summary.DoneThings
 
 	rpt.Markdown = renderMarkdown(rpt)
 
-	logger.WithFields(map[string]interface{}{
-		"date":       date,
-		"meetings":   rpt.Summary.Meetings,
-		"tasks":      rpt.Summary.Tasks,
-		"reminders":  rpt.Summary.Reminders,
+	logFields := map[string]interface{}{
+		"date":        date,
+		"meetings":    rpt.Summary.Meetings,
+		"tasks":       rpt.Summary.Tasks,
+		"reminders":   rpt.Summary.Reminders,
 		"done_things": rpt.Summary.DoneThings,
-		"total":      rpt.Summary.Total,
-	}).Info("daily report generated")
+		"total":       rpt.Summary.Total,
+	}
+	if rpt.Summary.Personals > 0 {
+		logFields["personals"] = rpt.Summary.Personals
+	}
+	logger.WithFields(logFields).Info("daily report generated")
 
 	return rpt, nil
 }
@@ -202,9 +214,13 @@ func renderMarkdown(r *DailyReport) string {
 
 	fmt.Fprintf(&b, "# 工作日报 %s\n\n", r.Date)
 
-	fmt.Fprintf(&b, "📊 **汇总**: 会议 %d | 任务 %d | 提醒 %d | 已完成的事 %d | 共计 %d 条\n\n",
+	summaryLine := fmt.Sprintf("📊 **汇总**: 会议 %d | 任务 %d | 提醒 %d | 已完成的事 %d | 共计 %d 条",
 		r.Summary.Meetings, r.Summary.Tasks,
 		r.Summary.Reminders, r.Summary.DoneThings, r.Summary.Total)
+	if r.Summary.Personals > 0 {
+		summaryLine += fmt.Sprintf(" | 个人事务 %d", r.Summary.Personals)
+	}
+	fmt.Fprintf(&b, "%s\n\n", summaryLine)
 
 	renderSection(&b, "📅 会议", r.Meetings, func(e RecordEntry) string {
 		detail := ""
@@ -276,21 +292,39 @@ func renderMarkdown(r *DailyReport) string {
 		return "- " + e.Title
 	})
 
+	renderSection(&b, "🏠 个人事务", r.Personals, func(e RecordEntry) string {
+		detail := ""
+		if e.Time != "" {
+			detail = e.Time
+		}
+		if e.Status == "completed" {
+			if detail != "" {
+				detail += " "
+			}
+			detail += "已处理"
+		}
+		if detail != "" {
+			return fmt.Sprintf("- %s [%s]", e.Title, detail)
+		}
+		return "- " + e.Title
+	})
+
 	return b.String()
 }
 
 // RangeReport holds the merged result of report queries across a date range.
 type RangeReport struct {
-	DateFrom       string        `json:"date_from"`
-	DateTo         string        `json:"date_to"`
-	DaysCount      int           `json:"days_count"`
-	Days           []DailyReport `json:"days"`
-	MergedMeetings []RecordEntry `json:"merged_meetings"`
-	MergedTasks    []RecordEntry `json:"merged_tasks"`
+	DateFrom        string        `json:"date_from"`
+	DateTo          string        `json:"date_to"`
+	DaysCount       int           `json:"days_count"`
+	Days            []DailyReport `json:"days"`
+	MergedMeetings  []RecordEntry `json:"merged_meetings"`
+	MergedTasks     []RecordEntry `json:"merged_tasks"`
 	MergedReminders []RecordEntry `json:"merged_reminders"`
 	MergedDoneThings []RecordEntry `json:"merged_done_things"`
-	Summary        Summary       `json:"summary"`
-	Markdown       string        `json:"markdown"`
+	MergedPersonals []RecordEntry `json:"merged_personals"`
+	Summary         Summary       `json:"summary"`
+	Markdown        string        `json:"markdown"`
 }
 
 // GenerateRange builds a RangeReport by generating a DailyReport for each date
@@ -332,10 +366,12 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) 
 		rr.MergedTasks = append(rr.MergedTasks, dr.Tasks...)
 		rr.MergedReminders = append(rr.MergedReminders, dr.Reminders...)
 		rr.MergedDoneThings = append(rr.MergedDoneThings, dr.DoneThings...)
+		rr.MergedPersonals = append(rr.MergedPersonals, dr.Personals...)
 		rr.Summary.Meetings += dr.Summary.Meetings
 		rr.Summary.Tasks += dr.Summary.Tasks
 		rr.Summary.Reminders += dr.Summary.Reminders
 		rr.Summary.DoneThings += dr.Summary.DoneThings
+		rr.Summary.Personals += dr.Summary.Personals
 	}
 
 	rr.DaysCount = len(rr.Days)
@@ -344,7 +380,7 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) 
 
 	rr.Markdown = renderRangeMarkdown(rr)
 
-	logger.WithFields(map[string]interface{}{
+	logFields := map[string]interface{}{
 		"from":        from,
 		"to":          to,
 		"days":        rr.DaysCount,
@@ -353,7 +389,11 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) 
 		"reminders":   rr.Summary.Reminders,
 		"done_things": rr.Summary.DoneThings,
 		"total":       rr.Summary.Total,
-	}).Info("range report generated")
+	}
+	if rr.Summary.Personals > 0 {
+		logFields["personals"] = rr.Summary.Personals
+	}
+	logger.WithFields(logFields).Info("range report generated")
 
 	return rr, nil
 }
@@ -388,9 +428,13 @@ func renderRangeMarkdown(r *RangeReport) string {
 
 	fmt.Fprintf(&b, "# 工作周报 %s ~ %s\n\n", r.DateFrom, r.DateTo)
 
-	fmt.Fprintf(&b, "📊 **汇总** (%d天): 会议 %d | 任务 %d | 提醒 %d | 已完成的事 %d | 共计 %d 条\n\n",
+	rangeSummaryLine := fmt.Sprintf("📊 **汇总** (%d天): 会议 %d | 任务 %d | 提醒 %d | 已完成的事 %d | 共计 %d 条",
 		r.DaysCount, r.Summary.Meetings, r.Summary.Tasks,
 		r.Summary.Reminders, r.Summary.DoneThings, r.Summary.Total)
+	if r.Summary.Personals > 0 {
+		rangeSummaryLine += fmt.Sprintf(" | 个人事务 %d", r.Summary.Personals)
+	}
+	fmt.Fprintf(&b, "%s\n\n", rangeSummaryLine)
 
 	renderRangeSection(&b, "📅 会议", r.Days, func(dr DailyReport) []RecordEntry {
 		return dr.Meetings
@@ -463,6 +507,25 @@ func renderRangeMarkdown(r *RangeReport) string {
 				detail += " "
 			}
 			detail += "优先级:" + e.Priority
+		}
+		if detail != "" {
+			return fmt.Sprintf("- [%s] %s [%s]", e.Date, e.Title, detail)
+		}
+		return fmt.Sprintf("- [%s] %s", e.Date, e.Title)
+	})
+
+	renderRangeSection(&b, "🏠 个人事务", r.Days, func(dr DailyReport) []RecordEntry {
+		return dr.Personals
+	}, func(e RecordEntry) string {
+		detail := ""
+		if e.Time != "" {
+			detail = e.Time
+		}
+		if e.Status == "completed" {
+			if detail != "" {
+				detail += " "
+			}
+			detail += "已处理"
 		}
 		if detail != "" {
 			return fmt.Sprintf("- [%s] %s [%s]", e.Date, e.Title, detail)

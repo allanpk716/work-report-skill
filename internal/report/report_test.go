@@ -708,4 +708,193 @@ func TestGenerateRange_NilStorage(t *testing.T) {
 	}
 }
 
+func TestGenerate_PersonalsSection(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypePersonal,
+			Title: "看牙医",
+			Date:  "2026-05-02",
+			Time:  "10:00",
+		},
+	})
+	addTestRecord(t, store, &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:   models.TypePersonal,
+			Title:  "取快递",
+			Date:   "2026-05-02",
+			Status: models.StatusCompleted,
+		},
+	})
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeTask,
+			Title: "工作事项",
+			Date:  "2026-05-02",
+		},
+	})
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Personals count in Summary but NOT in Total
+	if rpt.Summary.Personals != 2 {
+		t.Errorf("Personals = %d, want 2", rpt.Summary.Personals)
+	}
+	if rpt.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1 (only work types)", rpt.Summary.Total)
+	}
+
+	// Personals slice populated
+	if len(rpt.Personals) != 2 {
+		t.Fatalf("Personals len = %d, want 2", len(rpt.Personals))
+	}
+
+	// Markdown contains personals section
+	md := rpt.Markdown
+	if !strings.Contains(md, "## 🏠 个人事务 (2)") {
+		t.Error("markdown missing personals section header")
+	}
+	if !strings.Contains(md, "看牙医 [10:00]") {
+		t.Error("markdown missing personal entry with time")
+	}
+	if !strings.Contains(md, "取快递 [已处理]") {
+		t.Error("markdown missing completed personal entry")
+	}
+
+	// Summary line includes personals count
+	if !strings.Contains(md, "个人事务 2") {
+		t.Error("summary line missing personals count")
+	}
+}
+
+func TestGenerate_NoPersonals_OmitsSection(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeTask,
+			Title: "工作事项",
+			Date:  "2026-05-02",
+		},
+	})
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if rpt.Summary.Personals != 0 {
+		t.Errorf("Personals = %d, want 0", rpt.Summary.Personals)
+	}
+	if rpt.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1", rpt.Summary.Total)
+	}
+
+	md := rpt.Markdown
+	if strings.Contains(md, "🏠 个人事务") {
+		t.Error("no personals section should appear when empty")
+	}
+	if strings.Contains(md, "个人事务") {
+		t.Error("summary line should not mention personals when zero")
+	}
+}
+
+func TestGenerate_PersonalsNotInTotal(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t", Date: "2026-05-02"},
+	})
+	addTestRecord(t, store, &models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "p", Date: "2026-05-02"},
+	})
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Total = work types only (tasks=1, personals NOT counted in total)
+	if rpt.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1 (personals excluded from total)", rpt.Summary.Total)
+	}
+	if rpt.Summary.Personals != 1 {
+		t.Errorf("Personals = %d, want 1", rpt.Summary.Personals)
+	}
+}
+
+func TestGenerateRange_PersonalsMerged(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "p1", Date: "2026-05-01"},
+	})
+	addTestRecord(t, store, &models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "p2", Date: "2026-05-02"},
+	})
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t1", Date: "2026-05-01"},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.Summary.Personals != 2 {
+		t.Errorf("Personals = %d, want 2", rr.Summary.Personals)
+	}
+	if rr.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1 (personals excluded)", rr.Summary.Total)
+	}
+	if len(rr.MergedPersonals) != 2 {
+		t.Errorf("MergedPersonals len = %d, want 2", len(rr.MergedPersonals))
+	}
+
+	md := rr.Markdown
+	if !strings.Contains(md, "## 🏠 个人事务 (2)") {
+		t.Error("range markdown missing personals section")
+	}
+	if !strings.Contains(md, "[2026-05-01] p1") {
+		t.Error("range markdown missing date-prefixed personal entry")
+	}
+	if !strings.Contains(md, "[2026-05-02] p2") {
+		t.Error("range markdown missing date-prefixed personal entry")
+	}
+	if !strings.Contains(md, "个人事务 2") {
+		t.Error("range summary line missing personals count")
+	}
+}
+
+func TestGenerateRange_NoPersonals_OmitsSection(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t", Date: "2026-05-01"},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.Summary.Personals != 0 {
+		t.Errorf("Personals = %d, want 0", rr.Summary.Personals)
+	}
+
+	md := rr.Markdown
+	if strings.Contains(md, "🏠 个人事务") {
+		t.Error("no personals section should appear when empty")
+	}
+}
+
 
