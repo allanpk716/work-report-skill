@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	agentsdk "github.com/allanpk716/ai-agent-cli-rules/sdks/go"
 )
@@ -234,6 +237,167 @@ func TestCancelBacklog(t *testing.T) {
 	status, _ := record["status"].(string)
 	if status != "cancelled" {
 		t.Errorf("expected status=cancelled, got %q", status)
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestAddBacklog_LLMClassify verifies the end-to-end flow: `wr add --text '帮我记一下研究 wasm'`
+// with a mock LLM server returning backlog type creates a record with type=backlog
+// and an empty date (no date defaulting for backlog).
+func TestAddBacklog_LLMClassify(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+
+	// Set up a mock LLM server that returns a backlog classification
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Return OpenAI-compatible chat completion response with backlog type
+		fmt.Fprintf(w, `{
+			"choices": [{
+				"message": {
+					"content": "{\"type\":\"backlog\",\"title\":\"研究 wasm\"}"
+				}
+			}]
+		}`)
+	}))
+	defer srv.Close()
+
+	// Configure LLM text settings to point to the mock server
+	code, out := executeCmd("config", "set", "llm.text.api_key", "test-key")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("config set api_key failed: %s", string(out))
+	}
+	code, out = executeCmd("config", "set", "llm.text.api_base", srv.URL)
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("config set api_base failed: %s", string(out))
+	}
+	code, out = executeCmd("config", "set", "llm.text.model", "test-model")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("config set model failed: %s", string(out))
+	}
+	code, out = executeCmd("config", "set", "llm.text.timeout", "30")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("config set timeout failed: %s", string(out))
+	}
+
+	resetAddFlags()
+	code, out = executeCmd("add", "--text", "帮我记一下研究 wasm")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit 0, got %d: %s", code, string(out))
+	}
+
+	// Verify the output record has type=backlog and empty date
+	lines := parseJSONLMaps(out)
+	data := unwrapData(lines[0])
+	if data == nil {
+		t.Fatal("expected data field in envelope")
+	}
+
+	recType, _ := data["type"].(string)
+	if recType != "backlog" {
+		t.Errorf("expected type=backlog, got %q", recType)
+	}
+
+	date, _ := data["date"].(string)
+	if date != "" {
+		t.Errorf("expected date to be empty for backlog, got %q", date)
+	}
+
+	shortID, _ := data["short_id"].(string)
+	if shortID == "" {
+		t.Error("expected non-empty short_id")
+	}
+
+	validateAllEnvelopes(t, out)
+}
+
+// TestAddBacklog_LLMBatchClassify verifies that when the LLM returns multiple
+// results including a backlog entry, the backlog record has no date while
+// non-backlog records get today's date as fallback.
+func TestAddBacklog_LLMBatchClassify(t *testing.T) {
+	tmpHome, cleanup := setupTempHome(t)
+	defer cleanup()
+
+	stateDir := filepath.Join(tmpHome, ".work-report")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executeCmd("config", "init")
+
+	// Mock LLM server returning 2 actionable results: one backlog, one task
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{
+			"choices": [{
+				"message": {
+					"content": "[{\"type\":\"backlog\",\"title\":\"有空研究 Rust\"},{\"type\":\"task\",\"title\":\"写周报\",\"date\":\"\"}]"
+				}
+			}]
+		}`)
+	}))
+	defer srv.Close()
+
+	// Configure LLM text settings
+	for _, kv := range []struct{ k, v string }{
+		{"llm.text.api_key", "test-key"},
+		{"llm.text.api_base", srv.URL},
+		{"llm.text.model", "test-model"},
+		{"llm.text.timeout", "30"},
+	} {
+		code, out := executeCmd("config", "set", kv.k, kv.v)
+		if code != agentsdk.ExitSuccess {
+			t.Fatalf("config set %s failed: %s", kv.k, string(out))
+		}
+	}
+
+	resetAddFlags()
+	code, out := executeCmd("add", "--text", "帮我记一下研究Rust，然后写周报")
+	if code != agentsdk.ExitSuccess {
+		t.Fatalf("expected exit 0, got %d: %s", code, string(out))
+	}
+
+	// Find both record envelopes
+	lines := parseJSONLMaps(out)
+	backlogFound := false
+	taskFound := false
+	today := time.Now().Format("2006-01-02")
+
+	for _, line := range lines {
+		data := unwrapData(line)
+		if data == nil {
+			continue
+		}
+		recType, _ := data["type"].(string)
+		switch recType {
+		case "backlog":
+			backlogFound = true
+			date, _ := data["date"].(string)
+			if date != "" {
+				t.Errorf("expected backlog date to be empty, got %q", date)
+			}
+		case "task":
+			taskFound = true
+			date, _ := data["date"].(string)
+			if date != today {
+				t.Errorf("expected task date fallback to today %q, got %q", today, date)
+			}
+		}
+	}
+
+	if !backlogFound {
+		t.Error("expected to find backlog record in output")
+	}
+	if !taskFound {
+		t.Error("expected to find task record in output")
 	}
 
 	validateAllEnvelopes(t, out)

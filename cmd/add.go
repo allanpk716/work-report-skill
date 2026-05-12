@@ -284,7 +284,10 @@ func handleBatchAddLocal(store *storage.Storage, cfg *config.Config, actionable 
 		recType := result.Type
 		title := result.Title
 		date := result.Date
-		if date == "" {
+
+		// Default date to today when not provided, except for backlog
+		// which intentionally has no date.
+		if date == "" && recType != "backlog" {
 			date = todayInLocation(cfg)
 		}
 
