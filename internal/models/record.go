@@ -161,8 +161,9 @@ type DoneThingsRecord struct {
 // work-records/personals/completed/YYYY/MM/DD/<timestamp>.json.
 type PersonalRecord struct {
 	CommonFields
-	Notes     string `json:"notes,omitempty"`
-	Recurring string `json:"recurring,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	Recurring   string `json:"recurring,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
 }
 
 // ParseRecord unmarshals JSON bytes into the appropriate typed record struct

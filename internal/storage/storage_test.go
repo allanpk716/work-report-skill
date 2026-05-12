@@ -2448,3 +2448,379 @@ func TestUpdateRecord_NotificationPriority_Normal(t *testing.T) {
 		t.Errorf("NotificationPriority = %q, want normal", cf.NotificationPriority)
 	}
 }
+
+// --- Personal record storage tests ---
+
+func newTestPersonal(title, date, timeStr string) *models.PersonalRecord {
+	return &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:   models.TypePersonal,
+			Title:  title,
+			Date:   date,
+			Time:   timeStr,
+			Status: models.StatusActive,
+		},
+		Notes:     "some notes",
+		Recurring: "daily",
+	}
+}
+
+func TestAddRecord_Personal(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(result)
+	if cf == nil {
+		t.Fatal("GetCommonFields returned nil")
+	}
+	if cf.ShortID == "" {
+		t.Error("ShortID should be populated after add")
+	}
+	if cf.SavedAt == "" {
+		t.Error("SavedAt should be populated after add")
+	}
+	if cf.Type != models.TypePersonal {
+		t.Errorf("Type = %q, want personal", cf.Type)
+	}
+	if cf.Status != models.StatusActive {
+		t.Errorf("Status = %q, want active", cf.Status)
+	}
+
+	// Verify file is in personals/active/
+	activeDir := filepath.Join(dir, "personals", "active")
+	files, err := os.ReadDir(activeDir)
+	if err != nil {
+		t.Fatalf("ReadDir personals/active: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file in personals/active, got %d", len(files))
+	}
+	if !strings.HasSuffix(files[0].Name(), ".json") {
+		t.Errorf("expected .json file, got %s", files[0].Name())
+	}
+}
+
+func TestAddRecord_Personal_Minimal(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypePersonal,
+			Title: "喝水",
+			Date:  "2026-05-12",
+		},
+	}
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("AddRecord minimal: %v", err)
+	}
+	cf := models.GetCommonFields(result)
+	if cf.ShortID == "" {
+		t.Error("ShortID should be set")
+	}
+	if cf.Status != models.StatusActive {
+		t.Errorf("Status = %q, want active", cf.Status)
+	}
+}
+
+func TestCompleteRecord_Personal(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatalf("CompleteRecord: %v", err)
+	}
+
+	// Verify old file removed from active
+	activeDir := filepath.Join(dir, "personals", "active")
+	files, _ := os.ReadDir(activeDir)
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".json") {
+			t.Errorf("active dir should be empty, found %s", f.Name())
+		}
+	}
+
+	// Verify file in completed dir with correct status
+	found, path, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after complete: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Status != models.StatusCompleted {
+		t.Errorf("Status = %q, want completed", foundCF.Status)
+	}
+	if !strings.Contains(path, "completed") {
+		t.Errorf("path %q should contain 'completed'", path)
+	}
+
+	// Verify CompletedAt is set on PersonalRecord
+	pr, ok := found.(*models.PersonalRecord)
+	if !ok {
+		t.Fatal("expected *models.PersonalRecord")
+	}
+	if pr.CompletedAt == "" {
+		t.Error("CompletedAt should be set after complete")
+	}
+}
+
+func TestCompleteRecord_Personal_AlreadyCompleted(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatalf("first CompleteRecord: %v", err)
+	}
+
+	err = s.CompleteRecord(shortID)
+	if err == nil {
+		t.Fatal("expected error on double-complete")
+	}
+}
+
+func TestCancelRecord_Personal(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CancelRecord(shortID)
+	if err != nil {
+		t.Fatalf("CancelRecord: %v", err)
+	}
+
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after cancel: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Status != models.StatusCancelled {
+		t.Errorf("Status = %q, want cancelled", foundCF.Status)
+	}
+}
+
+func TestCancelRecord_Personal_AlreadyCancelled(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CancelRecord(shortID)
+	if err != nil {
+		t.Fatalf("first CancelRecord: %v", err)
+	}
+
+	err = s.CancelRecord(shortID)
+	if err == nil {
+		t.Fatal("expected error on double-cancel")
+	}
+}
+
+func TestCancelRecord_Personal_AlreadyCompleted(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatalf("CompleteRecord: %v", err)
+	}
+
+	err = s.CancelRecord(shortID)
+	if err == nil {
+		t.Fatal("expected error when cancelling a completed record")
+	}
+}
+
+func TestUpdateRecord_Personal(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Update notes and recurring
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"notes":     "饭后服用",
+		"recurring": "weekly",
+		"title":     "吃维生素",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	pr, ok := updated.(*models.PersonalRecord)
+	if !ok {
+		t.Fatal("expected *models.PersonalRecord")
+	}
+	if pr.Notes != "饭后服用" {
+		t.Errorf("Notes = %q, want '饭后服用'", pr.Notes)
+	}
+	if pr.Recurring != "weekly" {
+		t.Errorf("Recurring = %q, want 'weekly'", pr.Recurring)
+	}
+	if pr.Title != "吃维生素" {
+		t.Errorf("Title = %q, want '吃维生素'", pr.Title)
+	}
+}
+
+func TestListRecords_Personal(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add two personal records
+	r1 := newTestPersonal("吃药", "2026-05-12", "14:00")
+	r2 := newTestPersonal("喝水", "2026-05-12", "08:00")
+	s.AddRecord(r1)
+	s.AddRecord(r2)
+
+	// List only personal type
+	recs, err := s.ListRecords(ListOptions{RecordType: models.TypePersonal})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+
+	// Verify types
+	for _, r := range recs {
+		if r.Type != models.TypePersonal {
+			t.Errorf("Type = %q, want personal", r.Type)
+		}
+	}
+
+	// Verify sorted newest first (14:00 > 08:00)
+	if recs[0].Time < recs[1].Time {
+		t.Errorf("expected newest first, got %s before %s", recs[0].Time, recs[1].Time)
+	}
+}
+
+func TestListRecords_Personal_IncludeCompleted(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	r1 := newTestPersonal("吃药", "2026-05-12", "14:00")
+	result, err := s.AddRecord(r1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	s.CompleteRecord(shortID)
+
+	// Without IncludeCompleted, should get 0
+	recs, err := s.ListRecords(ListOptions{RecordType: models.TypePersonal})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("expected 0 active records, got %d", len(recs))
+	}
+
+	// With IncludeCompleted, should get 1
+	recs, err = s.ListRecords(ListOptions{RecordType: models.TypePersonal, IncludeCompleted: true})
+	if err != nil {
+		t.Fatalf("ListRecords completed: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Errorf("expected 1 completed record, got %d", len(recs))
+	}
+	if recs[0].Status != models.StatusCompleted {
+		t.Errorf("Status = %q, want completed", recs[0].Status)
+	}
+}
+
+func TestPersonal_FullLifecycle(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	// 1. Add
+	rec := newTestPersonal("吃药", "2026-05-12", "14:00")
+	added, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	shortID := models.GetCommonFields(added).ShortID
+
+	// Verify in personals/active/
+	activeDir := filepath.Join(dir, "personals", "active")
+	files, _ := os.ReadDir(activeDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file in personals/active, got %d", len(files))
+	}
+
+	// 2. List active
+	recs, err := s.ListRecords(ListOptions{RecordType: models.TypePersonal})
+	if err != nil {
+		t.Fatalf("List active: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 active record, got %d", len(recs))
+	}
+
+	// 3. Update
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{"notes": "饭后服用"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// 4. Complete
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Verify moved to personals/completed/YYYY/MM/DD/
+	found, path, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	cf := models.GetCommonFields(found)
+	if cf.Status != models.StatusCompleted {
+		t.Errorf("Status = %q, want completed", cf.Status)
+	}
+	if !strings.Contains(path, filepath.Join("personals", "completed")) {
+		t.Errorf("path %q should contain personals/completed", path)
+	}
+
+	// 5. List with status all
+	recs, err = s.ListRecords(ListOptions{RecordType: models.TypePersonal, Status: "all"})
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Errorf("expected 1 record with status=all, got %d", len(recs))
+	}
+}
