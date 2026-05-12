@@ -467,6 +467,7 @@ func TestIsValidType(t *testing.T) {
 		{"task", true},
 		{"reminder", true},
 		{"done_things", true},
+		{"personal", true},
 		{"", false},
 		{"unknown", false},
 		{"Meeting", false},
@@ -511,6 +512,14 @@ func TestGetCommonFields(t *testing.T) {
 	cf = GetCommonFields(doneThings)
 	if cf == nil || cf.Title != "test done_things" {
 		t.Errorf("GetCommonFields(done_things) failed")
+	}
+
+	personal := &PersonalRecord{
+		CommonFields: CommonFields{Type: TypePersonal, Title: "test personal"},
+	}
+	cf = GetCommonFields(personal)
+	if cf == nil || cf.Title != "test personal" {
+		t.Errorf("GetCommonFields(personal) failed")
 	}
 
 	// Unknown type
@@ -654,5 +663,162 @@ func TestNotificationPriorityBackwardCompat(t *testing.T) {
 	// Should be empty (default), which is treated as "normal"
 	if meeting.NotificationPriority != "" {
 		t.Errorf("NotificationPriority = %q, want empty for backward compat", meeting.NotificationPriority)
+	}
+}
+
+// --- Personal type tests ---
+
+const samplePersonalActiveJSON = `{
+  "type": "personal",
+  "title": "吃药",
+  "description": "",
+  "date": "2026-05-06",
+  "time": "14:00",
+  "notes": "饭后服用",
+  "recurring": "daily",
+  "status": "pending",
+  "saved_at": "2026-05-06T10:00:00.000000"
+}`
+
+const samplePersonalMinimalJSON = `{
+  "type": "personal",
+  "title": "喝水",
+  "date": "2026-05-06",
+  "saved_at": "2026-05-06T08:00:00.000000"
+}`
+
+const samplePersonalCompletedJSON = `{
+  "type": "personal",
+  "title": "吃药",
+  "date": "2026-05-06",
+  "time": "14:00",
+  "notes": "饭后服用",
+  "status": "completed",
+  "saved_at": "2026-05-06T10:00:00.000000",
+  "completed_at": "2026-05-06T14:05:00.000000"
+}`
+
+// TestParsePersonalRoundTrip verifies personal record parsing and round-trip.
+func TestParsePersonalRoundTrip(t *testing.T) {
+	original := []byte(samplePersonalActiveJSON)
+
+	parsed, err := ParseRecord(original)
+	if err != nil {
+		t.Fatalf("ParseRecord: %v", err)
+	}
+
+	personal, ok := parsed.(*PersonalRecord)
+	if !ok {
+		t.Fatalf("expected *PersonalRecord, got %T", parsed)
+	}
+
+	if personal.Type != TypePersonal {
+		t.Errorf("Type = %q, want %q", personal.Type, TypePersonal)
+	}
+	if personal.Title != "吃药" {
+		t.Errorf("Title = %q, want %q", personal.Title, "吃药")
+	}
+	if personal.Time != "14:00" {
+		t.Errorf("Time = %q, want %q", personal.Time, "14:00")
+	}
+	if personal.Notes != "饭后服用" {
+		t.Errorf("Notes = %q, want %q", personal.Notes, "饭后服用")
+	}
+	if personal.Recurring != "daily" {
+		t.Errorf("Recurring = %q, want %q", personal.Recurring, "daily")
+	}
+	if personal.Status != "pending" {
+		t.Errorf("Status = %q, want %q", personal.Status, "pending")
+	}
+
+	// Round-trip
+	roundTrip, err := MarshalRecord(personal)
+	if err != nil {
+		t.Fatalf("MarshalRecord: %v", err)
+	}
+
+	var origMap, rtMap map[string]interface{}
+	json.Unmarshal(original, &origMap)
+	json.Unmarshal(roundTrip, &rtMap)
+
+	for _, key := range []string{"type", "title", "date", "time", "notes", "recurring", "status", "saved_at"} {
+		if origMap[key] != rtMap[key] {
+			t.Errorf("round-trip mismatch for %q: original=%v, roundtrip=%v", key, origMap[key], rtMap[key])
+		}
+	}
+}
+
+// TestParsePersonalMinimal verifies a minimal personal record without optional fields.
+func TestParsePersonalMinimal(t *testing.T) {
+	data := []byte(samplePersonalMinimalJSON)
+
+	parsed, err := ParseRecord(data)
+	if err != nil {
+		t.Fatalf("ParseRecord: %v", err)
+	}
+
+	personal, ok := parsed.(*PersonalRecord)
+	if !ok {
+		t.Fatalf("expected *PersonalRecord, got %T", parsed)
+	}
+
+	if personal.Title != "喝水" {
+		t.Errorf("Title = %q, want %q", personal.Title, "喝水")
+	}
+	if personal.Notes != "" {
+		t.Errorf("Notes = %q, want empty", personal.Notes)
+	}
+	if personal.Recurring != "" {
+		t.Errorf("Recurring = %q, want empty", personal.Recurring)
+	}
+	if personal.Time != "" {
+		t.Errorf("Time = %q, want empty", personal.Time)
+	}
+}
+
+// TestPersonalIsActionable verifies personal type is actionable (supports complete/cancel).
+func TestPersonalIsActionable(t *testing.T) {
+	if !IsActionableType(TypePersonal) {
+		t.Errorf("IsActionableType(personal) = false, want true")
+	}
+}
+
+// TestPersonalDirName verifies DirName returns "personals".
+func TestPersonalDirName(t *testing.T) {
+	if TypePersonal.DirName() != "personals" {
+		t.Errorf("DirName(personal) = %q, want %q", TypePersonal.DirName(), "personals")
+	}
+}
+
+// TestPersonalValidRecordType verifies personal is in the valid types list.
+func TestPersonalValidRecordType(t *testing.T) {
+	found := false
+	for _, vt := range ValidRecordTypes() {
+		if vt == "personal" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("personal not found in ValidRecordTypes()")
+	}
+}
+
+// TestPersonalCompletedStatus verifies completed personal record parsing.
+func TestPersonalCompletedStatus(t *testing.T) {
+	data := []byte(samplePersonalCompletedJSON)
+
+	parsed, err := ParseRecord(data)
+	if err != nil {
+		t.Fatalf("ParseRecord: %v", err)
+	}
+
+	personal, ok := parsed.(*PersonalRecord)
+	if !ok {
+		t.Fatalf("expected *PersonalRecord, got %T", parsed)
+	}
+
+	if personal.Status != "completed" {
+		t.Errorf("Status = %q, want completed", personal.Status)
 	}
 }

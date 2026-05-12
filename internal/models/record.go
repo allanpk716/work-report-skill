@@ -22,11 +22,12 @@ const (
 	TypeTask     RecordType = "task"
 	TypeReminder RecordType = "reminder"
 	TypeDoneThings RecordType = "done_things"
+	TypePersonal  RecordType = "personal"
 )
 
 // ValidRecordTypes returns the set of valid record type strings.
 func ValidRecordTypes() []string {
-	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeDoneThings)}
+	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeDoneThings), string(TypePersonal)}
 }
 
 // IsActionableType returns true for record types that support lifecycle state
@@ -34,7 +35,7 @@ func ValidRecordTypes() []string {
 // support these actions.
 func IsActionableType(rt RecordType) bool {
 	switch rt {
-	case TypeMeeting, TypeTask, TypeReminder:
+	case TypeMeeting, TypeTask, TypeReminder, TypePersonal:
 		return true
 	default:
 		return false
@@ -44,7 +45,7 @@ func IsActionableType(rt RecordType) bool {
 // IsValidType checks whether s is a valid record type.
 func IsValidType(s string) bool {
 	switch RecordType(s) {
-	case TypeMeeting, TypeTask, TypeReminder, TypeDoneThings:
+	case TypeMeeting, TypeTask, TypeReminder, TypeDoneThings, TypePersonal:
 		return true
 	}
 	return false
@@ -155,6 +156,15 @@ type DoneThingsRecord struct {
 	Progress string `json:"progress,omitempty"`
 }
 
+// PersonalRecord maps to the personal JSON format stored in
+// work-records/personals/active/<timestamp>.json or
+// work-records/personals/completed/YYYY/MM/DD/<timestamp>.json.
+type PersonalRecord struct {
+	CommonFields
+	Notes     string `json:"notes,omitempty"`
+	Recurring string `json:"recurring,omitempty"`
+}
+
 // ParseRecord unmarshals JSON bytes into the appropriate typed record struct
 // based on the "type" field. Returns the concrete type as an interface.
 func ParseRecord(data []byte) (interface{}, error) {
@@ -189,6 +199,12 @@ func ParseRecord(data []byte) (interface{}, error) {
 		var r DoneThingsRecord
 		if err := json.Unmarshal(data, &r); err != nil {
 			return nil, fmt.Errorf("models: parse done_things: %w", err)
+		}
+		return &r, nil
+	case TypePersonal:
+		var r PersonalRecord
+		if err := json.Unmarshal(data, &r); err != nil {
+			return nil, fmt.Errorf("models: parse personal: %w", err)
 		}
 		return &r, nil
 	default:
@@ -239,6 +255,8 @@ func GetCommonFields(r interface{}) *CommonFields {
 	case *ReminderRecord:
 		return &v.CommonFields
 	case *DoneThingsRecord:
+		return &v.CommonFields
+	case *PersonalRecord:
 		return &v.CommonFields
 	default:
 		return nil
