@@ -228,6 +228,8 @@ func (s *Storage) CompleteRecord(shortID string) error {
 		v.CompletedAt = now.Format(time.RFC3339Nano)
 	case *models.PersonalRecord:
 		v.CompletedAt = now.Format(time.RFC3339Nano)
+	case *models.BacklogRecord:
+		v.CompletedAt = now.Format(time.RFC3339Nano)
 	case *models.MeetingRecord:
 		// MeetingRecord doesn't have CompletedAt, status is sufficient
 	}
@@ -547,6 +549,13 @@ func (s *Storage) applyTypeFields(rec interface{}, fields map[string]interface{}
 				changed = append(changed, "recurring")
 			}
 		}
+	case *models.BacklogRecord:
+		if n, ok := fields["notes"]; ok {
+			if sv, ok := n.(string); ok {
+				v.Notes = sv
+				changed = append(changed, "notes")
+			}
+		}
 	case *models.TaskRecord:
 		// TaskRecord has no type-specific updatable fields in the allowed list.
 		// All its unique fields (completed_at, raw_input, etc.) are system-managed.
@@ -622,6 +631,8 @@ func (s *Storage) activeDirForRecord(rt models.RecordType, date string) string {
 		return filepath.Join(typeDir, "active")
 	case models.TypePersonal:
 		return filepath.Join(typeDir, "active")
+	case models.TypeBacklog:
+		return filepath.Join(typeDir, "active")
 	default:
 		return filepath.Join(typeDir, datePath(date))
 	}
@@ -657,7 +668,7 @@ func (s *Storage) scanType(rt models.RecordType, opts ListOptions) ([]ListedReco
 			results = append(results, completedRecs...)
 		}
 		return results, nil
-	case models.TypeTask, models.TypeReminder, models.TypePersonal:
+	case models.TypeTask, models.TypeReminder, models.TypePersonal, models.TypeBacklog:
 		// Scan active/ dir
 		activeRecs, err := s.scanFlatDir(filepath.Join(typeDir, "active"), rt, opts)
 		if err != nil && !os.IsNotExist(err) {
@@ -844,7 +855,7 @@ func (s *Storage) findRecordByID(rt models.RecordType, shortID string) (interfac
 			return rec, path, nil
 		}
 		return s.findInDateTree(filepath.Join(typeDir, "completed"), shortID)
-	case models.TypeTask, models.TypeReminder, models.TypePersonal:
+	case models.TypeTask, models.TypeReminder, models.TypePersonal, models.TypeBacklog:
 		rec, path, err := s.findInFlatDir(filepath.Join(typeDir, "active"), shortID)
 		if err == nil && rec != nil {
 			return rec, path, nil

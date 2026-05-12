@@ -23,11 +23,12 @@ const (
 	TypeReminder RecordType = "reminder"
 	TypeDoneThings RecordType = "done_things"
 	TypePersonal  RecordType = "personal"
+	TypeBacklog   RecordType = "backlog"
 )
 
 // ValidRecordTypes returns the set of valid record type strings.
 func ValidRecordTypes() []string {
-	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeDoneThings), string(TypePersonal)}
+	return []string{string(TypeMeeting), string(TypeTask), string(TypeReminder), string(TypeDoneThings), string(TypePersonal), string(TypeBacklog)}
 }
 
 // IsActionableType returns true for record types that support lifecycle state
@@ -35,7 +36,7 @@ func ValidRecordTypes() []string {
 // support these actions.
 func IsActionableType(rt RecordType) bool {
 	switch rt {
-	case TypeMeeting, TypeTask, TypeReminder, TypePersonal:
+	case TypeMeeting, TypeTask, TypeReminder, TypePersonal, TypeBacklog:
 		return true
 	default:
 		return false
@@ -45,7 +46,7 @@ func IsActionableType(rt RecordType) bool {
 // IsValidType checks whether s is a valid record type.
 func IsValidType(s string) bool {
 	switch RecordType(s) {
-	case TypeMeeting, TypeTask, TypeReminder, TypeDoneThings, TypePersonal:
+	case TypeMeeting, TypeTask, TypeReminder, TypeDoneThings, TypePersonal, TypeBacklog:
 		return true
 	}
 	return false
@@ -166,6 +167,16 @@ type PersonalRecord struct {
 	CompletedAt string `json:"completed_at,omitempty"`
 }
 
+// BacklogRecord maps to the backlog JSON format stored in
+// work-records/backlogs/active/<timestamp>.json or
+// work-records/backlogs/completed/YYYY/MM/DD/<timestamp>.json.
+// Backlog items represent pending work items with no fixed date.
+type BacklogRecord struct {
+	CommonFields
+	Notes       string `json:"notes,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
+}
+
 // ParseRecord unmarshals JSON bytes into the appropriate typed record struct
 // based on the "type" field. Returns the concrete type as an interface.
 func ParseRecord(data []byte) (interface{}, error) {
@@ -206,6 +217,12 @@ func ParseRecord(data []byte) (interface{}, error) {
 		var r PersonalRecord
 		if err := json.Unmarshal(data, &r); err != nil {
 			return nil, fmt.Errorf("models: parse personal: %w", err)
+		}
+		return &r, nil
+	case TypeBacklog:
+		var r BacklogRecord
+		if err := json.Unmarshal(data, &r); err != nil {
+			return nil, fmt.Errorf("models: parse backlog: %w", err)
 		}
 		return &r, nil
 	default:
@@ -258,6 +275,8 @@ func GetCommonFields(r interface{}) *CommonFields {
 	case *DoneThingsRecord:
 		return &v.CommonFields
 	case *PersonalRecord:
+		return &v.CommonFields
+	case *BacklogRecord:
 		return &v.CommonFields
 	default:
 		return nil

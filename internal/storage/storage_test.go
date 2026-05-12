@@ -2824,3 +2824,195 @@ func TestPersonal_FullLifecycle(t *testing.T) {
 		t.Errorf("expected 1 record with status=all, got %d", len(recs))
 	}
 }
+
+// --- Backlog record storage tests ---
+
+func newTestBacklog(title string) *models.BacklogRecord {
+	return &models.BacklogRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeBacklog,
+			Title: title,
+			// Date intentionally empty for backlog items
+			Status: models.StatusActive,
+		},
+		Notes: "some notes",
+	}
+}
+
+func TestAddRecord_Backlog(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	rec := newTestBacklog("学习 Go 并发")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(result)
+	if cf == nil {
+		t.Fatal("GetCommonFields returned nil")
+	}
+	if cf.ShortID == "" {
+		t.Error("ShortID should be populated after add")
+	}
+	if cf.SavedAt == "" {
+		t.Error("SavedAt should be populated after add")
+	}
+	if cf.Type != models.TypeBacklog {
+		t.Errorf("Type = %q, want backlog", cf.Type)
+	}
+	if cf.Status != models.StatusActive {
+		t.Errorf("Status = %q, want active", cf.Status)
+	}
+	if cf.Date != "" {
+		t.Errorf("Date = %q, want empty string for backlog", cf.Date)
+	}
+
+	// Verify file is in backlogs/active/
+	activeDir := filepath.Join(dir, "backlogs", "active")
+	files, err := os.ReadDir(activeDir)
+	if err != nil {
+		t.Fatalf("ReadDir backlogs/active: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file in backlogs/active, got %d", len(files))
+	}
+	if !strings.HasSuffix(files[0].Name(), ".json") {
+		t.Errorf("expected .json file, got %s", files[0].Name())
+	}
+}
+
+func TestListRecords_BacklogActive(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Add two backlog records
+	s.AddRecord(newTestBacklog("学习 Go 并发"))
+	s.AddRecord(newTestBacklog("阅读 DDIA"))
+
+	// List only backlog type
+	recs, err := s.ListRecords(ListOptions{RecordType: models.TypeBacklog})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 backlog records, got %d", len(recs))
+	}
+
+	for _, r := range recs {
+		if r.Type != models.TypeBacklog {
+			t.Errorf("Type = %q, want backlog", r.Type)
+		}
+	}
+}
+
+func TestCompleteRecord_Backlog(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	rec := newTestBacklog("学习 Go 并发")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatalf("CompleteRecord: %v", err)
+	}
+
+	// Verify old file removed from active
+	activeDir := filepath.Join(dir, "backlogs", "active")
+	files, _ := os.ReadDir(activeDir)
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".json") {
+			t.Errorf("active dir should be empty, found %s", f.Name())
+		}
+	}
+
+	// Verify file in completed dir with correct status
+	found, path, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after complete: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Status != models.StatusCompleted {
+		t.Errorf("Status = %q, want completed", foundCF.Status)
+	}
+	if !strings.Contains(path, filepath.Join("backlogs", "completed")) {
+		t.Errorf("path %q should contain backlogs/completed", path)
+	}
+
+	// Verify CompletedAt is set on BacklogRecord
+	br, ok := found.(*models.BacklogRecord)
+	if !ok {
+		t.Fatal("expected *models.BacklogRecord")
+	}
+	if br.CompletedAt == "" {
+		t.Error("CompletedAt should be set after complete")
+	}
+}
+
+func TestCancelRecord_Backlog(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("学习 Go 并发")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	err = s.CancelRecord(shortID)
+	if err != nil {
+		t.Fatalf("CancelRecord: %v", err)
+	}
+
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after cancel: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Status != models.StatusCancelled {
+		t.Errorf("Status = %q, want cancelled", foundCF.Status)
+	}
+}
+
+func TestUpdateRecord_Backlog(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("学习 Go 并发")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Update notes field
+	updated, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"notes": "先读官方文档，再写示例",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRecord: %v", err)
+	}
+
+	br, ok := updated.(*models.BacklogRecord)
+	if !ok {
+		t.Fatal("expected *models.BacklogRecord")
+	}
+	if br.Notes != "先读官方文档，再写示例" {
+		t.Errorf("Notes = %q, want '先读官方文档，再写示例'", br.Notes)
+	}
+
+	// Verify persistence: re-read from disk
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after update: %v", err)
+	}
+	foundBR, ok := found.(*models.BacklogRecord)
+	if !ok {
+		t.Fatal("expected *models.BacklogRecord on re-read")
+	}
+	if foundBR.Notes != "先读官方文档，再写示例" {
+		t.Errorf("persisted Notes = %q, want '先读官方文档，再写示例'", foundBR.Notes)
+	}
+}
