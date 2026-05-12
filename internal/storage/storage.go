@@ -834,12 +834,29 @@ func (s *Storage) scanType(rt models.RecordType, opts ListOptions) ([]ListedReco
 	case models.TypeDoneThings:
 		return s.scanDateTree(typeDir, rt, opts)
 	case models.TypeMeeting:
-		// Meetings use date tree (no active/ subdir)
-		recs, err := s.scanDateTree(typeDir, rt, opts)
+		// Meetings use date tree (no active/ subdir).
+		// Directory layout: meetings/YYYY/MM/DD/<file>.json (active)
+		//                   meetings/completed/YYYY/MM/DD/<file>.json (completed)
+		//
+		// scanDateTree is recursive and would walk into "completed/" if we start
+		// from the root, so we must explicitly exclude it and scan separately.
+		rootEntries, err := os.ReadDir(typeDir)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
 			return nil, err
 		}
-		results = append(results, recs...)
+		for _, entry := range rootEntries {
+			if !entry.IsDir() || entry.Name() == "completed" {
+				continue
+			}
+			recs, err := s.scanDateTree(filepath.Join(typeDir, entry.Name()), rt, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, recs...)
+		}
 		if opts.IncludeCompleted {
 			completedRecs, err := s.scanDateTree(filepath.Join(typeDir, "completed"), rt, opts)
 			if err != nil && !os.IsNotExist(err) {

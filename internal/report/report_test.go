@@ -1227,4 +1227,150 @@ func TestGenerateRange_BacklogCompletedInRange(t *testing.T) {
 	}
 }
 
+func TestGenerate_CompletedMeetingNotDuplicated(t *testing.T) {
+	// Regression test: completed meetings should appear exactly once in reports.
+	// Bug was: scanType for meetings recursed into "completed/" via the root
+	// scanDateTree AND then scanned "completed/" again explicitly, doubling
+	// every completed meeting.
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Add a meeting, then complete it
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeMeeting,
+			Title: "软件实习生面试",
+			Date:  "2026-05-02",
+			Time:  "10:00",
+		},
+	}
+	added, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	shortID := models.GetCommonFields(added).ShortID
+	if err := store.CompleteRecord(shortID); err != nil {
+		t.Fatalf("CompleteRecord: %v", err)
+	}
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if rpt.Summary.Meetings != 1 {
+		t.Errorf("Meetings = %d, want 1 (completed meeting should not be duplicated)", rpt.Summary.Meetings)
+	}
+	if len(rpt.Meetings) != 1 {
+		t.Fatalf("Meetings slice len = %d, want 1", len(rpt.Meetings))
+	}
+	if rpt.Meetings[0].Title != "软件实习生面试" {
+		t.Errorf("Meeting title = %q, want 软件实习生面试", rpt.Meetings[0].Title)
+	}
+}
+
+func TestGenerate_MultipleCompletedMeetingsNotDuplicated(t *testing.T) {
+	// Two completed meetings on the same day — both should appear exactly once.
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	for _, title := range []string{"软件实习生面试", "尿液算法同步"} {
+		rec := &models.MeetingRecord{
+			CommonFields: models.CommonFields{
+				Type:  models.TypeMeeting,
+				Title: title,
+				Date:  "2026-05-02",
+				Time:  "14:00",
+			},
+		}
+		added, _ := store.AddRecord(rec)
+		shortID := models.GetCommonFields(added).ShortID
+		store.CompleteRecord(shortID)
+		time.Sleep(10 * time.Millisecond) // ensure distinct filenames
+	}
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if rpt.Summary.Meetings != 2 {
+		t.Errorf("Meetings = %d, want 2 (no duplicates)", rpt.Summary.Meetings)
+	}
+	if rpt.Summary.Total != 2 {
+		t.Errorf("Total = %d, want 2", rpt.Summary.Total)
+	}
+
+	// Count occurrences of each title in the markdown
+	md := rpt.Markdown
+	for _, title := range []string{"软件实习生面试", "尿液算法同步"} {
+		count := strings.Count(md, title)
+		if count != 1 {
+			t.Errorf("title %q appears %d times in markdown, want 1:\n%s", title, count, md)
+		}
+	}
+}
+
+func TestListRecords_MeetingNotDuplicated(t *testing.T) {
+	// Direct storage-level test: completed meetings returned exactly once.
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeMeeting,
+			Title: "面试",
+			Date:  "2026-05-02",
+		},
+	}
+	added, _ := store.AddRecord(rec)
+	shortID := models.GetCommonFields(added).ShortID
+	store.CompleteRecord(shortID)
+
+	// List with IncludeCompleted (this is what report uses)
+	recs, err := store.ListRecords(storage.ListOptions{
+		RecordType:       models.TypeMeeting,
+		Date:             "2026-05-02",
+		IncludeCompleted: true,
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+
+	if len(recs) != 1 {
+		t.Errorf("ListRecords returned %d records, want 1 (no duplicates):\n%+v", len(recs), recs)
+	}
+}
+
+func TestListRecords_MeetingExcludeCompleted(t *testing.T) {
+	// Verify that IncludeCompleted=false does NOT return completed meetings.
+	// (Previously scanDateTree would recurse into completed/ unconditionally.)
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeMeeting,
+			Title: "已完成会议",
+			Date:  "2026-05-02",
+		},
+	}
+	added, _ := store.AddRecord(rec)
+	shortID := models.GetCommonFields(added).ShortID
+	store.CompleteRecord(shortID)
+
+	// List WITHOUT IncludeCompleted — should not find the completed meeting
+	recs, err := store.ListRecords(storage.ListOptions{
+		RecordType: models.TypeMeeting,
+		Date:       "2026-05-02",
+	})
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+
+	if len(recs) != 0 {
+		t.Errorf("ListRecords returned %d records, want 0 (completed meeting should be excluded):\n%+v", len(recs), recs)
+	}
+}
+
 
