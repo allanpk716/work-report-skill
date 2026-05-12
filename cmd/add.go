@@ -116,8 +116,14 @@ var addCmd = &cobra.Command{
 			}
 		}
 
+		// Reject explicit date on backlog — backlog records have no date
+		if addType == "backlog" && addDate != "" {
+			return writeJSONLError("invalid_params", "backlog records cannot have a date")
+		}
+
 		// Default date to today when not provided (covers both manual and LLM paths)
-		if addDate == "" {
+		// Skip for backlog — backlog records intentionally have no date
+		if addDate == "" && addType != "backlog" {
 			addDate = todayInLocation(cfg)
 			source := "default_today"
 			if usedLLM {
@@ -131,12 +137,12 @@ var addCmd = &cobra.Command{
 			return writeJSONLError("invalid_type", "missing required field: type")
 		}
 		if !models.IsValidType(addType) {
-			return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, personal, or done_things)", addType))
+			return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, personal, backlog, or done_things)", addType))
 		}
 		if addTitle == "" {
 			return writeJSONLError("invalid_body", "missing required field: title")
 		}
-		if addDate == "" {
+		if addDate == "" && addType != "backlog" {
 			return writeJSONLError("invalid_body", "missing required field: date")
 		}
 
@@ -357,7 +363,7 @@ func splitByComma(s string) []string {
 }
 
 func init() {
-	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, done_things). Note: done_things is non-actionable (no complete/cancel)")
+	addCmd.Flags().StringVar(&addType, "type", "", "Entry type (meeting, task, reminder, personal, backlog, done_things). Note: done_things is non-actionable (no complete/cancel)")
 	addCmd.Flags().StringVar(&addTitle, "title", "", "Entry title")
 	addCmd.Flags().StringVar(&addDate, "date", "", "Date (YYYY-MM-DD, defaults to today if omitted)")
 	addCmd.Flags().StringVar(&addTime, "time", "", "Time (HH:MM)")

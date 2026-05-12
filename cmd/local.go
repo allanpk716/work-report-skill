@@ -259,6 +259,8 @@ func buildRecord(recType, title, date, tm, description string,
 		}
 	case models.TypeDoneThings:
 		return &models.DoneThingsRecord{CommonFields: cf}
+	case models.TypeBacklog:
+		return &models.BacklogRecord{CommonFields: cf}
 	default:
 		return &models.DoneThingsRecord{CommonFields: cf}
 	}

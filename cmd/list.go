@@ -35,7 +35,7 @@ var listCmd = &cobra.Command{
 
 		if listType != "" {
 			if !models.IsValidType(listType) {
-				return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, personal, or done_things)", listType))
+				return writeJSONLError("invalid_type", fmt.Sprintf("invalid type: %q (must be meeting, task, reminder, personal, backlog, or done_things)", listType))
 			}
 			opts.RecordType = models.RecordType(listType)
 		}
