@@ -4,7 +4,8 @@ A pure CLI tool for managing work reports. Built with Go, designed for AI agent 
 
 ## Features
 
-- **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, done_things, personal)
+- **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, done_things, personal, backlog)
+- **Backlog management** — Track dateless to-do items, upgrade to task/reminder when ready
 - **LLM classification** — Describe work in natural language or attach images; auto-classifies them into structured records
 - **Report generation** — Generate daily, weekly, or custom-range reports in Markdown or JSON
 - **Push notifications** — Push reports directly to Pushover
@@ -38,6 +39,9 @@ go build -o wr .
 
 # Add a personal record
 ./wr add --type personal --title "吃药" --time 14:00
+
+# Add a backlog item (dateless to-do)
+./wr add --type backlog --title "Research WASM"
 
 # Check today's entries
 ./wr list
@@ -103,6 +107,48 @@ Control the urgency of Pushover notifications on a per-record basis using `--not
 # Update an existing record's notification priority
 ./wr update <id> --notify-priority high
 ```
+
+## Backlog (待办积压)
+
+Backlog items are **dateless to-do entries** — ideas, future intentions, or research topics that don't yet have a scheduled date. They live in `work-records/backlogs/` and appear in the 📋 section of daily and weekly reports.
+
+### Lifecycle
+
+```bash
+# Add a backlog item (no date allowed)
+./wr add --type backlog --title "Research WASM"
+
+# Complete or cancel
+./wr complete <id>
+./wr cancel <id>
+
+# Upgrade a backlog item to a task or reminder with a scheduled date
+./wr update <id> --type task --date 2025-02-10
+./wr update <id> --type reminder --date 2025-02-10
+```
+
+**Upgrade rules:**
+- Only backlog records can be upgraded via `--type`
+- Valid targets: `task` or `reminder`
+- `--date` is required when upgrading (the record transitions from dateless to scheduled)
+- Once upgraded, the record behaves like a normal task/reminder
+
+### Report display
+
+Backlog items appear in the 📋 section of reports:
+- **Active backlogs** are always shown (no date filter — they persist until completed or upgraded)
+- **Completed backlogs** appear on the date they were completed
+- In weekly reports, active backlogs are deduplicated (they appear every day but are merged into one list)
+
+### LLM auto-classification
+
+When using `--text` with LLM classification, inputs expressing vague future intent without a date are automatically classified as backlog. Trigger phrases include:
+
+- "帮我记一下要研究 wasm"
+- "我有个想法，可以做一个内部工具"
+- "有空看看这篇关于微服务的文章"
+
+**Rule:** no date/time → backlog; has date/time → task or reminder per content.
 
 ### LLM classification (optional)
 
