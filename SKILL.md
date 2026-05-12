@@ -29,6 +29,7 @@ wr add --type done_things --title "完成了代码审查"
 wr add --type meeting --title "站会" --time 10:00
 wr add --type task --title "Review PR #42" --priority high
 wr add --type personal --title "吃药" --time 14:00
+wr add --type backlog --title "Research WASM"
 ```
 
 输出为 JSONL：`type: "result"` 成功，`type: "error"` 失败（查看 `error_code`）。
@@ -62,10 +63,11 @@ wr remind push --due            # 推送所有到期提醒并自动完成
 | `error_code` | 处理 |
 |---|---|
 | `record_not_found` | `wr list` 查找正确 ID |
-| `invalid_type` | `--type` 须为 meeting / task / reminder / done_things / personal |
+| `invalid_type` | `--type` 须为 meeting / task / reminder / done_things / personal / backlog |
 
 > 完整命令参考、JSONL 格式规范、错误码表见下方各章节。
 > **通知优先级：** 会议记录默认 `high`（绕过 Pushover 静默时段），其他类型默认 `normal`。可通过 `--notify-priority` 显式指定。
+> **backlog 无日期：** `backlog` 记录不设日期，`--date` 对 backlog 类型会被拒绝。当省略 `--date` 时，backlog 不会默认今天（其他类型会默认今天）。
 
 ---
 
@@ -124,7 +126,7 @@ Add a new work report entry.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `done_things`, `personal` |
+| `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `done_things`, `personal`, `backlog` |
 | `--title` | string | `""` | Entry title |
 | `--date` | string | `""` | Date in `YYYY-MM-DD` format. Defaults to today if omitted. |
 | `--time` | string | `""` | Time in `HH:MM` format |
@@ -148,6 +150,7 @@ Add a new work report entry.
 - `done_things` is a non-actionable type — records of this type cannot be completed or cancelled (they are factual records of work already done).
 - `personal` is an actionable type (like `task`/`meeting`/`reminder`) — personal records can be completed and cancelled, and support recurring patterns.
 - `--notify-priority` controls the Pushover delivery priority. Meetings default to `high` (bypasses quiet hours) and other types default to `normal`.
+- **backlog records are dateless** — `--date` is rejected for backlog type. When omitted, no date is assigned (unlike other types that default to today).
 
 **Example:**
 
@@ -177,7 +180,7 @@ List work report entries with optional filters.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `done_things`, `personal` |
+| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `done_things`, `personal`, `backlog` |
 | `--date` | string | `""` | Exact date filter (`YYYY-MM-DD`) |
 | `--from` | string | `""` | Date range start, inclusive (`YYYY-MM-DD`) |
 | `--to` | string | `""` | Date range end, inclusive (`YYYY-MM-DD`) |
@@ -232,16 +235,24 @@ Update fields of an existing work report entry. Only explicitly provided flags a
 | `--notes` | string | `""` | Update notes |
 | `--progress` | string | `""` | Update progress |
 | `--notify-priority` | string | `""` | Update notification priority (`normal` or `high`) |
+| `--type` | string | `""` | Upgrade record type: `task` or `reminder` (only for backlog records; requires `--date`) |
 
 **Notes:**
 - Completed or cancelled records cannot be updated — returns `already_completed` or `already_cancelled`.
 - At least one field flag must be explicitly set, otherwise the command prints help text.
 - **Content-based lookup:** When `<short_id>` is omitted, both `--title` and `--date` are required. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
+- **Upgrade mode (`--type`):** Only backlog records can be upgraded. Target must be `task` or `reminder`. `--date` is required. The file is moved from `backlogs/` to `tasks/` or `reminders/` directory. Other update flags cannot be combined with `--type`.
 
 **Example:**
 
 ```bash
 wr update a1b2c3d4e5f67890 --time 15:00 --location "Room 5B"
+```
+
+**Upgrade example (backlog → task):**
+
+```bash
+wr update <backlog_short_id> --type task --date 2026-05-10
 ```
 
 **Output:**
@@ -276,7 +287,7 @@ wr complete --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be completed. Attempting to complete an already-completed or already-cancelled record returns `storage_error`.
-- `done_things` records cannot be completed — they are factual records of work already done. Only `task`, `meeting`, `reminder`, and `personal` types support this action. Attempting to complete a `done_things` record returns `type_not_completable`.
+- `done_things` records cannot be completed — they are factual records of work already done. Only `task`, `meeting`, `reminder`, `personal`, and `backlog` types support this action. Attempting to complete a `done_things` record returns `type_not_completable`.
 - **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
@@ -319,7 +330,7 @@ wr cancel --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be cancelled. Attempting to cancel an already-cancelled or already-completed record returns `storage_error`.
-- `done_things` records cannot be cancelled — they are factual records of work already done. Only `task`, `meeting`, `reminder`, and `personal` types support this action. Attempting to cancel a `done_things` record returns `type_not_cancellable`.
+- `done_things` records cannot be cancelled — they are factual records of work already done. Only `task`, `meeting`, `reminder`, `personal`, and `backlog` types support this action. Attempting to cancel a `done_things` record returns `type_not_cancellable`.
 - **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
@@ -460,7 +471,9 @@ wr report today
 {"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","meetings":[],"tasks":[],"reminders":[],"done_things":[],"personals":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"done_things":0,"personals":0},"markdown":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 已完成的事 0 | 个人事务 0 | 共计 0 条\n\n"}}
 ```
 
-The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `done_things`, `personals`). Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report with a 🏠 个人事务 section.
+The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `done_things`, `personals`, `backlogs`). Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report with a 🏠 个人事务 section and a 📋 待办积压 section.
+
+**Backlog in reports:** Active backlogs are listed in the `backlogs` array without a date prefix. Backlogs completed today appear with the completion date and "已处理" label. In the `summary` object, `backlogs` shows the count. The markdown report includes a `📋 待办积压 (N)` section when backlogs exist.
 
 ##### wr report date \<YYYY-MM-DD\>
 
@@ -1002,14 +1015,14 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 
 | Code | Meaning | Recommended Agent Response |
 |------|---------|---------------------------|
-| `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `done_things`, `personal`. Or provide `--text`/`--image` for LLM classification. |
+| `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `done_things`, `personal`, `backlog`. Or provide `--text`/`--image` for LLM classification. |
 | `invalid_body` | Missing required fields or malformed request body | Check that required flags (`--title`, `--date`, `--type`) are provided. |
 | `invalid_field` | Attempted to update a field that is not allowed | Check the field name in the update command. |
 | `record_not_found` | No record matches the given short_id | List records with `wr list` to find the correct short_id. |
 | `already_completed` | Attempted to update a completed record | Completed records cannot be modified. Use `wr list --status completed` to view them. |
 | `already_cancelled` | Attempted to update a cancelled record | Cancelled records cannot be modified. |
-| `type_not_completable` | Attempted to complete a `done_things` record | `done_things` records are factual records of work already done and cannot be completed. Only `task`, `meeting`, `reminder`, and `personal` types support the complete action. |
-| `type_not_cancellable` | Attempted to cancel a `done_things` record | `done_things` records are factual records of work already done and cannot be cancelled. Only `task`, `meeting`, `reminder`, and `personal` types support the cancel action. |
+| `type_not_completable` | Attempted to complete a `done_things` record | `done_things` records are factual records of work already done and cannot be completed. Only `task`, `meeting`, `reminder`, `personal`, and `backlog` types support the complete action. |
+| `type_not_cancellable` | Attempted to cancel a `done_things` record | `done_things` records are factual records of work already done and cannot be cancelled. Only `task`, `meeting`, `reminder`, `personal`, and `backlog` types support the cancel action. |
 | `storage_error` | Filesystem or storage layer error | Check data directory permissions and disk space. |
 | `llm_not_configured` | LLM API key is missing for the requested classification mode | LLM is optional. Either provide `--type` and `--title` explicitly, or run `wr config set llm.text.api_key <key>`. |
 | `llm_error` | LLM API call failed | Check API key validity, network connectivity, and model name. Retry once. |
@@ -1042,7 +1055,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Record type: `meeting`, `task`, `reminder`, `done_things`, `personal` |
+| `type` | string | Record type: `meeting`, `task`, `reminder`, `done_things`, `personal`, `backlog` |
 | `title` | string | Entry title |
 | `description` | string | Longer description (optional) |
 | `date` | string | Date in `YYYY-MM-DD` format |
@@ -1099,6 +1112,15 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `completed_at` | string | ISO-8601 timestamp when personal item was completed |
 
 `personal` — 个人事务（吃药、购物、家务等）。与 reminder 类似，支持生命周期操作（complete/cancel），并支持重复模式。
+
+### Backlog-specific Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `notes` | string | Additional notes |
+| `completed_at` | string | ISO-8601 timestamp when backlog was completed |
+
+`backlog` — 待办积压（无固定日期的待办事项池）。支持 complete/cancel，不设 date。可通过 `wr update --type task/reminder --date` 升级为有日期的记录。
 
 ### ShortID
 
@@ -1191,6 +1213,20 @@ wr add --image /tmp/whiteboard.jpg --text "whiteboard notes from meeting"
 
 # If LLM returns cancel_or_update, the response has type "result" and no record is created
 ```
+
+#### LLM Backlog Classification
+
+When the input expresses a vague future intention or idea **without a specific date or time**, the LLM classifies it as `backlog` (not `task` or `reminder`).
+
+**Trigger phrases:** "帮我记一下xxx", "我有个想法xxx", "有空看看xxx", "回头研究一下xxx", "记一下xxx"
+
+**Rule:** No date/time reference → `backlog`. Has date/time → classified as `task` or `reminder`.
+
+Examples:
+- "帮我记一下要研究 wasm" → `backlog`
+- "我有个想法，可以做一个内部工具" → `backlog`
+- "有空看看这篇关于微服务的文章" → `backlog`
+- "下周研究一下 wasm" → `task`（has time reference "下周"）
 
 ### Image / Screenshot Processing
 
@@ -1361,3 +1397,5 @@ Each has independent `provider`, `api_key`, `api_base`, and `model` settings.
 20. **All commands are direct CLI invocations.** No background process or setup is needed. Every command reads config and data directly from disk. Just run `wr config init` and start using the tool.
 
 21. **Notification priority controls Pushover delivery urgency.** `notification_priority` is a per-record field (`normal` or `high`). Meetings default to `high` (bypasses quiet hours on the recipient's device); all other types default to `normal`. Set it with `--notify-priority` on `wr add` or update it with `wr update --notify-priority`. When `wr remind push` sends notifications, it reads each record's `notification_priority` and maps it to Pushover API priority (`0` = normal, `1` = high).
+
+22. **Backlog records are intentionally dateless.** Unlike all other record types, `backlog` records have no `date` field. Use `wr update --type task --date YYYY-MM-DD` to "upgrade" a backlog into a dated task or reminder when ready to schedule it.
