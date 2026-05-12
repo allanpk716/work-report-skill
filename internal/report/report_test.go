@@ -897,4 +897,242 @@ func TestGenerateRange_NoPersonals_OmitsSection(t *testing.T) {
 	}
 }
 
+func TestGenerate_BacklogsSection(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Add an active backlog
+	addTestRecord(t, store, &models.BacklogRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeBacklog,
+			Title: "整理文档",
+			Date:  "",
+		},
+	})
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "工作事项", Date: "2026-05-02"},
+	})
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Backlogs count in Summary but NOT in Total
+	if rpt.Summary.Backlogs != 1 {
+		t.Errorf("Backlogs = %d, want 1", rpt.Summary.Backlogs)
+	}
+	if rpt.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1 (backlogs excluded from total)", rpt.Summary.Total)
+	}
+
+	// Backlogs slice populated
+	if len(rpt.Backlogs) != 1 {
+		t.Fatalf("Backlogs len = %d, want 1", len(rpt.Backlogs))
+	}
+	if rpt.Backlogs[0].Title != "整理文档" {
+		t.Errorf("Backlog title = %q, want 整理文档", rpt.Backlogs[0].Title)
+	}
+
+	// Markdown contains backlogs section
+	md := rpt.Markdown
+	if !strings.Contains(md, "## 📋 待办积压 (1)") {
+		t.Error("markdown missing backlogs section header")
+	}
+	if !strings.Contains(md, "- 整理文档") {
+		t.Error("markdown missing backlog entry")
+	}
+	if !strings.Contains(md, "待办积压 1") {
+		t.Error("summary line missing backlogs count")
+	}
+}
+
+func TestGenerate_BacklogCompletedToday(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Add a backlog, then complete it
+	br := &models.BacklogRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeBacklog,
+			Title: "处理退款",
+			Date:  "",
+		},
+	}
+	added, _ := store.AddRecord(br)
+	addedBR := added.(*models.BacklogRecord)
+	shortID := addedBR.ShortID
+
+	// Complete it
+	store.CompleteRecord(shortID)
+
+	// Now generate a report for today — the completed backlog should appear
+	today := time.Now().UTC().Format("2006-01-02")
+	rpt, err := Generate(store, today)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if rpt.Summary.Backlogs != 1 {
+		t.Errorf("Backlogs = %d, want 1 (completed today should show)", rpt.Summary.Backlogs)
+	}
+
+	md := rpt.Markdown
+	if !strings.Contains(md, "处理退款 [已处理]") {
+		t.Errorf("markdown should show completed backlog with 已处理:\n%s", md)
+	}
+}
+
+func TestGenerate_BacklogCompletedOtherDay_OmitsFromReport(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Add a backlog, then complete it — it will have today's CompletedAt
+	br := &models.BacklogRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeBacklog,
+			Title: "过期的积压",
+			Date:  "",
+		},
+	}
+	added, _ := store.AddRecord(br)
+	addedBR := added.(*models.BacklogRecord)
+	shortID := addedBR.ShortID
+
+	// Complete it — CompletedAt will be today
+	store.CompleteRecord(shortID)
+
+	// Generate report for a different date — should NOT include this backlog
+	rpt, err := Generate(store, "2025-01-01")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if rpt.Summary.Backlogs != 0 {
+		t.Errorf("Backlogs = %d, want 0 (completed on other day)", rpt.Summary.Backlogs)
+	}
+
+	md := rpt.Markdown
+	if strings.Contains(md, "📋 待办积压") {
+		t.Error("should not show backlogs section when no backlogs match")
+	}
+}
+
+func TestGenerate_NoBacklogs_OmitsSection(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "工作事项", Date: "2026-05-02"},
+	})
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if rpt.Summary.Backlogs != 0 {
+		t.Errorf("Backlogs = %d, want 0", rpt.Summary.Backlogs)
+	}
+
+	md := rpt.Markdown
+	if strings.Contains(md, "📋 待办积压") {
+		t.Error("no backlogs section should appear when empty")
+	}
+	if strings.Contains(md, "待办积压") {
+		t.Error("summary line should not mention backlogs when zero")
+	}
+}
+
+func TestGenerate_BacklogsNotInTotal(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t", Date: "2026-05-02"},
+	})
+	addTestRecord(t, store, &models.BacklogRecord{
+		CommonFields: models.CommonFields{Type: models.TypeBacklog, Title: "b", Date: ""},
+	})
+	addTestRecord(t, store, &models.PersonalRecord{
+		CommonFields: models.CommonFields{Type: models.TypePersonal, Title: "p", Date: "2026-05-02"},
+	})
+
+	rpt, err := Generate(store, "2026-05-02")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Total = work types only (tasks=1, personals and backlogs NOT counted)
+	if rpt.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1 (backlogs and personals excluded from total)", rpt.Summary.Total)
+	}
+	if rpt.Summary.Backlogs != 1 {
+		t.Errorf("Backlogs = %d, want 1", rpt.Summary.Backlogs)
+	}
+	if rpt.Summary.Personals != 1 {
+		t.Errorf("Personals = %d, want 1", rpt.Summary.Personals)
+	}
+}
+
+func TestGenerateRange_BacklogsMerged(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	// Active backlog appears on every day
+	addTestRecord(t, store, &models.BacklogRecord{
+		CommonFields: models.CommonFields{Type: models.TypeBacklog, Title: "always-active", Date: ""},
+	})
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t1", Date: "2026-05-01"},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	// Active backlogs appear on each day's report, so merged count = days * active backlogs
+	if rr.Summary.Backlogs != 2 {
+		t.Errorf("Backlogs = %d, want 2 (active backlog appears on each day)", rr.Summary.Backlogs)
+	}
+	if rr.Summary.Total != 1 {
+		t.Errorf("Total = %d, want 1 (backlogs excluded)", rr.Summary.Total)
+	}
+	if len(rr.MergedBacklogs) != 2 {
+		t.Errorf("MergedBacklogs len = %d, want 2", len(rr.MergedBacklogs))
+	}
+
+	md := rr.Markdown
+	if !strings.Contains(md, "## 📋 待办积压 (2)") {
+		t.Error("range markdown missing backlogs section")
+	}
+	if !strings.Contains(md, "待办积压 2") {
+		t.Error("range summary line missing backlogs count")
+	}
+}
+
+func TestGenerateRange_NoBacklogs_OmitsSection(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.New(dir)
+
+	addTestRecord(t, store, &models.TaskRecord{
+		CommonFields: models.CommonFields{Type: models.TypeTask, Title: "t", Date: "2026-05-01"},
+	})
+
+	rr, err := GenerateRange(store, "2026-05-01", "2026-05-02", time.UTC)
+	if err != nil {
+		t.Fatalf("GenerateRange: %v", err)
+	}
+
+	if rr.Summary.Backlogs != 0 {
+		t.Errorf("Backlogs = %d, want 0", rr.Summary.Backlogs)
+	}
+
+	md := rr.Markdown
+	if strings.Contains(md, "📋 待办积压") {
+		t.Error("no backlogs section should appear when empty")
+	}
+}
+
 

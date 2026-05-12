@@ -23,6 +23,7 @@ type DailyReport struct {
 	Reminders []RecordEntry `json:"reminders"`
 	DoneThings []RecordEntry `json:"done_things"`
 	Personals []RecordEntry `json:"personals"`
+	Backlogs []RecordEntry `json:"backlogs"`
 	Summary  Summary       `json:"summary"`
 	Markdown string        `json:"markdown"`
 }
@@ -51,6 +52,7 @@ type Summary struct {
 	Reminders  int `json:"reminders"`
 	DoneThings int `json:"done_things"`
 	Personals  int `json:"personals"`
+	Backlogs   int `json:"backlogs"`
 }
 
 // Generate builds a DailyReport by querying storage for all record types on
@@ -80,6 +82,10 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("report: list personals: %w", err)
 	}
+	backlogs, err := listBacklogs(store, date)
+	if err != nil {
+		return nil, fmt.Errorf("report: list backlogs: %w", err)
+	}
 
 	rpt := &DailyReport{
 		Date:       date,
@@ -88,6 +94,7 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 		Reminders:  reminders,
 		DoneThings: doneThings,
 		Personals:  personals,
+		Backlogs:   backlogs,
 	}
 
 	rpt.Summary = Summary{
@@ -96,6 +103,7 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 		Reminders:   len(reminders),
 		DoneThings:  len(doneThings),
 		Personals:   len(personals),
+		Backlogs:    len(backlogs),
 	}
 	rpt.Summary.Total = rpt.Summary.Meetings + rpt.Summary.Tasks +
 		rpt.Summary.Reminders + rpt.Summary.DoneThings
@@ -112,6 +120,9 @@ func Generate(store *storage.Storage, date string) (*DailyReport, error) {
 	}
 	if rpt.Summary.Personals > 0 {
 		logFields["personals"] = rpt.Summary.Personals
+	}
+	if rpt.Summary.Backlogs > 0 {
+		logFields["backlogs"] = rpt.Summary.Backlogs
 	}
 	logger.WithFields(logFields).Info("daily report generated")
 
@@ -208,6 +219,93 @@ func listType(store *storage.Storage, rt models.RecordType, date string) ([]Reco
 	return entries, nil
 }
 
+// listBacklogs queries storage for backlog entries: all active backlogs (no date
+// filter) plus completed backlogs whose CompletedAt date matches the report date.
+func listBacklogs(store *storage.Storage, date string) ([]RecordEntry, error) {
+	// Active backlogs — no date filter, include all active
+	activeOpts := storage.ListOptions{
+		RecordType: models.TypeBacklog,
+		Status:     models.StatusActive,
+	}
+	activeRecords, err := store.ListRecords(activeOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Completed backlogs — scan completed directory, filter by CompletedAt date
+	completedOpts := storage.ListOptions{
+		RecordType:       models.TypeBacklog,
+		Status:           models.StatusCompleted,
+		IncludeCompleted: true,
+	}
+	completedRecords, err := store.ListRecords(completedOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []RecordEntry
+
+	// Add active backlogs
+	for _, lr := range activeRecords {
+		rec, _, err := store.GetByID(lr.ShortID)
+		if err != nil {
+			entries = append(entries, RecordEntry{
+				ShortID: lr.ShortID,
+				Type:    string(lr.Type),
+				Title:   lr.Title,
+				Date:    lr.Date,
+				Time:    lr.Time,
+				Status:  lr.Status,
+			})
+			continue
+		}
+		entries = append(entries, listedToEntry(lr, rec))
+	}
+
+	// Add completed-today backlogs
+	for _, lr := range completedRecords {
+		// Read full record to check CompletedAt
+		rec, _, err := store.GetByID(lr.ShortID)
+		if err != nil {
+			continue
+		}
+		br, ok := rec.(*models.BacklogRecord)
+		if !ok || br.CompletedAt == "" {
+			continue
+		}
+		// Parse CompletedAt and compare date portion
+		completedTime, err := time.Parse(time.RFC3339Nano, br.CompletedAt)
+		if err != nil {
+			continue
+		}
+		completedDate := completedTime.Format("2006-01-02")
+		if completedDate != date {
+			continue
+		}
+		entries = append(entries, listedToEntry(lr, rec))
+	}
+
+	return entries, nil
+}
+
+// listedToEntry converts a ListedRecord and its full parsed record to a RecordEntry.
+func listedToEntry(lr storage.ListedRecord, rec interface{}) RecordEntry {
+	entry := RecordEntry{
+		ShortID: lr.ShortID,
+		Type:    string(lr.Type),
+		Title:   lr.Title,
+		Date:    lr.Date,
+		Time:    lr.Time,
+		Status:  lr.Status,
+	}
+	cf := models.GetCommonFields(rec)
+	if cf != nil {
+		entry.EndTime = cf.EndTime
+		entry.Location = cf.Location
+	}
+	return entry
+}
+
 // renderMarkdown produces a Markdown string from a DailyReport.
 func renderMarkdown(r *DailyReport) string {
 	var b strings.Builder
@@ -219,6 +317,9 @@ func renderMarkdown(r *DailyReport) string {
 		r.Summary.Reminders, r.Summary.DoneThings, r.Summary.Total)
 	if r.Summary.Personals > 0 {
 		summaryLine += fmt.Sprintf(" | 个人事务 %d", r.Summary.Personals)
+	}
+	if r.Summary.Backlogs > 0 {
+		summaryLine += fmt.Sprintf(" | 待办积压 %d", r.Summary.Backlogs)
 	}
 	fmt.Fprintf(&b, "%s\n\n", summaryLine)
 
@@ -309,6 +410,13 @@ func renderMarkdown(r *DailyReport) string {
 		return "- " + e.Title
 	})
 
+	renderSection(&b, "📋 待办积压", r.Backlogs, func(e RecordEntry) string {
+		if e.Status == "completed" {
+			return fmt.Sprintf("- %s [已处理]", e.Title)
+		}
+		return "- " + e.Title
+	})
+
 	return b.String()
 }
 
@@ -323,6 +431,7 @@ type RangeReport struct {
 	MergedReminders []RecordEntry `json:"merged_reminders"`
 	MergedDoneThings []RecordEntry `json:"merged_done_things"`
 	MergedPersonals []RecordEntry `json:"merged_personals"`
+	MergedBacklogs  []RecordEntry `json:"merged_backlogs"`
 	Summary         Summary       `json:"summary"`
 	Markdown        string        `json:"markdown"`
 }
@@ -367,11 +476,13 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) 
 		rr.MergedReminders = append(rr.MergedReminders, dr.Reminders...)
 		rr.MergedDoneThings = append(rr.MergedDoneThings, dr.DoneThings...)
 		rr.MergedPersonals = append(rr.MergedPersonals, dr.Personals...)
+		rr.MergedBacklogs = append(rr.MergedBacklogs, dr.Backlogs...)
 		rr.Summary.Meetings += dr.Summary.Meetings
 		rr.Summary.Tasks += dr.Summary.Tasks
 		rr.Summary.Reminders += dr.Summary.Reminders
 		rr.Summary.DoneThings += dr.Summary.DoneThings
 		rr.Summary.Personals += dr.Summary.Personals
+		rr.Summary.Backlogs += dr.Summary.Backlogs
 	}
 
 	rr.DaysCount = len(rr.Days)
@@ -392,6 +503,9 @@ func GenerateRange(store *storage.Storage, from, to string, loc *time.Location) 
 	}
 	if rr.Summary.Personals > 0 {
 		logFields["personals"] = rr.Summary.Personals
+	}
+	if rr.Summary.Backlogs > 0 {
+		logFields["backlogs"] = rr.Summary.Backlogs
 	}
 	logger.WithFields(logFields).Info("range report generated")
 
@@ -433,6 +547,9 @@ func renderRangeMarkdown(r *RangeReport) string {
 		r.Summary.Reminders, r.Summary.DoneThings, r.Summary.Total)
 	if r.Summary.Personals > 0 {
 		rangeSummaryLine += fmt.Sprintf(" | 个人事务 %d", r.Summary.Personals)
+	}
+	if r.Summary.Backlogs > 0 {
+		rangeSummaryLine += fmt.Sprintf(" | 待办积压 %d", r.Summary.Backlogs)
 	}
 	fmt.Fprintf(&b, "%s\n\n", rangeSummaryLine)
 
@@ -529,6 +646,15 @@ func renderRangeMarkdown(r *RangeReport) string {
 		}
 		if detail != "" {
 			return fmt.Sprintf("- [%s] %s [%s]", e.Date, e.Title, detail)
+		}
+		return fmt.Sprintf("- [%s] %s", e.Date, e.Title)
+	})
+
+	renderRangeSection(&b, "📋 待办积压", r.Days, func(dr DailyReport) []RecordEntry {
+		return dr.Backlogs
+	}, func(e RecordEntry) string {
+		if e.Status == "completed" {
+			return fmt.Sprintf("- [%s] %s [已处理]", e.Date, e.Title)
 		}
 		return fmt.Sprintf("- [%s] %s", e.Date, e.Title)
 	})
