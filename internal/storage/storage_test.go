@@ -1359,14 +1359,16 @@ func TestUpdateRecord_TypeFieldDisallowed(t *testing.T) {
 	}
 	shortID := models.GetCommonFields(result).ShortID
 
+	// "type" is now allowed in allowedUpdateFields but triggers the upgrade path.
+	// For a non-backlog record, upgrading should fail with ErrUpgradeInvalidSource.
 	_, err = s.UpdateRecord(shortID, map[string]interface{}{
 		"type": "meeting",
 	})
 	if err == nil {
-		t.Fatal("expected error when trying to update type field")
+		t.Fatal("expected error when trying to change type of non-backlog record")
 	}
-	if !errors.Is(err, ErrFieldNotAllowed) {
-		t.Errorf("error = %v, want ErrFieldNotAllowed", err)
+	if !errors.Is(err, ErrUpgradeInvalidSource) {
+		t.Errorf("error = %v, want ErrUpgradeInvalidSource", err)
 	}
 }
 
@@ -3014,5 +3016,406 @@ func TestUpdateRecord_Backlog(t *testing.T) {
 	}
 	if foundBR.Notes != "先读官方文档，再写示例" {
 		t.Errorf("persisted Notes = %q, want '先读官方文档，再写示例'", foundBR.Notes)
+	}
+}
+
+// --- Backlog upgrade tests ---
+
+func TestUpgradeRecord_BacklogToTask(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	rec := newTestBacklog("学习 Go 并发")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Upgrade to task with date via UpdateRecord (type in fields triggers upgrade)
+	upgraded, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+		"date": "2025-06-01",
+	})
+	if err != nil {
+		t.Fatalf("UpgradeRecord: %v", err)
+	}
+
+	// Verify type changed
+	upgradedCF := models.GetCommonFields(upgraded)
+	if upgradedCF.Type != models.TypeTask {
+		t.Errorf("Type = %q, want task", upgradedCF.Type)
+	}
+	if upgradedCF.Date != "2025-06-01" {
+		t.Errorf("Date = %q, want 2025-06-01", upgradedCF.Date)
+	}
+
+	// Verify it's a TaskRecord
+	if _, ok := upgraded.(*models.TaskRecord); !ok {
+		t.Error("expected *models.TaskRecord")
+	}
+
+	// Verify new file exists in tasks/active/
+	activeDir := filepath.Join(dir, "tasks", "active")
+	files, err := os.ReadDir(activeDir)
+	if err != nil {
+		t.Fatalf("reading tasks/active: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file in tasks/active, got %d", len(files))
+	}
+
+	// Verify old file removed from backlogs/active/
+	backlogDir := filepath.Join(dir, "backlogs", "active")
+	backlogFiles, err := os.ReadDir(backlogDir)
+	if err != nil {
+		t.Fatalf("reading backlogs/active: %v", err)
+	}
+	if len(backlogFiles) != 0 {
+		t.Errorf("expected 0 files in backlogs/active, got %d", len(backlogFiles))
+	}
+
+	// Verify persistence: re-read from disk
+	found, path, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID after upgrade: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Type != models.TypeTask {
+		t.Errorf("persisted Type = %q, want task", foundCF.Type)
+	}
+	if foundCF.Date != "2025-06-01" {
+		t.Errorf("persisted Date = %q, want 2025-06-01", foundCF.Date)
+	}
+	if !strings.Contains(path, "tasks") {
+		t.Errorf("path %q should contain 'tasks'", path)
+	}
+}
+
+func TestUpgradeRecord_BacklogToReminder(t *testing.T) {
+	s, dir := newTestStorage(t)
+
+	rec := newTestBacklog("定期体检")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	upgraded, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "reminder",
+		"date": "2025-07-15",
+	})
+	if err != nil {
+		t.Fatalf("UpgradeRecord: %v", err)
+	}
+
+	upgradedCF := models.GetCommonFields(upgraded)
+	if upgradedCF.Type != models.TypeReminder {
+		t.Errorf("Type = %q, want reminder", upgradedCF.Type)
+	}
+
+	// Verify it's a ReminderRecord
+	if _, ok := upgraded.(*models.ReminderRecord); !ok {
+		t.Error("expected *models.ReminderRecord")
+	}
+
+	// Verify new file in reminders/active/
+	activeDir := filepath.Join(dir, "reminders", "active")
+	files, err := os.ReadDir(activeDir)
+	if err != nil {
+		t.Fatalf("reading reminders/active: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file in reminders/active, got %d", len(files))
+	}
+
+	// Verify old file removed from backlogs/active/
+	backlogDir := filepath.Join(dir, "backlogs", "active")
+	backlogFiles, _ := os.ReadDir(backlogDir)
+	if len(backlogFiles) != 0 {
+		t.Errorf("expected 0 files in backlogs/active, got %d", len(backlogFiles))
+	}
+
+	// Verify persistence: re-read from disk
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Type != models.TypeReminder {
+		t.Errorf("persisted Type = %q, want reminder", foundCF.Type)
+	}
+
+	// Verify notes preserved from backlog
+	rr, ok := found.(*models.ReminderRecord)
+	if !ok {
+		t.Fatal("expected *models.ReminderRecord on re-read")
+	}
+	if rr.Notes != "some notes" {
+		t.Errorf("Notes = %q, want 'some notes'", rr.Notes)
+	}
+}
+
+func TestUpgradeRecord_NoDate(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("无日期升级")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading without date")
+	}
+	if !errors.Is(err, ErrUpgradeDateRequired) {
+		t.Errorf("error = %v, want ErrUpgradeDateRequired", err)
+	}
+}
+
+func TestUpgradeRecord_EmptyDate(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("空日期升级")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+		"date": "",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading with empty date")
+	}
+	if !errors.Is(err, ErrUpgradeDateRequired) {
+		t.Errorf("error = %v, want ErrUpgradeDateRequired", err)
+	}
+}
+
+func TestUpgradeRecord_ToMeeting(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("升级到会议")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "meeting",
+		"date": "2025-06-01",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading to meeting")
+	}
+	if !errors.Is(err, ErrUpgradeInvalidTarget) {
+		t.Errorf("error = %v, want ErrUpgradeInvalidTarget", err)
+	}
+}
+
+func TestUpgradeRecord_ReverseTaskToBacklog(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestTask("反向升级", "2025-06-01")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "backlog",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading from task to backlog")
+	}
+	if !errors.Is(err, ErrUpgradeInvalidSource) {
+		t.Errorf("error = %v, want ErrUpgradeInvalidSource", err)
+	}
+}
+
+func TestUpgradeRecord_NonBacklogType(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	// Try to upgrade a meeting record
+	rec := newTestMeeting("会议升级", "2025-06-01", "10:00")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+		"date": "2025-06-01",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading non-backlog record")
+	}
+	if !errors.Is(err, ErrUpgradeInvalidSource) {
+		t.Errorf("error = %v, want ErrUpgradeInvalidSource", err)
+	}
+}
+
+func TestUpgradeRecord_WithAdditionalFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("带额外字段升级")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Upgrade with additional field updates
+	upgraded, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"type":        "task",
+		"date":        "2025-06-01",
+		"description": "详细的任务描述",
+		"priority":    "high",
+	})
+	if err != nil {
+		t.Fatalf("UpgradeRecord with fields: %v", err)
+	}
+
+	upgradedCF := models.GetCommonFields(upgraded)
+	if upgradedCF.Type != models.TypeTask {
+		t.Errorf("Type = %q, want task", upgradedCF.Type)
+	}
+	if upgradedCF.Description != "详细的任务描述" {
+		t.Errorf("Description = %q, want '详细的任务描述'", upgradedCF.Description)
+	}
+	if upgradedCF.Priority != "high" {
+		t.Errorf("Priority = %q, want high", upgradedCF.Priority)
+	}
+
+	// Verify persistence
+	found, _, err := s.GetByID(shortID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	foundCF := models.GetCommonFields(found)
+	if foundCF.Description != "详细的任务描述" {
+		t.Errorf("persisted Description = %q, want '详细的任务描述'", foundCF.Description)
+	}
+	if foundCF.Priority != "high" {
+		t.Errorf("persisted Priority = %q, want high", foundCF.Priority)
+	}
+}
+
+func TestUpgradeRecord_PreservesCommonFields(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := &models.BacklogRecord{
+		CommonFields: models.CommonFields{
+			Type:          models.TypeBacklog,
+			Title:         "保留字段测试",
+			Description:   "原始描述",
+			Location:      "办公室",
+			RelatedPerson: "张三",
+			Tags:          []string{"go", "学习"},
+			Priority:      "high",
+			Status:        models.StatusActive,
+		},
+		Notes: "笔记内容",
+	}
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	upgraded, err := s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+		"date": "2025-08-01",
+	})
+	if err != nil {
+		t.Fatalf("UpgradeRecord: %v", err)
+	}
+
+	cf := models.GetCommonFields(upgraded)
+	if cf.Title != "保留字段测试" {
+		t.Errorf("Title = %q, want '保留字段测试'", cf.Title)
+	}
+	if cf.Description != "原始描述" {
+		t.Errorf("Description = %q, want '原始描述'", cf.Description)
+	}
+	if cf.Location != "办公室" {
+		t.Errorf("Location = %q, want '办公室'", cf.Location)
+	}
+	if cf.RelatedPerson != "张三" {
+		t.Errorf("RelatedPerson = %q, want '张三'", cf.RelatedPerson)
+	}
+	if cf.Priority != "high" {
+		t.Errorf("Priority = %q, want high", cf.Priority)
+	}
+	if len(cf.Tags) != 2 || cf.Tags[0] != "go" || cf.Tags[1] != "学习" {
+		t.Errorf("Tags = %v, want [go 学习]", cf.Tags)
+	}
+}
+
+func TestUpgradeRecord_CompletedBacklog(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("已完成的backlog")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Complete the backlog first
+	err = s.CompleteRecord(shortID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to upgrade completed backlog
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+		"date": "2025-06-01",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading completed backlog")
+	}
+	if !errors.Is(err, ErrRecordCompleted) {
+		t.Errorf("error = %v, want ErrRecordCompleted", err)
+	}
+}
+
+func TestUpgradeRecord_CancelledBacklog(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	rec := newTestBacklog("已取消的backlog")
+	result, err := s.AddRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortID := models.GetCommonFields(result).ShortID
+
+	// Cancel the backlog first
+	err = s.CancelRecord(shortID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to upgrade cancelled backlog
+	_, err = s.UpdateRecord(shortID, map[string]interface{}{
+		"type": "task",
+		"date": "2025-06-01",
+	})
+	if err == nil {
+		t.Fatal("expected error when upgrading cancelled backlog")
+	}
+	if !errors.Is(err, ErrRecordCancelled) {
+		t.Errorf("error = %v, want ErrRecordCancelled", err)
 	}
 }

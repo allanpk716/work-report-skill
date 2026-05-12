@@ -309,12 +309,15 @@ func (s *Storage) CancelRecord(shortID string) error {
 
 // allowedUpdateFields lists the fields that may be passed to UpdateRecord.
 // Immutable or system-managed fields (type, status, short_id, saved_at) are excluded.
+// "type" is handled separately via the upgrade path (UpgradeRecord) and is not
+// allowed for normal field updates.
 var allowedUpdateFields = map[string]bool{
 	"title": true, "description": true, "date": true, "time": true,
 	"end_time": true, "location": true, "related_person": true,
 	"priority": true, "tags": true, "remind_before": true,
 	"recurring": true, "participants": true, "agenda": true,
 	"notes": true, "progress": true, "notification_priority": true,
+	"type": true, // only valid for backlog upgrade (enforced at runtime)
 }
 
 // ErrRecordNotFound is returned by UpdateRecord when the short ID does not
@@ -336,26 +339,49 @@ var ErrEmptyUpdate = fmt.Errorf("storage: empty update fields")
 // a key that is not in the allowed set (e.g. "type", "status", "short_id").
 var ErrFieldNotAllowed = fmt.Errorf("storage: field not allowed for update")
 
+// ErrUpgradeInvalidSource is returned when trying to upgrade a non-backlog record.
+var ErrUpgradeInvalidSource = fmt.Errorf("storage: only backlog records can be upgraded")
+
+// ErrUpgradeInvalidTarget is returned when the upgrade target is not task or reminder.
+var ErrUpgradeInvalidTarget = fmt.Errorf("storage: upgrade target must be task or reminder")
+
+// ErrUpgradeDateRequired is returned when upgrading without providing a date.
+var ErrUpgradeDateRequired = fmt.Errorf("storage: date is required for backlog upgrade")
+
 // UpdateRecord applies field-level updates to the record identified by shortID.
 // It validates that the record exists, is not completed or cancelled, and that
 // only allowed fields are being modified. It writes the updated record back to
 // the same file path and returns the updated record.
 //
+// When fields contains "type", it is treated as a backlog upgrade request and
+// delegated to UpgradeRecord. The upgrade requires:
+//   - Current record must be backlog type
+//   - Target type must be task or reminder (not meeting, not reverse)
+//   - fields must contain a non-empty "date"
+//
 // Allowed fields: title, description, date, time, end_time, location,
 // related_person, priority, tags, remind_before, recurring, participants,
-// agenda, notes, progress.
+// agenda, notes, progress, notification_priority, type (upgrade only).
 //
-// Disallowed fields: type (immutable), status (use Complete/Cancel),
-// short_id, saved_at.
+// Disallowed fields: status (use Complete/Cancel), short_id, saved_at.
 func (s *Storage) UpdateRecord(shortID string, fields map[string]interface{}) (interface{}, error) {
+	if len(fields) == 0 {
+		return nil, ErrEmptyUpdate
+	}
+
+	// Detect type upgrade: if "type" is in fields, delegate to UpgradeRecord.
+	if typeVal, ok := fields["type"]; ok {
+		if typeStr, ok := typeVal.(string); ok {
+			targetType := models.RecordType(typeStr)
+			dateVal, _ := fields["date"].(string)
+			return s.UpgradeRecord(shortID, targetType, dateVal, fields)
+		}
+	}
+
 	if err := s.lock.Acquire(DefaultLockTimeout); err != nil {
 		return nil, err
 	}
 	defer s.lock.Release()
-
-	if len(fields) == 0 {
-		return nil, ErrEmptyUpdate
-	}
 
 	// Validate field names before doing any I/O
 	for key := range fields {
@@ -582,6 +608,160 @@ func toStringSlice(v interface{}) []string {
 		return result
 	}
 	return nil
+}
+
+// UpgradeRecord upgrades a backlog record to a new type (task or reminder).
+// It validates that the source record is a backlog, the target type is valid,
+// and a non-empty date is provided. It then rebuilds the record as the new type,
+// writes it to the target directory, removes the old file, and returns the new record.
+//
+// The caller must provide the original fields map from UpdateRecord so that
+// additional field updates (title, description, etc.) can be applied.
+func (s *Storage) UpgradeRecord(shortID string, targetType models.RecordType, date string, fields map[string]interface{}) (interface{}, error) {
+	if err := s.lock.Acquire(DefaultLockTimeout); err != nil {
+		return nil, err
+	}
+	defer s.lock.Release()
+
+	// Resolve record
+	rec, oldPath, err := s.GetByID(shortID)
+	if err != nil {
+		return nil, ErrRecordNotFound
+	}
+
+	cf := models.GetCommonFields(rec)
+	if cf == nil {
+		return nil, fmt.Errorf("storage: upgrade: unknown record type for %s", shortID)
+	}
+
+	// Validate source type is backlog
+	if cf.Type != models.TypeBacklog {
+		return nil, ErrUpgradeInvalidSource
+	}
+
+	// Validate target type
+	if targetType != models.TypeTask && targetType != models.TypeReminder {
+		return nil, ErrUpgradeInvalidTarget
+	}
+
+	// Validate date is non-empty
+	if date == "" {
+		return nil, ErrUpgradeDateRequired
+	}
+
+	// Validate status
+	if cf.Status == models.StatusCompleted {
+		return nil, ErrRecordCompleted
+	}
+	if cf.Status == models.StatusCancelled {
+		return nil, ErrRecordCancelled
+	}
+
+	// Build upgraded record from backlog
+	upgraded, err := buildUpgradedRecord(rec, targetType, date)
+	if err != nil {
+		return nil, fmt.Errorf("storage: upgrade: %w", err)
+	}
+
+	// Apply remaining fields (excluding "type" which is handled above)
+	upgradedCF := models.GetCommonFields(upgraded)
+	cleanFields := make(map[string]interface{})
+	for k, v := range fields {
+		if k == "type" {
+			continue
+		}
+		cleanFields[k] = v
+	}
+	if len(cleanFields) > 0 {
+		s.applyCommonFields(upgradedCF, cleanFields)
+		s.applyTypeFields(upgraded, cleanFields)
+	}
+
+	// Set updated timestamp
+	now := time.Now()
+	upgradedCF.UpdatedAt = now.Format(time.RFC3339Nano)
+
+	// Write new file to target directory
+	newDir := s.activeDirForRecord(targetType, date)
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		return nil, fmt.Errorf("storage: upgrade: mkdir %s: %w", newDir, err)
+	}
+
+	filename := filepath.Base(oldPath)
+	newPath := filepath.Join(newDir, filename)
+
+	data, err := models.MarshalRecord(upgraded)
+	if err != nil {
+		return nil, fmt.Errorf("storage: upgrade: marshal: %w", err)
+	}
+
+	if err := os.WriteFile(newPath, data, 0644); err != nil {
+		return nil, fmt.Errorf("storage: upgrade: write %s: %w", newPath, err)
+	}
+
+	// Remove old file from backlogs/active/
+	if err := os.Remove(oldPath); err != nil {
+		logger.WithField("old_path", oldPath).Warnf("upgrade: could not remove old file: %v", err)
+	}
+
+	logger.WithField("short_id", shortID).
+		WithField("from_type", string(cf.Type)).
+		WithField("to_type", string(targetType)).
+		WithField("date", date).
+		WithField("from", oldPath).
+		WithField("to", newPath).
+		Info("upgrade record")
+
+	return upgraded, nil
+}
+
+// buildUpgradedRecord converts a BacklogRecord to a new record type (task or
+// reminder). It copies all common fields and applies the target type and date.
+// Notes are preserved when upgrading to ReminderRecord (which has a Notes field).
+func buildUpgradedRecord(source interface{}, targetType models.RecordType, date string) (interface{}, error) {
+	cf := models.GetCommonFields(source)
+	if cf == nil {
+		return nil, fmt.Errorf("source has no common fields")
+	}
+
+	newCF := models.CommonFields{
+		ShortID:              cf.ShortID,
+		Type:                 targetType,
+		Title:                cf.Title,
+		Description:          cf.Description,
+		Date:                 date,
+		Time:                 cf.Time,
+		EndTime:              cf.EndTime,
+		Location:             cf.Location,
+		RelatedPerson:        cf.RelatedPerson,
+		RemindBefore:         cf.RemindBefore,
+		Priority:             cf.Priority,
+		Status:               cf.Status,
+		Tags:                 cf.Tags,
+		SavedAt:              cf.SavedAt,
+		IdempotencyKey:       cf.IdempotencyKey,
+		NotificationPriority: cf.NotificationPriority,
+	}
+
+	// Preserve notes from BacklogRecord
+	var notes string
+	if br, ok := source.(*models.BacklogRecord); ok {
+		notes = br.Notes
+	}
+
+	switch targetType {
+	case models.TypeTask:
+		return &models.TaskRecord{
+			CommonFields: newCF,
+		}, nil
+	case models.TypeReminder:
+		return &models.ReminderRecord{
+			CommonFields: newCF,
+			Notes:        notes,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported upgrade target type: %s", targetType)
+	}
 }
 
 // --- internal helpers ---
