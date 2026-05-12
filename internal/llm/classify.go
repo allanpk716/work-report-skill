@@ -18,6 +18,7 @@ var AllowedClassifyTypes = []string{
 	"reminder",
 	"done_things",
 	"cancel_or_update",
+	"personal",
 }
 
 // ClassifyResult holds the structured fields extracted by the LLM classifier.
@@ -182,7 +183,7 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 	weekday := today.In(location).Format("Monday")
 	tzName := location.String()
 
-	return fmt.Sprintf(`你是一个工作记录分类助手。用户会输入一段自然语言文字，你需要将其分类为以下5种类型之一，并提取结构化字段。
+	return fmt.Sprintf(`你是一个工作记录分类助手。用户会输入一段自然语言文字，你需要将其分类为以下6种类型之一，并提取结构化字段。
 
 ## 分类类型
 
@@ -191,6 +192,12 @@ func buildSystemPrompt(today time.Time, location *time.Location) string {
 3. **reminder** — 提醒、备忘、需要注意的事项
 4. **done_things** — 工作日志、已完成的事、记录性的文字
 5. **cancel_or_update** — 取消、修改、更新已有记录的操作（包含目标记录ID时使用target_id字段）
+6. **personal** — 个人事务：吃药、买菜、体检、家务、交水电费、购物、私事等非工作相关的事项
+
+## 个人事务分类
+
+当输入明显是私人生活相关（吃药、买菜、体检、家务、交水电费、购物、看病、接送孩子等）时分类为 **personal**，而非 reminder 或 task。
+不要将私人生活事项归类为工作类型。例如"每天提醒我吃药"应分类为 personal 而非 reminder。
 
 ## 会议关键词优先级
 

@@ -4,7 +4,7 @@ A pure CLI tool for managing work reports. Built with Go, designed for AI agent 
 
 ## Features
 
-- **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, done_things)
+- **Record management** — Add, update, complete, and cancel work entries (meetings, tasks, reminders, done_things, personal)
 - **LLM classification** — Describe work in natural language or attach images; auto-classifies them into structured records
 - **Report generation** — Generate daily, weekly, or custom-range reports in Markdown or JSON
 - **Push notifications** — Push reports directly to Pushover
@@ -35,6 +35,9 @@ go build -o wr .
 
 # Add a record with high-priority notification (--notify-priority defaults to high for meetings)
 ./wr add --type meeting --title "Sprint planning" --time 09:00 --notify-priority high
+
+# Add a personal record
+./wr add --type personal --title "吃药" --time 14:00
 
 # Check today's entries
 ./wr list

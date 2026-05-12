@@ -468,6 +468,178 @@ func TestListDue_NotificationPriority_Empty(t *testing.T) {
 	}
 }
 
+// --- ListDue personal record tests ---
+
+func TestListDue_PersonalRecord(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypePersonal,
+			Title: "Pay electricity bill",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due personal record, got %d", len(due))
+	}
+	if due[0].Title != "Pay electricity bill" {
+		t.Errorf("expected title 'Pay electricity bill', got %q", due[0].Title)
+	}
+	if due[0].Type != models.TypePersonal {
+		t.Errorf("expected type %q, got %q", models.TypePersonal, due[0].Type)
+	}
+}
+
+func TestListDue_PersonalAndReminder(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	personal := &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypePersonal,
+			Title: "Personal task",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(personal)
+	if err != nil {
+		t.Fatalf("add personal: %v", err)
+	}
+
+	reminder := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeReminder,
+			Title: "Team meeting",
+			Date:  "2026-06-14",
+			Time:  "10:00",
+		},
+	}
+	_, err = store.AddRecord(reminder)
+	if err != nil {
+		t.Fatalf("add reminder: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("expected 2 due records, got %d", len(due))
+	}
+
+	// Both types should be present
+	types := map[models.RecordType]bool{}
+	for _, d := range due {
+		types[d.Type] = true
+	}
+	if !types[models.TypePersonal] {
+		t.Error("expected personal record in results")
+	}
+	if !types[models.TypeReminder] {
+		t.Error("expected reminder record in results")
+	}
+}
+
+func TestListDue_FuturePersonalNotDue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypePersonal,
+			Title: "Future personal",
+			Date:  "2026-06-16",
+			Time:  "10:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due records for future personal, got %d", len(due))
+	}
+}
+
+func TestPushDue_PersonalRecord(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.PersonalRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypePersonal,
+			Title: "Grocery shopping",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 1 {
+		t.Fatalf("expected 1 pushed, got %d", len(result.Pushed))
+	}
+	if result.Pushed[0].Title != "Grocery shopping" {
+		t.Errorf("expected title 'Grocery shopping', got %q", result.Pushed[0].Title)
+	}
+
+	if !strings.Contains(capturedBody, "%F0%9F%8F%A0") && !strings.Contains(capturedBody, "\U0001f3e0") {
+		t.Errorf("expected 🏠 emoji in push message body, got: %s", capturedBody)
+	}
+
+	// Verify the record was completed (no longer active)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("ListDue after push: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due after push+complete, got %d", len(due))
+	}
+}
+
 // --- PushDue/PushSingle priority mapping tests (mock HTTP server) ---
 
 func TestPushDue_HighPriority(t *testing.T) {

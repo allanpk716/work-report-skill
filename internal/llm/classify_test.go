@@ -359,6 +359,23 @@ func TestExtractJSON_CodeFenceArray(t *testing.T) {
 	}
 }
 
+func TestClassify_Personal(t *testing.T) {
+	result := mockClassify(t, "下午2点吃药", mockResponse{
+		Type:  "personal",
+		Title: "吃药",
+		Time:  "14:00",
+	})
+	if result.Type != "personal" {
+		t.Fatalf("expected type personal, got %q", result.Type)
+	}
+	if result.Title != "吃药" {
+		t.Fatalf("expected title 吃药, got %q", result.Title)
+	}
+	if result.Time != "14:00" {
+		t.Fatalf("expected time 14:00, got %q", result.Time)
+	}
+}
+
 func TestBuildSystemPrompt(t *testing.T) {
 	today := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
 	loc := time.FixedZone("CST", 8*3600)
@@ -373,11 +390,40 @@ func TestBuildSystemPrompt(t *testing.T) {
 	if !contains(prompt, "CST") {
 		t.Error("prompt should contain timezone name")
 	}
-	// Should mention all 5 types
+	// Should mention all 6 types
+	if len(AllowedClassifyTypes) != 6 {
+		t.Fatalf("expected 6 allowed types, got %d", len(AllowedClassifyTypes))
+	}
 	for _, typ := range AllowedClassifyTypes {
 		if !contains(prompt, typ) {
 			t.Errorf("prompt should mention type %q", typ)
 		}
+	}
+	// Should explicitly mention "personal"
+	if !contains(prompt, "personal") {
+		t.Error("prompt should mention 'personal' type")
+	}
+}
+
+func TestBuildSystemPrompt_PersonalKeywords(t *testing.T) {
+	today := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	loc := time.FixedZone("CST", 8*3600)
+
+	prompt := buildSystemPrompt(today, loc)
+
+	// Verify the personal type description exists with key example keywords.
+	if !contains(prompt, "个人事务") {
+		t.Error("prompt should contain '个人事务' as personal type description")
+	}
+	keywords := []string{"吃药", "买菜", "家务", "个人事务"}
+	for _, kw := range keywords {
+		if !contains(prompt, kw) {
+			t.Errorf("prompt should contain personal keyword %q", kw)
+		}
+	}
+	// Verify the classification guidance section.
+	if !contains(prompt, "个人事务分类") {
+		t.Error("prompt should contain '个人事务分类' guidance section")
 	}
 }
 

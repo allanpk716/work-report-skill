@@ -26,12 +26,13 @@ const (
 
 // DueReminder is a lightweight view of a reminder that is currently due.
 type DueReminder struct {
-	ShortID             string `json:"short_id"`
-	Title               string `json:"title"`
-	Date                string `json:"date"`
-	Time                string `json:"time"`
-	IsStale             bool   `json:"is_stale"`
-	NotificationPriority string `json:"notification_priority,omitempty"`
+	ShortID             string             `json:"short_id"`
+	Type                models.RecordType  `json:"type"`
+	Title               string             `json:"title"`
+	Date                string             `json:"date"`
+	Time                string             `json:"time"`
+	IsStale             bool               `json:"is_stale"`
+	NotificationPriority string             `json:"notification_priority,omitempty"`
 }
 
 // PushedItem represents a successfully pushed reminder.
@@ -111,16 +112,33 @@ func IsDue(rec storage.ListedRecord, now time.Time, window time.Duration, includ
 	return true, stale
 }
 
-// ListDue returns all currently due reminders.
-// It queries storage for active reminders and filters by IsDue.
+// ListDue returns all currently due reminders and personal records.
+// It queries storage for active reminders and personals, filters by IsDue,
+// merges results, and deduplicates by ShortID.
 // Each DueReminder includes the NotificationPriority from the full record.
 func ListDue(store *storage.Storage, now time.Time, window time.Duration, includeStale bool) ([]DueReminder, error) {
-	recs, err := store.ListRecords(storage.ListOptions{
-		RecordType: models.TypeReminder,
-		Status:     models.StatusActive,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("remind: list due: %w", err)
+	var allRecs []storage.ListedRecord
+
+	for _, rt := range []models.RecordType{models.TypeReminder, models.TypePersonal} {
+		recs, err := store.ListRecords(storage.ListOptions{
+			RecordType: rt,
+			Status:     models.StatusActive,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("remind: list due: %w", err)
+		}
+		allRecs = append(allRecs, recs...)
+	}
+
+	// Deduplicate by ShortID (shouldn't happen in practice, but be safe).
+	seen := make(map[string]bool)
+	var recs []storage.ListedRecord
+	for _, r := range allRecs {
+		if seen[r.ShortID] {
+			continue
+		}
+		seen[r.ShortID] = true
+		recs = append(recs, r)
 	}
 
 	var due []DueReminder
@@ -137,6 +155,7 @@ func ListDue(store *storage.Storage, now time.Time, window time.Duration, includ
 
 			due = append(due, DueReminder{
 				ShortID:             rec.ShortID,
+				Type:                rec.Type,
 				Title:               rec.Title,
 				Date:                rec.Date,
 				Time:                rec.Time,
@@ -176,13 +195,17 @@ func PushDue(ctx context.Context, store *storage.Storage, cfg pushover.Config, n
 
 	for i := 0; i < limit; i++ {
 		r := due[i]
-		message := fmt.Sprintf("⏰ 提醒: %s (%s)", r.Title, r.Date)
+		prefix := "⏰ 提醒"
+		if r.Type == models.TypePersonal {
+			prefix = "🏠 个人事务"
+		}
+		message := fmt.Sprintf("%s: %s (%s)", prefix, r.Title, r.Date)
 		if r.Time != "" {
-			message = fmt.Sprintf("⏰ 提醒: %s (%s %s)", r.Title, r.Date, r.Time)
+			message = fmt.Sprintf("%s: %s (%s %s)", prefix, r.Title, r.Date, r.Time)
 		}
 
 		priority := models.NotificationPriorityToPushover(r.NotificationPriority)
-		logger.WithField("short_id", r.ShortID).WithField("priority", priority).Info("[remind] resolved push priority")
+		logger.WithField("short_id", r.ShortID).WithField("type", r.Type).WithField("priority", priority).Info("[remind] resolved push priority")
 		err := pushover.Send(ctx, cfg, message, "wr 提醒", priority)
 		if err != nil {
 			logger.WithField("short_id", r.ShortID).WithField("error", err.Error()).Warn("[remind] push failed")

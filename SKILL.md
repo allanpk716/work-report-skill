@@ -28,6 +28,7 @@ wr config init                    # 最小配置（无需 LLM key）
 wr add --type done_things --title "完成了代码审查"
 wr add --type meeting --title "站会" --time 10:00
 wr add --type task --title "Review PR #42" --priority high
+wr add --type personal --title "吃药" --time 14:00
 ```
 
 输出为 JSONL：`type: "result"` 成功，`type: "error"` 失败（查看 `error_code`）。
@@ -52,7 +53,7 @@ wr complete --title "Review PR #42"               # --title 时 --date 默认今
 ### 提醒
 
 ```bash
-wr remind due                   # 列出所有到期提醒
+wr remind due                   # 列出所有到期提醒（含 personal 记录）
 wr remind push --due            # 推送所有到期提醒并自动完成
 ```
 
@@ -61,7 +62,7 @@ wr remind push --due            # 推送所有到期提醒并自动完成
 | `error_code` | 处理 |
 |---|---|
 | `record_not_found` | `wr list` 查找正确 ID |
-| `invalid_type` | `--type` 须为 meeting / task / reminder / done_things |
+| `invalid_type` | `--type` 须为 meeting / task / reminder / done_things / personal |
 
 > 完整命令参考、JSONL 格式规范、错误码表见下方各章节。
 > **通知优先级：** 会议记录默认 `high`（绕过 Pushover 静默时段），其他类型默认 `normal`。可通过 `--notify-priority` 显式指定。
@@ -123,7 +124,7 @@ Add a new work report entry.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `done_things` |
+| `--type` | string | `""` | Entry type: `meeting`, `task`, `reminder`, `done_things`, `personal` |
 | `--title` | string | `""` | Entry title |
 | `--date` | string | `""` | Date in `YYYY-MM-DD` format. Defaults to today if omitted. |
 | `--time` | string | `""` | Time in `HH:MM` format |
@@ -145,6 +146,7 @@ Add a new work report entry.
 - If both `--text` (or `--image`) and `--type` are provided, explicit flags take precedence over LLM classification.
 - If LLM classification returns `cancel_or_update` type, no record is created — the response has `type: "result"` with `data.action` set to `"cancel_or_update"`.
 - `done_things` is a non-actionable type — records of this type cannot be completed or cancelled (they are factual records of work already done).
+- `personal` is an actionable type (like `task`/`meeting`/`reminder`) — personal records can be completed and cancelled, and support recurring patterns.
 - `--notify-priority` controls the Pushover delivery priority. Meetings default to `high` (bypasses quiet hours) and other types default to `normal`.
 
 **Example:**
@@ -175,7 +177,7 @@ List work report entries with optional filters.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `done_things` |
+| `--type` | string | `""` | Filter by type: `meeting`, `task`, `reminder`, `done_things`, `personal` |
 | `--date` | string | `""` | Exact date filter (`YYYY-MM-DD`) |
 | `--from` | string | `""` | Date range start, inclusive (`YYYY-MM-DD`) |
 | `--to` | string | `""` | Date range end, inclusive (`YYYY-MM-DD`) |
@@ -274,7 +276,7 @@ wr complete --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be completed. Attempting to complete an already-completed or already-cancelled record returns `storage_error`.
-- `done_things` records cannot be completed — they are factual records of work already done. Only `task`, `meeting`, and `reminder` types support this action. Attempting to complete a `done_things` record returns `type_not_completable`.
+- `done_things` records cannot be completed — they are factual records of work already done. Only `task`, `meeting`, `reminder`, and `personal` types support this action. Attempting to complete a `done_things` record returns `type_not_completable`.
 - **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
@@ -282,7 +284,7 @@ wr complete --title <title> --date <YYYY-MM-DD>
 ```bash
 wr complete a1b2c3d4e5f67890
 wr complete --title "Review PR #42"
-wr complete --title "Review PR #42" --date 2026-05-03
+wr complete --title "吃药"
 ```
 
 **Output:**
@@ -317,7 +319,7 @@ wr cancel --title <title> --date <YYYY-MM-DD>
 
 **Notes:**
 - Only active records can be cancelled. Attempting to cancel an already-cancelled or already-completed record returns `storage_error`.
-- `done_things` records cannot be cancelled — they are factual records of work already done. Only `task`, `meeting`, and `reminder` types support this action. Attempting to cancel a `done_things` record returns `type_not_cancellable`.
+- `done_things` records cannot be cancelled — they are factual records of work already done. Only `task`, `meeting`, `reminder`, and `personal` types support this action. Attempting to cancel a `done_things` record returns `type_not_cancellable`.
 - **Content-based lookup:** When `<short_id>` is omitted, `--title` is required. `--date` defaults to today if omitted. If multiple active records match, returns `invalid_params` error with the matching IDs listed in the message.
 
 **Example:**
@@ -455,10 +457,10 @@ wr report today
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","meetings":[],"tasks":[],"reminders":[],"done_things":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"done_things":0},"markdown":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 已完成的事 0 | 共计 0 条\n\n"}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T18:00:00Z","data":{"date":"2026-05-03","meetings":[],"tasks":[],"reminders":[],"done_things":[],"personals":[],"summary":{"total":0,"meetings":0,"tasks":0,"reminders":0,"done_things":0,"personals":0},"markdown":"# 工作日报 2026-05-03\n\n📊 **汇总**: 会议 0 | 任务 0 | 提醒 0 | 已完成的事 0 | 个人事务 0 | 共计 0 条\n\n"}}
 ```
 
-The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `done_things`). Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report.
+The `data` object contains typed arrays (`meetings`, `tasks`, `reminders`, `done_things`, `personals`). Each array contains the full record objects for that type. The `summary` contains counts by type and total. The `markdown` field contains the formatted Chinese-language report with a 🏠 个人事务 section.
 
 ##### wr report date \<YYYY-MM-DD\>
 
@@ -1000,14 +1002,14 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 
 | Code | Meaning | Recommended Agent Response |
 |------|---------|---------------------------|
-| `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `done_things`. Or provide `--text`/`--image` for LLM classification. |
+| `invalid_type` | Missing or unrecognized record type | Ensure `--type` is one of: `meeting`, `task`, `reminder`, `done_things`, `personal`. Or provide `--text`/`--image` for LLM classification. |
 | `invalid_body` | Missing required fields or malformed request body | Check that required flags (`--title`, `--date`, `--type`) are provided. |
 | `invalid_field` | Attempted to update a field that is not allowed | Check the field name in the update command. |
 | `record_not_found` | No record matches the given short_id | List records with `wr list` to find the correct short_id. |
 | `already_completed` | Attempted to update a completed record | Completed records cannot be modified. Use `wr list --status completed` to view them. |
 | `already_cancelled` | Attempted to update a cancelled record | Cancelled records cannot be modified. |
-| `type_not_completable` | Attempted to complete a `done_things` record | `done_things` records are factual records of work already done and cannot be completed. Only `task`, `meeting`, and `reminder` types support the complete action. |
-| `type_not_cancellable` | Attempted to cancel a `done_things` record | `done_things` records are factual records of work already done and cannot be cancelled. Only `task`, `meeting`, and `reminder` types support the cancel action. |
+| `type_not_completable` | Attempted to complete a `done_things` record | `done_things` records are factual records of work already done and cannot be completed. Only `task`, `meeting`, `reminder`, and `personal` types support the complete action. |
+| `type_not_cancellable` | Attempted to cancel a `done_things` record | `done_things` records are factual records of work already done and cannot be cancelled. Only `task`, `meeting`, `reminder`, and `personal` types support the cancel action. |
 | `storage_error` | Filesystem or storage layer error | Check data directory permissions and disk space. |
 | `llm_not_configured` | LLM API key is missing for the requested classification mode | LLM is optional. Either provide `--type` and `--title` explicitly, or run `wr config set llm.text.api_key <key>`. |
 | `llm_error` | LLM API call failed | Check API key validity, network connectivity, and model name. Retry once. |
@@ -1040,7 +1042,7 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Record type: `meeting`, `task`, `reminder`, `done_things` |
+| `type` | string | Record type: `meeting`, `task`, `reminder`, `done_things`, `personal` |
 | `title` | string | Entry title |
 | `description` | string | Longer description (optional) |
 | `date` | string | Date in `YYYY-MM-DD` format |
@@ -1088,6 +1090,16 @@ Complete table of error codes that may appear in the `"error_code"` field of err
 | `priority` | string | Priority level |
 | `progress` | string | Progress description |
 
+### Personal-specific Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `notes` | string | Additional notes |
+| `recurring` | string | Recurring pattern (e.g. `daily`, `weekly`) |
+| `completed_at` | string | ISO-8601 timestamp when personal item was completed |
+
+`personal` — 个人事务（吃药、购物、家务等）。与 reminder 类似，支持生命周期操作（complete/cancel），并支持重复模式。
+
 ### ShortID
 
 The `short_id` is a 16-character hex string (e.g. `a1b2c3d4e5f67890`) derived by SHA-256 hashing the record's filename stem. It is not reversible. Use `wr list` to discover short_ids.
@@ -1120,6 +1132,7 @@ wr agent doctor
 wr add --type meeting --title "Sprint planning" --time 09:00 --participants "Alice,Bob"
 wr add --type task --title "Review PR #42" --priority high
 wr add --type done_things --title "Deployed v2.1 to staging"
+wr add --type personal --title "吃药" --time 14:00 --recurring daily
 
 # Add with idempotency key (safe in retry loops — no duplicates)
 wr add --type task --title "Daily standup" --idempotency-key "standup-2026-05-03"
@@ -1207,6 +1220,7 @@ wr agent doctor
 # 2. Classify:
 wr add --image /tmp/calendar_screenshot.png
 # → {"type":"result","data":{"short_id":"abc123...","type":"meeting","title":"Sprint planning","date":"2026-05-12","time":"10:00"}}
+# Vision LLM can also classify as: task, reminder, done_things, personal, or cancel_or_update
 
 # With extra context:
 wr add --image /tmp/whiteboard.jpg --text "whiteboard notes from standup"
