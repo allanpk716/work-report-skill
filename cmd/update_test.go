@@ -26,6 +26,7 @@ func resetUpdateFlags() {
 	updateNotes = ""
 	updateProgress = ""
 	updateNotifyPriority = ""
+	updateType = ""
 }
 
 // TestUpdate_NotifyPriorityHigh verifies that --notify-priority high updates

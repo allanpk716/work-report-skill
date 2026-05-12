@@ -13,22 +13,23 @@ import (
 )
 
 var (
-	updateTitle         string
-	updateDescription   string
-	updateDate          string
-	updateTime          string
-	updateLocation      string
-	updateTags          []string
-	updatePriority      string
-	updateRemindBefore  string
-	updateRecurring     string
-	updateEndTime       string
-	updateRelatedPerson string
-	updateParticipants  []string
-	updateAgenda        string
-	updateNotes         string
-	updateProgress      string
+	updateTitle          string
+	updateDescription    string
+	updateDate           string
+	updateTime           string
+	updateLocation       string
+	updateTags           []string
+	updatePriority       string
+	updateRemindBefore   string
+	updateRecurring      string
+	updateEndTime        string
+	updateRelatedPerson  string
+	updateParticipants   []string
+	updateAgenda         string
+	updateNotes          string
+	updateProgress       string
 	updateNotifyPriority string
+	updateType           string
 )
 
 var updateCmd = &cobra.Command{
@@ -44,6 +45,19 @@ var updateCmd = &cobra.Command{
 
 		// Build fields map from changed flags
 		fields := make(map[string]interface{})
+
+		// --type triggers the upgrade path; validate early before other field processing
+		if cmd.Flags().Changed("type") {
+			if updateType != string(models.TypeTask) && updateType != string(models.TypeReminder) {
+				return writeJSONLError("invalid_params", fmt.Sprintf("invalid upgrade target: %q (must be task or reminder)", updateType))
+			}
+			if updateDate == "" {
+				return writeJSONLError("invalid_params", "--date is required when using --type for backlog upgrade")
+			}
+			fields["type"] = updateType
+			fields["date"] = updateDate
+		}
+
 		if cmd.Flags().Changed("time") {
 			fields["time"] = updateTime
 		}
@@ -123,6 +137,14 @@ var updateCmd = &cobra.Command{
 			return writeJSONLError("storage_error", fmt.Sprintf("failed to find record: %v", err))
 		}
 
+		// If --type is set (upgrade path), validate current record is backlog
+		if cmd.Flags().Changed("type") {
+			cf := models.GetCommonFields(rec)
+			if cf == nil || cf.Type != models.TypeBacklog {
+				return writeJSONLError("invalid_params", "only backlog records can be upgraded via --type")
+			}
+		}
+
 		// Check if record is completed or cancelled
 		cf := models.GetCommonFields(rec)
 		if cf != nil && cf.Status == "completed" {
@@ -183,6 +205,7 @@ func init() {
 	updateCmd.Flags().StringVar(&updateNotes, "notes", "", "Update notes")
 	updateCmd.Flags().StringVar(&updateProgress, "progress", "", "Update progress")
 	updateCmd.Flags().StringVar(&updateNotifyPriority, "notify-priority", "", "Update notification priority (normal, high)")
+	updateCmd.Flags().StringVar(&updateType, "type", "", "Upgrade record type (task or reminder, only for backlog records; requires --date)")
 }
 
 // fieldKeys returns the keys of a fields map as a string slice.
