@@ -112,14 +112,14 @@ func IsDue(rec storage.ListedRecord, now time.Time, window time.Duration, includ
 	return true, stale
 }
 
-// ListDue returns all currently due reminders and personal records.
-// It queries storage for active reminders and personals, filters by IsDue,
+// ListDue returns all currently due reminders, meetings, tasks, and personal records.
+// It queries storage for active records of these types, filters by IsDue,
 // merges results, and deduplicates by ShortID.
 // Each DueReminder includes the NotificationPriority from the full record.
 func ListDue(store *storage.Storage, now time.Time, window time.Duration, includeStale bool) ([]DueReminder, error) {
 	var allRecs []storage.ListedRecord
 
-	for _, rt := range []models.RecordType{models.TypeReminder, models.TypePersonal} {
+	for _, rt := range []models.RecordType{models.TypeReminder, models.TypePersonal, models.TypeMeeting, models.TypeTask} {
 		recs, err := store.ListRecords(storage.ListOptions{
 			RecordType: rt,
 			Status:     models.StatusActive,
@@ -196,7 +196,11 @@ func PushDue(ctx context.Context, store *storage.Storage, cfg pushover.Config, n
 	for i := 0; i < limit; i++ {
 		r := due[i]
 		prefix := "⏰ 提醒"
-		if r.Type == models.TypePersonal {
+		if r.Type == models.TypeMeeting {
+			prefix = "📅 会议"
+		} else if r.Type == models.TypeTask {
+			prefix = "📋 任务"
+		} else if r.Type == models.TypePersonal {
 			prefix = "🏠 个人事务"
 		}
 		message := fmt.Sprintf("%s: %s (%s)", prefix, r.Title, r.Date)

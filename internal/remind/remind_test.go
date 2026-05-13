@@ -782,3 +782,306 @@ func TestPushSingle_HighPriority(t *testing.T) {
 		t.Errorf("expected priority=1 in POST body, got: %s", capturedBody)
 	}
 }
+
+// --- ListDue meeting record tests ---
+
+func TestListDue_MeetingRecord(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeMeeting,
+			Title: "Team standup",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due meeting record, got %d", len(due))
+	}
+	if due[0].Title != "Team standup" {
+		t.Errorf("expected title 'Team standup', got %q", due[0].Title)
+	}
+	if due[0].Type != models.TypeMeeting {
+		t.Errorf("expected type %q, got %q", models.TypeMeeting, due[0].Type)
+	}
+}
+
+func TestListDue_TaskRecord(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeTask,
+			Title: "Submit report",
+			Date:  "2026-06-14",
+			Time:  "17:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due task record, got %d", len(due))
+	}
+	if due[0].Title != "Submit report" {
+		t.Errorf("expected title 'Submit report', got %q", due[0].Title)
+	}
+	if due[0].Type != models.TypeTask {
+		t.Errorf("expected type %q, got %q", models.TypeTask, due[0].Type)
+	}
+}
+
+func TestListDue_AllFourTypes(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	for _, r := range []interface{}{
+		&models.ReminderRecord{
+			CommonFields: models.CommonFields{
+				Type:  models.TypeReminder,
+				Title: "Reminder item",
+				Date:  "2026-06-14",
+				Time:  "09:00",
+			},
+		},
+		&models.MeetingRecord{
+			CommonFields: models.CommonFields{
+				Type:  models.TypeMeeting,
+				Title: "Meeting item",
+				Date:  "2026-06-14",
+				Time:  "10:00",
+			},
+		},
+		&models.TaskRecord{
+			CommonFields: models.CommonFields{
+				Type:  models.TypeTask,
+				Title: "Task item",
+				Date:  "2026-06-14",
+				Time:  "11:00",
+			},
+		},
+		&models.PersonalRecord{
+			CommonFields: models.CommonFields{
+				Type:  models.TypePersonal,
+				Title: "Personal item",
+				Date:  "2026-06-14",
+				Time:  "12:00",
+			},
+		},
+	} {
+		if _, err := store.AddRecord(r); err != nil {
+			t.Fatalf("add record: %v", err)
+		}
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 4 {
+		t.Fatalf("expected 4 due records (one per type), got %d", len(due))
+	}
+
+	types := map[models.RecordType]bool{}
+	for _, d := range due {
+		types[d.Type] = true
+	}
+	for _, expected := range []models.RecordType{models.TypeReminder, models.TypeMeeting, models.TypeTask, models.TypePersonal} {
+		if !types[expected] {
+			t.Errorf("expected %q in results", expected)
+		}
+	}
+}
+
+func TestListDue_FutureMeetingNotDue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeMeeting,
+			Title: "Future meeting",
+			Date:  "2026-06-16",
+			Time:  "10:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due records for future meeting, got %d", len(due))
+	}
+}
+
+func TestListDue_FutureTaskNotDue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeTask,
+			Title: "Future task",
+			Date:  "2026-06-16",
+			Time:  "10:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due records for future task, got %d", len(due))
+	}
+}
+
+func TestPushDue_MeetingRecord(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.MeetingRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeMeeting,
+			Title: "Sprint planning",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 1 {
+		t.Fatalf("expected 1 pushed, got %d", len(result.Pushed))
+	}
+	if result.Pushed[0].Title != "Sprint planning" {
+		t.Errorf("expected title 'Sprint planning', got %q", result.Pushed[0].Title)
+	}
+
+	// Check that the meeting prefix emoji (📅) appears in the push message
+	if !strings.Contains(capturedBody, "%F0%9F%93%85") && !strings.Contains(capturedBody, "\U0001f4c5") {
+		t.Errorf("expected 📅 emoji (meeting prefix) in push message body, got: %s", capturedBody)
+	}
+
+	// Verify the record was completed
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("ListDue after push: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due after push+complete, got %d", len(due))
+	}
+}
+
+func TestPushDue_TaskRecord(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.TaskRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeTask,
+			Title: "Code review",
+			Date:  "2026-06-14",
+			Time:  "15:00",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 1 {
+		t.Fatalf("expected 1 pushed, got %d", len(result.Pushed))
+	}
+	if result.Pushed[0].Title != "Code review" {
+		t.Errorf("expected title 'Code review', got %q", result.Pushed[0].Title)
+	}
+
+	// Check that the task prefix emoji (📋) appears in the push message
+	if !strings.Contains(capturedBody, "%F0%9F%93%8B") && !strings.Contains(capturedBody, "\U0001f4cb") {
+		t.Errorf("expected 📋 emoji (task prefix) in push message body, got: %s", capturedBody)
+	}
+
+	// Verify the record was completed
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("ListDue after push: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due after push+complete, got %d", len(due))
+	}
+}
