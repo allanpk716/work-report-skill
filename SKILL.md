@@ -373,8 +373,8 @@ wr remind due [flags]
 | `--include-stale` | bool | `false` | Include stale reminders (overdue > 24 hours). |
 
 **Notes:**
-- Reminders without a time component: due when `date < today`. Date == today is not due (no time to trigger).
-- Reminders with a time component: due when `datetime <= now`. With `--window`, reminders within `(now, now+window]` are also considered due.
+- Records without a `time` field are **never** considered due — they will not appear in `remind due` output and will not be pushed by `remind push --due`. Only records with both `date` and `time` participate in due detection.
+- Records with a time component: due when `datetime <= now`. With `--window`, reminders within `(now, now+window]` are also considered due.
 - Stale = overdue by more than 24 hours. Stale reminders are excluded by default; use `--include-stale` to include them.
 
 **Example:**
@@ -388,7 +388,7 @@ wr remind due --include-stale
 **Output:**
 
 ```json
-{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"action":"remind_due","count":2,"entries":[{"short_id":"a1b2c3d4e5f67890","title":"Team standup","date":"2026-05-03","time":"09:00","is_stale":false},{"short_id":"f0e1d2c3b4a56789","title":"Submit report","date":"2026-05-02","time":"","is_stale":true}]}}
+{"version":"1.0","tool":"wr","type":"result","timestamp":"2026-05-03T14:00:00Z","data":{"action":"remind_due","count":2,"entries":[{"short_id":"a1b2c3d4e5f67890","title":"Team standup","date":"2026-05-03","time":"09:00","is_stale":false},{"short_id":"f0e1d2c3b4a56789","title":"Submit report","date":"2026-05-02","time":"17:00","is_stale":true}]}}
 ```
 
 **Error codes:** `invalid_params`, `storage_error`
@@ -414,6 +414,7 @@ wr remind push [<short_id>] [flags]
 | `--include-stale` | bool | `false` | Include stale reminders (> 24 hours overdue). |
 
 **Notes:**
+- **No-time exclusion:** Records without a `time` field are excluded from due detection. `remind push --due` will never push them. Use `remind push <short_id>` to manually push a specific record regardless of time field.
 - **Batch mode** (`--due`): Finds all due reminders and pushes each via Pushover. Successfully pushed reminders are automatically completed (atomic push+complete). Push failures leave the record active for retry. Maximum 10 reminders per batch.
 - **Single mode** (`<short_id>`): Pushes one specific reminder and completes it on success. Push failure leaves the record active.
 - **Priority-aware delivery:** Each reminder's `notification_priority` field (`normal` or `high`) is mapped to the Pushover API priority (`0` or `1`). `high` priority notifications bypass Pushover quiet hours.
