@@ -58,7 +58,7 @@ type PushResult struct {
 // Returns (isDue, isStale).
 //
 // Rules:
-//   - Reminders without time: date < today → due, date == today → not due.
+//   - Reminders without time: never due (no time → no push trigger).
 //   - Reminders with time:    parsed datetime <= now → due.
 //   - Stale = due AND overdue > 24 hours.
 //   - Window = due within window duration from now (future reminders within
@@ -69,19 +69,8 @@ func IsDue(rec storage.ListedRecord, now time.Time, window time.Duration, includ
 		return false, false
 	}
 
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-
 	if rec.Time == "" {
-		// No time: date < today is due; date == today is not due (no time to trigger).
-		if date.Before(today) {
-			overdue := today.Sub(date)
-			stale := overdue > staleThreshold
-			if stale && !includeStale {
-				return false, true
-			}
-			return true, stale
-		}
-		// date == today or future → not due (no time component)
+		// No time → never due (prevents midnight false pushes for date-only records).
 		return false, false
 	}
 
@@ -206,6 +195,20 @@ func PushDue(ctx context.Context, store *storage.Storage, cfg pushover.Config, n
 		message := fmt.Sprintf("%s: %s (%s)", prefix, r.Title, r.Date)
 		if r.Time != "" {
 			message = fmt.Sprintf("%s: %s (%s %s)", prefix, r.Title, r.Date, r.Time)
+		}
+
+		// Safety net: re-verify record is still active (scan-to-push race)
+		if full, _, err := store.GetByID(r.ShortID); err != nil {
+			logger.WithField("short_id", r.ShortID).Warn("[remind] pre-push re-check failed")
+			result.Failed = append(result.Failed, FailedItem{
+				ShortID: r.ShortID,
+				Title:   r.Title,
+				Error:   fmt.Sprintf("pre-push re-check failed: %v", err),
+			})
+			continue
+		} else if cf := models.GetCommonFields(full); cf != nil && cf.Status != models.StatusActive {
+			logger.WithField("short_id", r.ShortID).Info("[remind] skipped record no longer active")
+			continue
 		}
 
 		priority := models.NotificationPriorityToPushover(r.NotificationPriority)

@@ -25,11 +25,11 @@ func TestIsDue_PastWithoutTime(t *testing.T) {
 	}
 
 	isDue, isStale := IsDue(rec, now, 0, true)
-	if !isDue {
-		t.Error("expected isDue=true for past date without time")
+	if isDue {
+		t.Error("expected isDue=false for past date without time (no time = never due)")
 	}
-	if !isStale {
-		t.Error("expected isStale=true for >24h overdue without time")
+	if isStale {
+		t.Error("expected isStale=false for past date without time (no time = never due)")
 	}
 }
 
@@ -207,18 +207,18 @@ func TestIsDue_InvalidTime(t *testing.T) {
 
 func TestIsDue_StaleWithoutTime_Exactly24h(t *testing.T) {
 	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
-	// Exactly 24h ago → not stale (stale > 24h, not >=)
+	// Exactly 24h ago → no time = never due
 	rec := storage.ListedRecord{
 		Date: "2026-06-14",
 		Time: "",
 	}
 
 	isDue, isStale := IsDue(rec, now, 0, true)
-	if !isDue {
-		t.Error("expected isDue=true for past date without time")
+	if isDue {
+		t.Error("expected isDue=false for past date without time (no time = never due)")
 	}
 	if isStale {
-		t.Error("expected isStale=false for exactly 24h overdue (must be >24h)")
+		t.Error("expected isStale=false for past date without time (no time = never due)")
 	}
 }
 
@@ -1083,5 +1083,159 @@ func TestPushDue_TaskRecord(t *testing.T) {
 	}
 	if len(due) != 0 {
 		t.Errorf("expected 0 due after push+complete, got %d", len(due))
+	}
+}
+
+// --- No-time records: never due ---
+
+func TestIsDue_NoTime_AlwaysNotDue(t *testing.T) {
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	tests := []struct {
+		name string
+		date string
+	}{
+		{"past_1_day", "2026-06-14"},
+		{"past_25h", "2026-06-14"},
+		{"past_2_days", "2026-06-13"},
+		{"today", "2026-06-15"},
+		{"future", "2026-06-16"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := storage.ListedRecord{ShortID: "x", Date: tt.date, Time: ""}
+			isDue, isStale := IsDue(rec, now, 0, true)
+			if isDue {
+				t.Errorf("NoTime_AlwaysNotDue/%s: expected isDue=false", tt.name)
+			}
+			if isStale {
+				t.Errorf("NoTime_AlwaysNotDue/%s: expected isStale=false", tt.name)
+			}
+		})
+	}
+}
+
+func TestListDue_NoTimeRecordExcluded(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeReminder,
+			Title: "No time reminder",
+			Date:  "2026-06-13", // 2 days ago
+			Time:  "",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	due, err := ListDue(store, now, 0, true)
+	if err != nil {
+		t.Fatalf("ListDue: %v", err)
+	}
+	if len(due) != 0 {
+		t.Errorf("expected 0 due for no-time record, got %d", len(due))
+	}
+}
+
+func TestPushDue_NoTimeRecordNotPushed(t *testing.T) {
+	httpCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalled = true
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeReminder,
+			Title: "Past no-time",
+			Date:  "2026-06-13",
+			Time:  "",
+		},
+	}
+	_, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 0 {
+		t.Errorf("expected 0 pushed for no-time record, got %d", len(result.Pushed))
+	}
+	if httpCalled {
+		t.Error("expected no Pushover HTTP call for no-time record")
+	}
+}
+
+func TestPushDue_PrePushStatusCheck_SkipsCompleted(t *testing.T) {
+	httpCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalled = true
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":1}`))
+	}))
+	defer srv.Close()
+
+	pushover.SetPushoverURL(srv.URL)
+	defer pushover.SetPushoverURL("https://api.pushover.net/1/messages.json")
+
+	tmpDir := t.TempDir()
+	store := storage.New(tmpDir)
+
+	// Create a due record WITH time so it passes ListDue scan
+	rec := &models.ReminderRecord{
+		CommonFields: models.CommonFields{
+			Type:  models.TypeReminder,
+			Title: "Will be completed externally",
+			Date:  "2026-06-14",
+			Time:  "09:00",
+		},
+	}
+	added, err := store.AddRecord(rec)
+	if err != nil {
+		t.Fatalf("add record: %v", err)
+	}
+	shortID := models.GetCommonFields(added).ShortID
+
+	// Complete the record externally (simulating scan-to-push race)
+	if err := store.CompleteRecord(shortID); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	cfg := pushover.Config{APIToken: "test-token", UserKey: "test-user"}
+
+	// Since the record is completed before ListDue runs, ListDue returns 0 items
+	// and PushDue returns empty result without HTTP call. The pre-push safety net
+	// provides defense-in-depth for the case where completion happens between
+	// ListDue scan and actual push.
+	result, err := PushDue(ctx, store, cfg, now, 0, true)
+	if err != nil {
+		t.Fatalf("PushDue: %v", err)
+	}
+	if len(result.Pushed) != 0 {
+		t.Errorf("expected 0 pushed for externally-completed record, got %d", len(result.Pushed))
+	}
+	if httpCalled {
+		t.Error("expected no Pushover HTTP call for externally-completed record")
 	}
 }
